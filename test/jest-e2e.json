@@ -1,0 +1,16 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": "..",
+  "testEnvironment": "node",
+  "testRegex": "test/.*\\.e2e-spec\\.ts$",
+  "transform": {
+    "^.+\\.(t|j)s$": "ts-jest"
+  },
+  "moduleNameMapper": {
+    "^src/(.*)$": "<rootDir>/src/$1"
+  },
+  "setupFiles": ["<rootDir>/test/utils/test-env.ts"],
+  "testTimeout": 30000,
+  "_maxWorkers": "Every suite boots its own in-memory mongod REPLICA SET, so the ceiling is how many of those the machine can host — a memory limit, not a CPU one, which is why this is a fixed number and not a percentage of cores. It is also close to the edge: on a 12-core box 4 passed with 25 suites and then crashed once a 26th was added, with `Mongod internal error (fassert() failure)` taking hundreds of tests down. 3 passes 463/463 in ~110s across three consecutive runs; 2 passes in ~176s if a smaller machine needs the margin. ADDING A SUITE MAY REQUIRE LOWERING THIS — re-run the whole file a few times before trusting a raise, because a single green run is not evidence.",
+  "maxWorkers": 3
+}

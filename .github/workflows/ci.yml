@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20.x'
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: wishtick_backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: wishtick_backend
+        run: npm ci
+
+      - name: Lint
+        working-directory: wishtick_backend
+        run: npm run lint
+
+      - name: Typecheck
+        working-directory: wishtick_backend
+        run: npm run typecheck
+
+      - name: Unit tests
+        working-directory: wishtick_backend
+        run: npm run test -- --ci --coverage
+
+      # Mongo comes from mongodb-memory-server and Redis is mocked in-process,
+      # so no service containers are needed. See test/utils/test-app.ts for why
+      # the Redis throttler storage is deliberately not used under test.
+      - name: E2E tests
+        working-directory: wishtick_backend
+        run: npm run test:e2e -- --ci
+
+      - name: Build
+        working-directory: wishtick_backend
+        run: npm run build
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: wishtick_backend/coverage
+          retention-days: 7
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: wishtick_backend/package-lock.json
+      - name: Install dependencies
+        working-directory: wishtick_backend
+        run: npm ci
+      # Advisory for now; Sprint 12 turns this into a release gate.
+      - name: Audit
+        working-directory: wishtick_backend
+        run: npm audit --audit-level=high
+        continue-on-error: true

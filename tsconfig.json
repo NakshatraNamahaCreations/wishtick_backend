@@ -1,0 +1,41 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "target": "ES2023",
+    "sourceMap": true,
+    "outDir": "./dist",
+    // No `baseUrl`: it is deprecated and stops working in TypeScript 7. Since
+    // 4.1 `paths` resolves against the directory holding this file when
+    // `baseUrl` is absent, so `src/*` still means `<repo>/src/*` — for tsc, for
+    // `nest build` (which rewrites the alias to a relative require), and for
+    // `tsconfig-paths` (the `migrate:*` / `seed:*` scripts), which falls back
+    // to that same directory when no `baseUrl` is given.
+    //
+    // Dropping it also narrows resolution on purpose: `baseUrl` silently made
+    // *every* non-relative import resolve against the project root, so
+    // `from 'modules/foo'` would have worked by accident. Only the explicit
+    // alias below does now. Nothing in the tree relied on that — `tsc` is clean.
+    "paths": {
+      "src/*": ["./src/*"]
+    },
+    "incremental": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "strictNullChecks": true,
+    "noImplicitAny": true,
+    "strictBindCallApply": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "resolveJsonModule": true
+  },
+  "exclude": ["node_modules", "dist"]
+}

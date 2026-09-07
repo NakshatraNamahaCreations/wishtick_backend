@@ -1,0 +1,236 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: account_security 1`] = `
+{
+  "sms": "Password changed",
+  "subject": "Thank you!",
+  "text": "Your password was changed.",
+  "title": "Password changed",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: content_removed 1`] = `
+{
+  "sms": "Your content was removed",
+  "subject": "A note about your content",
+  "text": "Some content you posted (an item) was removed after review.
+
+It did not meet our community guidelines.",
+  "title": "Your content was removed",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_reminder 1`] = `
+{
+  "sms": "Aarav's Birthday is in 2 days — https://app.wishtick.test/x",
+  "subject": "Reminder: Aarav's Birthday in 2 days",
+  "text": "Aarav's Birthday is in 2 days.
+
+View the event: https://app.wishtick.test/x",
+  "title": "Aarav's Birthday is in 2 days",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_wishlist_answered 1`] = `
+{
+  "sms": "Your wishlist was declined — https://app.wishtick.test/x",
+  "subject": "Your wishlist was not added to Aarav's Birthday",
+  "text": "The host did not add Birthday list to Aarav's Birthday.
+
+View the event: https://app.wishtick.test/x",
+  "title": "Your wishlist was declined",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_wishlist_offered 1`] = `
+{
+  "sms": "A guest offered a wishlist — https://app.wishtick.test/x",
+  "subject": "Someone offered a wishlist for Aarav's Birthday",
+  "text": "Someone offered Birthday list for Aarav's Birthday.
+
+It shows on the invitation once you accept it.
+
+Review it: https://app.wishtick.test/x",
+  "title": "A guest offered a wishlist",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: gift_fulfilled 1`] = `
+{
+  "sms": "A gift was delivered — https://app.wishtick.test/x",
+  "subject": "A gift arrived for you 🎁",
+  "text": "Noise-cancelling headphones from your wishlist has been delivered.
+
+You can send a thank-you note from your gifts.
+
+See the gift: https://app.wishtick.test/x",
+  "title": "A gift was delivered",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: gift_purchased 1`] = `
+{
+  "sms": "Gift purchased",
+  "subject": "Your gift is on its way",
+  "text": "Noise-cancelling headphones is marked as purchased.",
+  "title": "Gift purchased",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: gift_reserved 1`] = `
+{
+  "sms": "Reservation confirmed — https://app.wishtick.test/x",
+  "subject": "You reserved Noise-cancelling headphones",
+  "text": "You reserved Noise-cancelling headphones on Birthday list.
+
+We'll keep it held for you until you buy it.
+
+View your gift: https://app.wishtick.test/x",
+  "title": "Reservation confirmed",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_contribution 1`] = `
+{
+  "sms": "Someone chipped in",
+  "subject": "A new contribution",
+  "text": "Priya contributed INR 500.00 to Noise-cancelling headphones.
+
+Collected so far: INR 1500.00 of INR 2000.00.",
+  "title": "Someone chipped in",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_fulfilled 1`] = `
+{
+  "sms": "Group gift delivered — https://app.wishtick.test/x",
+  "subject": "The group gift was delivered 🎁",
+  "text": "Noise-cancelling headphones has been delivered.
+
+View the group gift: https://app.wishtick.test/x",
+  "title": "Group gift delivered",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_funded 1`] = `
+{
+  "sms": "The group gift is funded! — https://app.wishtick.test/x",
+  "subject": "Goal reached: Noise-cancelling headphones 🎉",
+  "text": "The group gift for Noise-cancelling headphones reached its goal of INR 2000.00.
+
+It can now be purchased.
+
+View the group gift: https://app.wishtick.test/x",
+  "title": "The group gift is funded!",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_invite 1`] = `
+{
+  "sms": "Join a group gift — https://app.wishtick.test/x",
+  "subject": "Someone asked you to chip in",
+  "text": "Someone invited you to chip in for Noise-cancelling headphones.
+
+See the invitation: https://app.wishtick.test/x",
+  "title": "Join a group gift",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_joined 1`] = `
+{
+  "sms": "Someone joined the group gift",
+  "subject": "A new member joined",
+  "text": "Rohan joined the group gift for Noise-cancelling headphones.",
+  "title": "Someone joined the group gift",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_purchased 1`] = `
+{
+  "sms": "Group gift purchased — https://app.wishtick.test/x",
+  "subject": "The group gift was purchased",
+  "text": "Noise-cancelling headphones has been purchased.
+
+View the group gift: https://app.wishtick.test/x",
+  "title": "Group gift purchased",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: item_out_of_stock 1`] = `
+{
+  "sms": "A wishlist item is out of stock",
+  "subject": "Out of stock: Noise-cancelling headphones",
+  "text": "Noise-cancelling headphones on your wishlist is currently out of stock.",
+  "title": "A wishlist item is out of stock",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: item_price_drop 1`] = `
+{
+  "sms": "A wishlist item dropped in price",
+  "subject": "Price drop: Noise-cancelling headphones",
+  "text": "Noise-cancelling headphones is now INR 1999.00 (was INR 2499.00).",
+  "title": "A wishlist item dropped in price",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: memory_reply 1`] = `
+{
+  "sms": "Someone wrote back — https://app.wishtick.test/x",
+  "subject": "Someone replied to your memory 💌",
+  "text": "They replied to the memory you sent them.
+
+Tap to see what they said.
+
+Read the reply: https://app.wishtick.test/x",
+  "title": "Someone wrote back",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: memory_unlocked 1`] = `
+{
+  "sms": "Password changed is open — https://app.wishtick.test/x",
+  "subject": "A memory just opened 💜",
+  "text": "A few wishes were waiting inside.
+
+Tap to open it and read them.
+
+Open the memory: https://app.wishtick.test/x",
+  "title": "Password changed is open",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: reel_released 1`] = `
+{
+  "sms": "Your reel is ready! — https://app.wishtick.test/x",
+  "subject": "Your birthday reel is here 🎂",
+  "text": "Your friends came together — a few wishes are waiting for you.
+
+Tap to watch your birthday reel.
+
+Watch your reel: https://app.wishtick.test/x",
+  "title": "Your reel is ready!",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: thank_you 1`] = `
+{
+  "sms": "A thank-you note",
+  "subject": "Thank you!",
+  "text": "Thank you so much for the wonderful gift.",
+  "title": "A thank-you note",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: welcome 1`] = `
+{
+  "sms": "Welcome, Aarav! — https://app.wishtick.test",
+  "subject": "Welcome to Wishtick 🎁",
+  "text": "Welcome to Wishtick, Aarav.
+
+Create a wishlist, share it, and let the gifting begin.
+
+Open Wishtick: https://app.wishtick.test",
+  "title": "Welcome, Aarav!",
+}
+`;

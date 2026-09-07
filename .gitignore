@@ -1,0 +1,27 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.*
+!.env.example
+
+logs/
+*.log
+npm-debug.log*
+
+.DS_Store
+.idea/
+*.swp
+
+tmp/
+uploads/
+
+# Reel render scratch space (REEL_TEMP_DIR) and test media fixtures.
+.reels-tmp*
+.reels-test-media-*
+
+# Local development MongoDB — the staged mongod binary + its data (see docs/LOCAL_DEV.md).
+.dev-mongo/
+.dev-mongo-data/
