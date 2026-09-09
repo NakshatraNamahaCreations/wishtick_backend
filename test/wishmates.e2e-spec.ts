@@ -232,6 +232,76 @@ describe('WishMates (e2e)', () => {
     });
   });
 
+  // Reported from a handset: a request was sent and the other phone showed
+  // nothing. The module emitted no domain event at all, so no notification was
+  // ever created — there was nothing for push to deliver.
+  describe('telling the other person', () => {
+    /** The caller's notification list, newest first. */
+    const inbox = async (who: Actor): Promise<{ type: string; title: string }[]> => {
+      // Dispatch runs off the queue, which the fake only advances on demand.
+      await ctx.drainNotifications();
+      const res = await get(who, '/notifications').expect(200);
+      return (res.body as Envelope<{ type: string; title: string }[]>).data;
+    };
+
+    it('notifies the addressee that they were asked', async () => {
+      const a = await someone('alice_n1');
+      const b = await someone('bob_n1');
+
+      await post(a, `/people/${b.userId}/request`).expect(201);
+
+      const mine = await inbox(b);
+      const asked = mine.filter((n) => n.type === 'wishmate_request');
+      expect(asked).toHaveLength(1);
+      expect(asked[0].title).toContain('alice_n1');
+      // And the sender is not told about their own request.
+      expect((await inbox(a)).filter((n) => n.type === 'wishmate_request')).toHaveLength(0);
+    });
+
+    it('notifies the requester when it is accepted', async () => {
+      const a = await someone('alice_n2');
+      const b = await someone('bob_n2');
+      await post(a, `/people/${b.userId}/request`).expect(201);
+      const linkId = (
+        (await get(b, '/wishlinks/received').expect(200)).body as Envelope<{ linkId: string }[]>
+      ).data[0].linkId;
+
+      await post(b, `/wishlinks/${linkId}/accept`).expect(201);
+
+      const accepted = (await inbox(a)).filter((n) => n.type === 'wishmate_accepted');
+      expect(accepted).toHaveLength(1);
+      expect(accepted[0].title).toContain('bob_n2');
+    });
+
+    // Tapping Add twice is one ask, not two.
+    it('does not notify twice for a repeated ask', async () => {
+      const a = await someone('alice_n3');
+      const b = await someone('bob_n3');
+
+      await post(a, `/people/${b.userId}/request`).expect(201);
+      await post(a, `/people/${b.userId}/request`).expect(201);
+
+      expect((await inbox(b)).filter((n) => n.type === 'wishmate_request')).toHaveLength(1);
+    });
+
+    // A declined link is re-opened in place rather than replaced, so keying
+    // the notification on the link id alone would dedupe the second ask
+    // against the first and deliver nothing.
+    it('notifies again when a declined request is re-sent', async () => {
+      const a = await someone('alice_n4');
+      const b = await someone('bob_n4');
+      await post(a, `/people/${b.userId}/request`).expect(201);
+      const linkId = (
+        (await get(b, '/wishlinks/received').expect(200)).body as Envelope<{ linkId: string }[]>
+      ).data[0].linkId;
+      await post(b, `/wishlinks/${linkId}/decline`).expect(201);
+
+      await post(a, `/people/${b.userId}/request`).expect(201);
+
+      expect((await inbox(b)).filter((n) => n.type === 'wishmate_request')).toHaveLength(2);
+    });
+  });
+
   describe('responding', () => {
     it('accept connects both sides and clears the request', async () => {
       const a = await someone('alice_f');

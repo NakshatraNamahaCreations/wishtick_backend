@@ -244,6 +244,136 @@ describe('Memories (e2e)', () => {
     });
   });
 
+  describe('an opened capsule is readable by the person it was written for', () => {
+    /**
+     * The rule: unlocking makes the wishes readable *to the recipient*. It is
+     * not a publication. The host who organised it and the friends who wrote
+     * into it each see their own words and nobody else's.
+     *
+     * This used to be wide open — `list()` carried a literal `void userId`, and
+     * the capsule view handed `wishes` to whoever asked once the status
+     * flipped. So a host could read everything written to their friend, and so
+     * could every other contributor.
+     */
+    const opened = async (): Promise<{
+      host: Actor;
+      friend: Actor;
+      recipient: Actor;
+      memory: MemoryView;
+    }> => {
+      const { host, recipient } = await hostAndRecipient();
+      const friend = await newUser();
+      const memory = await createMemory(host, {}, recipient);
+      for (const [actor, text] of [
+        [host, 'From me, with love'],
+        [friend, 'Many happy returns'],
+      ] as const) {
+        await request(app.getHttpServer())
+          .post(`${V1}/memories/${memory.id}/wishes`)
+          .set(auth(actor.token))
+          .send({ kind: 'text', text })
+          .expect(201);
+      }
+      await request(app.getHttpServer())
+        .post(`${V1}/memories/${memory.id}/unlock`)
+        .set(auth(host.token))
+        .expect(200);
+      return { host, friend, recipient, memory };
+    };
+
+    const capsuleFor = async (actor: Actor, id: string): Promise<MemoryView> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/memories/${id}`)
+            .set(auth(actor.token))
+            .expect(200)
+        ).body as Envelope<MemoryView>
+      ).data;
+
+    it('gives the recipient every wish', async () => {
+      const { recipient, memory } = await opened();
+
+      const view = await capsuleFor(recipient, memory.id);
+      expect(view.wishes).toHaveLength(2);
+      expect(view.wishes.map((w) => w.text)).toEqual(
+        expect.arrayContaining(['From me, with love', 'Many happy returns']),
+      );
+
+      await request(app.getHttpServer())
+        .get(`${V1}/memories/${memory.id}/wishes`)
+        .set(auth(recipient.token))
+        .expect(200);
+    });
+
+    it('gives the host none of them, not even after it opens', async () => {
+      const { host, memory } = await opened();
+
+      const view = await capsuleFor(host, memory.id);
+      expect(view.wishes).toHaveLength(0);
+      // The counts still show — the host organised it and may see that it
+      // filled up. What they may not see is what anyone wrote.
+      expect(view.wishCount).toBe(2);
+
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/memories/${memory.id}/wishes`)
+        .set(auth(host.token))
+        .expect(404);
+      expect((res.body as Envelope<unknown>).error?.code).toBe(ErrorCode.MEMORY_NOT_FOUND);
+    });
+
+    it('gives a fellow contributor none of them either', async () => {
+      const { friend, memory } = await opened();
+
+      const view = await capsuleFor(friend, memory.id);
+      expect(view.wishes).toHaveLength(0);
+
+      await request(app.getHttpServer())
+        .get(`${V1}/memories/${memory.id}/wishes`)
+        .set(auth(friend.token))
+        .expect(404);
+    });
+
+    it('still lets everyone read their own words back', async () => {
+      const { host, friend, memory } = await opened();
+
+      for (const [actor, own] of [
+        [host, 'From me, with love'],
+        [friend, 'Many happy returns'],
+      ] as const) {
+        const mine = (
+          (
+            await request(app.getHttpServer())
+              .get(`${V1}/memories/${memory.id}/wishes/mine`)
+              .set(auth(actor.token))
+              .expect(200)
+          ).body as Envelope<{ text: string | null }[]>
+        ).data;
+        expect(mine.map((w) => w.text)).toEqual([own]);
+      }
+    });
+
+    it('gives the recipient nothing while it is still sealed', async () => {
+      const { host, recipient } = await hostAndRecipient();
+      const memory = await createMemory(host, {}, recipient);
+      await request(app.getHttpServer())
+        .post(`${V1}/memories/${memory.id}/wishes`)
+        .set(auth(host.token))
+        .send({ kind: 'text', text: 'Not yet' })
+        .expect(201);
+
+      const view = await capsuleFor(recipient, memory.id);
+      expect(view.wishes).toHaveLength(0);
+
+      // Locked, not missing: the recipient knows there is something coming.
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/memories/${memory.id}/wishes`)
+        .set(auth(recipient.token))
+        .expect(409);
+      expect((res.body as Envelope<unknown>).error?.code).toBe(ErrorCode.MEMORY_LOCKED);
+    });
+  });
+
   describe('replying to a memory you were given', () => {
     /** A host, a friend who wrote a wish, and an opened capsule for `recipient`. */
     const openedMemoryWithAWish = async (): Promise<{
@@ -730,10 +860,10 @@ describe('Memories (e2e)', () => {
       }
     });
 
-    it('opens on the host’s say-so and hands over every wish', async () => {
-      const host = await newUser();
+    it('opens on the host’s say-so and hands every wish to the recipient', async () => {
+      const { host, recipient } = await hostAndRecipient();
       const friend = await newUser();
-      const memory = await createMemory(host);
+      const memory = await createMemory(host, {}, recipient);
 
       await request(app.getHttpServer())
         .post(`${V1}/memories/${memory.id}/wishes`)
@@ -741,6 +871,9 @@ describe('Memories (e2e)', () => {
         .send({ kind: 'text', text: 'Happy Birthday!' })
         .expect(201);
 
+      // The host's own response confirms it opened, and deliberately carries
+      // no wishes: unlocking is what makes them readable to the recipient, not
+      // to whoever pressed the button.
       const opened = (
         await request(app.getHttpServer())
           .post(`${V1}/memories/${memory.id}/unlock`)
@@ -749,13 +882,21 @@ describe('Memories (e2e)', () => {
       ).body as Envelope<MemoryView>;
 
       expect(opened.data.status).toBe('unlocked');
-      expect(opened.data.wishes).toHaveLength(1);
-      expect(opened.data.wishes[0].text).toBe('Happy Birthday!');
+      expect(opened.data.wishes).toHaveLength(0);
+
+      const view = (
+        await request(app.getHttpServer())
+          .get(`${V1}/memories/${memory.id}`)
+          .set(auth(recipient.token))
+          .expect(200)
+      ).body as Envelope<MemoryView>;
+      expect(view.data.wishes).toHaveLength(1);
+      expect(view.data.wishes[0].text).toBe('Happy Birthday!');
 
       const list = (
         await request(app.getHttpServer())
           .get(`${V1}/memories/${memory.id}/wishes`)
-          .set(auth(friend.token))
+          .set(auth(recipient.token))
           .expect(200)
       ).body as Envelope<{ text: string | null }[]>;
       expect(list.data).toHaveLength(1);
@@ -871,9 +1012,9 @@ describe('Memories (e2e)', () => {
     });
 
     it('carries a photo wish end to end', async () => {
-      const host = await newUser();
+      const { host, recipient } = await hostAndRecipient();
       const friend = await newUser();
-      const memory = await createMemory(host);
+      const memory = await createMemory(host, {}, recipient);
       const photoId = await uploadMedia(friend, MediaPurpose.MEMORY_WISH);
 
       await request(app.getHttpServer())
@@ -882,10 +1023,17 @@ describe('Memories (e2e)', () => {
         .send({ kind: 'photo', mediaId: photoId, text: 'Happy Birthday!' })
         .expect(201);
 
+      await request(app.getHttpServer())
+        .post(`${V1}/memories/${memory.id}/unlock`)
+        .set(auth(host.token))
+        .expect(200);
+
+      // Read as the recipient — the wishes are theirs, so theirs is the only
+      // view that carries the media through.
       const opened = (
         await request(app.getHttpServer())
-          .post(`${V1}/memories/${memory.id}/unlock`)
-          .set(auth(host.token))
+          .get(`${V1}/memories/${memory.id}`)
+          .set(auth(recipient.token))
           .expect(200)
       ).body as Envelope<MemoryView>;
 

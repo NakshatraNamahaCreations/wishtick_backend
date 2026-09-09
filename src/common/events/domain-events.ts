@@ -106,6 +106,39 @@ export interface GroupGiftFulfilledEvent {
  * them from the wishlist's chat so they cannot receive further messages, and the
  * REST history re-checks access so they cannot read past ones.
  */
+/**
+ * Somebody asked to be a WishMate, or said yes to being asked.
+ *
+ * The whole module was silent before these: a request reached the addressee's
+ * WishLink screen and nowhere else, so the only way to learn about one was to
+ * go looking for it.
+ */
+export const WISHMATE_REQUESTED = 'wishmate.requested';
+export const WISHMATE_ACCEPTED = 'wishmate.accepted';
+
+export interface WishmateRequestedEvent {
+  linkId: string;
+  requesterId: string;
+  addresseeId: string;
+  /**
+   * When this particular ask happened, in epoch ms.
+   *
+   * Part of the notification's dedupe key, and it has to be: a declined link
+   * is *re-opened* rather than replaced (see `WishmatesService.request`), so
+   * the link id alone repeats. Keyed on that, a second ask months after a
+   * decline would be deduped against the first and silently never arrive.
+   */
+  askedAt: number;
+}
+
+export interface WishmateAcceptedEvent {
+  linkId: string;
+  /** The one who said yes — whose profile the notification opens. */
+  accepterId: string;
+  /** The one who asked, and who is told. */
+  requesterId: string;
+}
+
 export const WISHLIST_PARTICIPANT_REVOKED = 'wishlist.participant_revoked';
 
 export interface WishlistParticipantRevokedEvent {

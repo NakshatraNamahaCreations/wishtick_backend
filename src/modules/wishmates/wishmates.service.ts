@@ -1,4 +1,11 @@
 import { Injectable } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import {
+  WISHMATE_ACCEPTED,
+  WISHMATE_REQUESTED,
+  type WishmateAcceptedEvent,
+  type WishmateRequestedEvent,
+} from 'src/common/events/domain-events';
 import { InjectModel } from '@nestjs/mongoose';
 import { FilterQuery, Model, Types } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
@@ -47,6 +54,7 @@ const RESERVED_USERNAMES = new Set([
 @Injectable()
 export class WishmatesService {
   constructor(
+    private readonly emitter: EventEmitter2,
     @InjectModel(WishLink.name) private readonly links: Model<WishLinkDocument>,
     @InjectModel(UserProfile.name) private readonly profiles: Model<UserProfileDocument>,
     @InjectModel(User.name) private readonly users: Model<UserDocument>,
@@ -227,14 +235,16 @@ export class WishmatesService {
       existing.status = WishLinkStatus.PENDING;
       existing.respondedAt = null;
       await existing.save();
+      this.announceRequest(existing);
       return WishmateRelationship.REQUEST_SENT;
     }
 
-    await this.links.create({
+    const created = await this.links.create({
       requesterId: new Types.ObjectId(viewerId),
       addresseeId: new Types.ObjectId(targetId),
       status: WishLinkStatus.PENDING,
     });
+    this.announceRequest(created);
     return WishmateRelationship.REQUEST_SENT;
   }
 
@@ -244,7 +254,32 @@ export class WishmatesService {
     link.status = WishLinkStatus.ACCEPTED;
     link.respondedAt = new Date();
     await link.save();
+    this.emitter.emit(WISHMATE_ACCEPTED, {
+      linkId: link._id.toString(),
+      accepterId: viewerId,
+      requesterId: link.requesterId.toString(),
+    } satisfies WishmateAcceptedEvent);
     return WishmateRelationship.WISHMATES;
+  }
+
+  /**
+   * Tells the addressee they have been asked.
+   *
+   * Only ever called where a link *becomes* pending — a repeat ask against a
+   * request that is already pending returns early without coming here, so
+   * tapping Add twice cannot notify twice.
+   *
+   * `askedAt` comes off the document rather than the clock: a declined link is
+   * re-opened in place, so the id alone repeats, and the notification's dedupe
+   * key needs something that does not.
+   */
+  private announceRequest(link: WishLinkDocument): void {
+    this.emitter.emit(WISHMATE_REQUESTED, {
+      linkId: link._id.toString(),
+      requesterId: link.requesterId.toString(),
+      addresseeId: link.addresseeId.toString(),
+      askedAt: link.updatedAt.getTime(),
+    } satisfies WishmateRequestedEvent);
   }
 
   /** Declines a request addressed to the viewer. */

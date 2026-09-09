@@ -55,6 +55,8 @@ export enum NotificationType {
   ITEM_PRICE_DROP = 'item_price_drop',
   ITEM_OUT_OF_STOCK = 'item_out_of_stock',
   THANK_YOU = 'thank_you',
+  WISHMATE_REQUEST = 'wishmate_request',
+  WISHMATE_ACCEPTED = 'wishmate_accepted',
   ACCOUNT_SECURITY = 'account_security',
   REEL_RELEASED = 'reel_released',
   MEMORY_UNLOCKED = 'memory_unlocked',
@@ -196,6 +198,20 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.DIGEST,
     category: NotificationCategory.GIFTS,
     template: 'item-out-of-stock',
+  },
+  [NotificationType.WISHMATE_REQUEST]: {
+    // Push, because the whole point is that the addressee is not looking at
+    // the WishLink screen. No email: a friend request is not worth an inbox.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.SOCIAL,
+    template: 'wishmate-request',
+  },
+  [NotificationType.WISHMATE_ACCEPTED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.SOCIAL,
+    template: 'wishmate-accepted',
   },
   [NotificationType.THANK_YOU]: {
     channels: [NotificationChannel.EMAIL],

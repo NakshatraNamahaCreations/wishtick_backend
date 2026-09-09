@@ -19,6 +19,8 @@ import {
   MEMORY_UNLOCKED,
   REEL_RELEASED,
   USER_REGISTERED,
+  WISHMATE_ACCEPTED,
+  WISHMATE_REQUESTED,
   type EventWishlistAnsweredEvent,
   type EventWishlistOfferedEvent,
   type GiftLifecycleEvent,
@@ -32,6 +34,8 @@ import {
   type MemoryUnlockedEvent,
   type ReelReleasedEvent,
   type UserRegisteredEvent,
+  type WishmateAcceptedEvent,
+  type WishmateRequestedEvent,
 } from 'src/common/events/domain-events';
 import type { AppConfig } from 'src/config/configuration';
 import {
@@ -189,6 +193,41 @@ export class NotificationListener {
         payload: {
           itemTitle: await this.itemTitle(gg.itemId.toString()),
           inviterName: await this.userName(e.invitedById),
+        },
+      });
+    });
+  }
+
+  @OnEvent(WISHMATE_REQUESTED)
+  async onWishmateRequested(e: WishmateRequestedEvent): Promise<void> {
+    await this.guard('wishmate-requested', async () => {
+      await this.notifications.enqueue({
+        userId: e.addresseeId,
+        type: NotificationType.WISHMATE_REQUEST,
+        // The ask, not the link: a declined link is re-opened in place, so
+        // keying on the id alone would dedupe a second ask months later
+        // against the first and never deliver it.
+        refId: `${e.linkId}:${e.askedAt}`,
+        payload: {
+          requesterName: await this.userName(e.requesterId),
+          url: `${this.web}/wishlinks`,
+        },
+      });
+    });
+  }
+
+  @OnEvent(WISHMATE_ACCEPTED)
+  async onWishmateAccepted(e: WishmateAcceptedEvent): Promise<void> {
+    await this.guard('wishmate-accepted', async () => {
+      await this.notifications.enqueue({
+        userId: e.requesterId,
+        type: NotificationType.WISHMATE_ACCEPTED,
+        // The accepter, so the app can open their profile from the tap. One
+        // pair can only be accepted once, so this is unique either way.
+        refId: e.accepterId,
+        payload: {
+          accepterName: await this.userName(e.accepterId),
+          url: `${this.web}/people/${e.accepterId}`,
         },
       });
     });

@@ -23,7 +23,7 @@ import { PRODUCT_PROVIDER, type IProductProvider } from './providers/product-pro
 import { ProviderGuard } from './providers/provider-guard.service';
 import { SerpApiClient } from './providers/serpapi/serpapi.client';
 import { SerpApiProductProvider } from './providers/serpapi/serpapi-provider';
-import { RedirectController } from './redirect.controller';
+import { GiftLinkController, RedirectController } from './redirect.controller';
 import { ClickEvent, ClickEventSchema } from './schemas/click-event.schema';
 import {
   AffiliateSyncState,
@@ -51,7 +51,12 @@ const logger = new Logger('ProductsModule');
     WishlistsModule,
     TaxonomyModule,
   ],
-  controllers: [ProductsController, ProductImportController, RedirectController],
+  controllers: [
+    ProductsController,
+    ProductImportController,
+    RedirectController,
+    GiftLinkController,
+  ],
   providers: [
     ProductsService,
     ProductImportService,

@@ -129,7 +129,18 @@ export class MemoryWishesService {
         unlockAt: capsule.unlockAt,
       });
     }
-    void userId;
+    // Only the person it was written for. `void userId` used to sit here, which
+    // made an opened capsule readable by anyone who could name it — the host
+    // and every contributor included, so each of them could read what all the
+    // others had written. Opening the capsule makes it readable to the
+    // recipient; it does not publish it.
+    //
+    // Not found rather than forbidden: the wishes of a memory somebody is not
+    // part of are not theirs to be told about, and a 403 confirms the capsule
+    // exists and who it is for.
+    if (capsule.recipientUserId?.toString() !== userId) {
+      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Memory not found', 404);
+    }
     return (
       await this.wishModel.find({ capsuleId: capsule._id }).sort({ order: 1, createdAt: 1 })
     ).map(toMemoryWishView);

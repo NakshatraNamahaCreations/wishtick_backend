@@ -114,6 +114,18 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     lines: [`${s(p, 'itemTitle', 'The group gift')} has been delivered.`],
     cta: { label: 'View the group gift', url: s(p, 'url') },
   }),
+  [NotificationType.WISHMATE_REQUEST]: (p) => ({
+    subject: `${who(p, 'requesterName')} wants to be your WishMate`,
+    title: `${who(p, 'requesterName')} wants to be your WishMate`,
+    lines: [`Accept to share wishlists, events and gifts with them.`],
+    cta: { label: 'View the request', url: s(p, 'url') },
+  }),
+  [NotificationType.WISHMATE_ACCEPTED]: (p) => ({
+    subject: `${who(p, 'accepterName')} is now your WishMate`,
+    title: `${who(p, 'accepterName')} accepted your request`,
+    lines: [`You can now share wishlists, events and gifts with each other.`],
+    cta: { label: 'View their profile', url: s(p, 'url') },
+  }),
   [NotificationType.EVENT_REMINDER]: (p) => ({
     subject: `Reminder: ${s(p, 'eventTitle', 'your event')} ${s(p, 'whenText', 'soon')}`,
     title: `${s(p, 'eventTitle', 'Your event')} is ${s(p, 'whenText', 'coming up')}`,

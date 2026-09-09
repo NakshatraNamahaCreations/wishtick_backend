@@ -234,3 +234,25 @@ Open Wishtick: https://app.wishtick.test",
   "title": "Welcome, Aarav!",
 }
 `;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: wishmate_accepted 1`] = `
+{
+  "sms": "Someone accepted your request — https://app.wishtick.test/x",
+  "subject": "Someone is now your WishMate",
+  "text": "You can now share wishlists, events and gifts with each other.
+
+View their profile: https://app.wishtick.test/x",
+  "title": "Someone accepted your request",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: wishmate_request 1`] = `
+{
+  "sms": "Someone wants to be your WishMate — https://app.wishtick.test/x",
+  "subject": "Someone wants to be your WishMate",
+  "text": "Accept to share wishlists, events and gifts with them.
+
+View the request: https://app.wishtick.test/x",
+  "title": "Someone wants to be your WishMate",
+}
+`;

@@ -609,6 +609,109 @@ describe('Products & affiliate (e2e)', () => {
     it('404s an unknown item', async () => {
       await request(app.getHttpServer()).get(`${V1}/r/000000000000000000000000`).expect(404);
     });
+
+    it(
+      'refuses an anonymous click on a private list, which is what the app ' + 'used to send',
+      async () => {
+        // The app opens the URL in the phone's browser so the attribution cookie
+        // lands where the purchase happens, and `launchUrl` cannot attach an
+        // Authorization header. The request above passes only because the test
+        // sets one — a luxury the app does not have. Hence /items/:id/gift-link.
+        const owner = await newUser();
+        const wishlistId = await createWishlist(owner.token);
+        const item = (
+          await request(app.getHttpServer())
+            .post(`${V1}/wishlists/${wishlistId}/items/from-product`)
+            .set(auth(owner.token))
+            .send({ provider: 'fixture', externalId: 'hp-001' })
+            .expect(201)
+        ).body as Envelope<ItemView>;
+
+        await request(app.getHttpServer()).get(`${V1}/r/${item.data.id}`).expect(404);
+      },
+    );
+  });
+
+  describe('gift link — what "Gift Now" resolves through', () => {
+    /** An item on the caller's own list, which defaults to PRIVATE. */
+    const givenAnItem = async (token: string): Promise<string> => {
+      const wishlistId = await createWishlist(token);
+      const item = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists/${wishlistId}/items/from-product`)
+          .set(auth(token))
+          .send({ provider: 'fixture', externalId: 'hp-001' })
+          .expect(201)
+      ).body as Envelope<ItemView>;
+      return item.data.id;
+    };
+
+    it(
+      'gives a private list’s owner the merchant link, which the browser ' + 'redirect could not',
+      async () => {
+        // The bug: pressing Gift Now on your own private list answered 404,
+        // because the click reached the server with no token and an anonymous
+        // viewer is granted nothing on a list that is not public.
+        const { token } = await newUser();
+        const itemId = await givenAnItem(token);
+
+        const res = await request(app.getHttpServer())
+          .get(`${V1}/items/${itemId}/gift-link`)
+          .set(auth(token))
+          .expect(200);
+
+        const url = new URL((res.body as Envelope<{ url: string }>).data.url);
+        expect(url.host).toBe('track.example.test');
+        expect(url.searchParams.get('subId')).toBeTruthy();
+      },
+    );
+
+    it('records the click against the person who made it', async () => {
+      // Not merely a side effect worth keeping: every click from the app used
+      // to be stored with a null userId, because the browser sent no token.
+      const { token, userId } = await newUser();
+      const itemId = await givenAnItem(token);
+
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/items/${itemId}/gift-link`)
+        .set(auth(token))
+        .expect(200);
+
+      const trackingId = new URL((res.body as Envelope<{ url: string }>).data.url).searchParams.get(
+        'subId',
+      );
+      const click = await clickModel.findOne({ trackingId }).exec();
+      expect(click).not.toBeNull();
+      expect(click!.userId?.toString()).toBe(userId);
+    });
+
+    it('refuses someone who cannot see the wishlist', async () => {
+      const owner = await newUser();
+      const stranger = await newUser();
+      const itemId = await givenAnItem(owner.token);
+
+      // Same reasoning as the redirect: a merchant URL confirms the item
+      // exists and says what it is.
+      await request(app.getHttpServer())
+        .get(`${V1}/items/${itemId}/gift-link`)
+        .set(auth(stranger.token))
+        .expect(404);
+    });
+
+    it('refuses an anonymous caller outright', async () => {
+      const { token } = await newUser();
+      const itemId = await givenAnItem(token);
+
+      await request(app.getHttpServer()).get(`${V1}/items/${itemId}/gift-link`).expect(401);
+    });
+
+    it('404s an unknown item', async () => {
+      const { token } = await newUser();
+      await request(app.getHttpServer())
+        .get(`${V1}/items/000000000000000000000000/gift-link`)
+        .set(auth(token))
+        .expect(404);
+    });
   });
 
   describe('catalogue redirect — a click before anything is saved', () => {
@@ -672,17 +775,20 @@ describe('Products & affiliate (e2e)', () => {
       expect(click!.productId).not.toBeNull();
     });
 
-    it('falls back to the product for an out-of-range or junk offer rather '
-      + 'than erroring at a browser', async () => {
-      await givenSellers();
+    it(
+      'falls back to the product for an out-of-range or junk offer rather ' +
+        'than erroring at a browser',
+      async () => {
+        await givenSellers();
 
-      for (const offer of ['9', 'banana', '-1']) {
-        const res = await request(app.getHttpServer())
-          .get(`${V1}/r/p/fixture/sellers-1?offer=${offer}`)
-          .expect(302);
-        expect(new URL(res.headers.location).searchParams.get('pid')).toBe('product');
-      }
-    });
+        for (const offer of ['9', 'banana', '-1']) {
+          const res = await request(app.getHttpServer())
+            .get(`${V1}/r/p/fixture/sellers-1?offer=${offer}`)
+            .expect(302);
+          expect(new URL(res.headers.location).searchParams.get('pid')).toBe('product');
+        }
+      },
+    );
 
     it('404s an unknown product', async () => {
       await request(app.getHttpServer()).get(`${V1}/r/p/fixture/nope-404`).expect(404);

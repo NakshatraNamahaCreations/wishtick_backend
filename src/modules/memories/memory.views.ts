@@ -178,6 +178,8 @@ export const toMemoryCapsuleView = (
   },
 ): MemoryCapsuleView => {
   const isHost = opts.viewerId !== null && capsule.hostId.toString() === opts.viewerId;
+  const isRecipient =
+    opts.viewerId !== null && capsule.recipientUserId?.toString() === opts.viewerId;
   const unlocked = MEMORY_CONTENT_VISIBLE.includes(capsule.status);
 
   const view: MemoryCapsuleView = {
@@ -202,9 +204,15 @@ export const toMemoryCapsuleView = (
     contributors: contributorNames(wishes),
     hostId: capsule.hostId.toString(),
     isHost,
-    isRecipient: opts.viewerId !== null && capsule.recipientUserId?.toString() === opts.viewerId,
+    isRecipient,
     createdAt: capsule.createdAt,
-    wishes: unlocked ? wishes.map(toMemoryWishView) : [],
+    // The wishes are for the person the memory is *for*, and nobody else —
+    // opening the capsule used to hand every wish to every viewer, so a host
+    // or a fellow contributor could read what everyone had written to the
+    // recipient. Unlocking is what makes the capsule readable *to them*; it is
+    // not a general publication. Contributors read their own words back
+    // through `/wishes/mine`, which is unaffected.
+    wishes: unlocked && isRecipient ? wishes.map(toMemoryWishView) : [],
   };
 
   if (isHost && opts.shareBaseUrl) {

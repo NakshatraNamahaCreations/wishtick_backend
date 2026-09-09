@@ -1,13 +1,57 @@
 import { Controller, Get, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
-import { ApiExcludeController } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiExcludeController, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
+import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { Public } from 'src/common/decorators/public.decorator';
 import { OptionalJwtAuthGuard } from 'src/common/guards/optional-jwt-auth.guard';
 import type { AuthenticatedUser } from 'src/common/types/authenticated-user';
 import { ClickTrackingService } from './click-tracking.service';
 
 const REDIRECT_THROTTLE = { default: { limit: 60, ttl: 60_000 } };
+
+/**
+ * Where the app sends someone to buy an item — "Gift Now".
+ *
+ * The app cannot use the `/r/:itemId` redirect below. It hands the URL to the
+ * phone's browser (the affiliate cookie has to land where the purchase
+ * happens), and `launchUrl` cannot attach an Authorization header — so the
+ * click arrived anonymous, and [AccessPolicyService.resolve] grants an
+ * anonymous viewer nothing unless the wishlist is PUBLIC. The owner of a
+ * PRIVATE or EVENT_ONLY list pressing Gift Now on their own item got a 404,
+ * rendered as raw JSON in their browser.
+ *
+ * Resolving it here instead fixes that and two smaller things with it: the
+ * click is recorded against the real user rather than as anonymous, and no
+ * credential is put in a URL that lands in browser history. The app opens the
+ * merchant link this returns, which is the same URL the redirect would have
+ * sent it to.
+ */
+@ApiTags('gifting')
+@Controller('items')
+export class GiftLinkController {
+  constructor(private readonly clicks: ClickTrackingService) {}
+
+  @Get(':itemId/gift-link')
+  @ApiBearerAuth()
+  @Throttle(REDIRECT_THROTTLE)
+  @ApiOperation({
+    summary: 'The merchant URL for an item, click recorded — what "Gift Now" opens',
+  })
+  async giftLink(
+    @CurrentUser('id') userId: string,
+    @Param('itemId') itemId: string,
+    @Req() req: Request,
+  ): Promise<{ url: string }> {
+    return {
+      url: await this.clicks.resolveRedirect(itemId, {
+        userId,
+        referer: req.get('referer') ?? undefined,
+        userAgent: req.get('user-agent') ?? undefined,
+      }),
+    };
+  }
+}
 
 /**
  * Outbound affiliate redirect.
