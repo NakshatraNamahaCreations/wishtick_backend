@@ -169,6 +169,11 @@ export interface AppConfig {
   account: {
     deletionGraceDays: number;
   };
+  /** How long the nightly sweeper waits before reclaiming stale media. */
+  mediaSweep: {
+    orphanGraceHours: number;
+    pendingGraceHours: number;
+  };
   gifting: {
     reservationTtlHours: number;
     reservationWarnHours: number;
@@ -400,6 +405,10 @@ export const configuration = (): AppConfig => {
     },
     account: {
       deletionGraceDays: toInt(process.env.ACCOUNT_DELETION_GRACE_DAYS, 30),
+    },
+    mediaSweep: {
+      orphanGraceHours: toInt(process.env.MEDIA_ORPHAN_GRACE_HOURS, 24),
+      pendingGraceHours: toInt(process.env.MEDIA_PENDING_GRACE_HOURS, 48),
     },
     gifting: {
       reservationTtlHours: toInt(process.env.RESERVATION_TTL_HOURS, 72),

@@ -380,6 +380,64 @@ export class MediaService {
     await this.model.updateOne({ _id: mediaId }, { $set: { status: MediaStatus.ORPHANED } }).exec();
   }
 
+  /**
+   * Reclaims what `markOrphaned` and an abandoned upload leave behind.
+   *
+   * Two unrelated kinds of garbage, swept together because deleting either is
+   * the exact same three steps (video, object, doc) — only the query and the
+   * grace period differ:
+   *
+   *  - ORPHANED: a newer upload replaced this one (a profile photo, an event
+   *    cover, ...). Nothing in the app ever re-attaches an orphaned id, so the
+   *    grace period exists only to outlive a screen that read the URL a
+   *    moment before it was orphaned.
+   *  - PENDING past its grace period: an upload URL that was issued and never
+   *    confirmed — the bytes may never have arrived, or arrived and the client
+   *    crashed before calling `/media/confirm`. Given a much longer grace
+   *    period, because unlike an orphan this can still be a real upload in
+   *    progress, and reclaiming it too early turns a merely late `confirm()`
+   *    into a 404.
+   *
+   * A streamed cursor, not `find()` — matches the pattern the group-gift
+   * reconciler uses for the same reason: an unbounded collection must never be
+   * loaded into memory to process it.
+   */
+  async sweep(): Promise<{ orphanedSwept: number; pendingSwept: number }> {
+    const now = Date.now();
+    const orphanCutoff = new Date(
+      now - this.config.get('mediaSweep.orphanGraceHours', { infer: true }) * 3_600_000,
+    );
+    const pendingCutoff = new Date(
+      now - this.config.get('mediaSweep.pendingGraceHours', { infer: true }) * 3_600_000,
+    );
+
+    const cursor = this.model
+      .find({
+        $or: [
+          { status: MediaStatus.ORPHANED, updatedAt: { $lte: orphanCutoff } },
+          { status: MediaStatus.PENDING, createdAt: { $lte: pendingCutoff } },
+        ],
+      })
+      .cursor();
+
+    let orphanedSwept = 0;
+    let pendingSwept = 0;
+    for await (const media of cursor) {
+      const wasOrphaned = media.status === MediaStatus.ORPHANED;
+      await this.discard(media, wasOrphaned ? 'swept: orphaned' : 'swept: pending, never confirmed');
+      if (wasOrphaned) {
+        orphanedSwept += 1;
+      } else {
+        pendingSwept += 1;
+      }
+    }
+
+    if (orphanedSwept > 0 || pendingSwept > 0) {
+      this.logger.log(`Media sweep: reclaimed ${orphanedSwept} orphaned, ${pendingSwept} pending`);
+    }
+    return { orphanedSwept, pendingSwept };
+  }
+
   async deleteAllForOwner(ownerId: Types.ObjectId): Promise<number> {
     const owned = await this.model.find({ ownerId }).exec();
     let deleted = 0;

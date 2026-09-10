@@ -1,9 +1,12 @@
+import { BullModule } from '@nestjs/bullmq';
 import { Module, type MiddlewareConsumer, type NestModule, type Type } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import type { AppConfig } from 'src/config/configuration';
+import { QUEUE } from 'src/infra/queue/queue.constants';
 import { LocalUploadRawBodyMiddleware } from './local-upload-raw-body.middleware';
 import { LocalUploadController } from './local-upload.controller';
+import { MediaSweepRegistrar } from './media-sweep.processor';
 import { MediaController } from './media.controller';
 import { MediaService } from './media.service';
 import { Media, MediaSchema } from './schemas/media.schema';
@@ -17,9 +20,12 @@ const localControllers = (): Type<unknown>[] =>
   (process.env.STORAGE_DRIVER ?? 'local') === 'local' ? [LocalUploadController] : [];
 
 @Module({
-  imports: [MongooseModule.forFeature([{ name: Media.name, schema: MediaSchema }])],
+  imports: [
+    MongooseModule.forFeature([{ name: Media.name, schema: MediaSchema }]),
+    BullModule.registerQueue({ name: QUEUE.SCHEDULER }),
+  ],
   controllers: [MediaController, ...localControllers()],
-  providers: [MediaService],
+  providers: [MediaService, MediaSweepRegistrar],
   exports: [MediaService],
 })
 export class MediaModule implements NestModule {

@@ -183,6 +183,24 @@ export const envValidationSchema = Joi.object({
   MEDIA_MAX_BYTES: Joi.number()
     .min(1024)
     .default(10 * 1024 * 1024),
+  /**
+   * How long a media doc sits after being orphaned (a newer upload replaced
+   * it — a profile photo, an event/wishlist/memory cover) before the sweeper
+   * deletes the object and the doc. Short: nothing in the app ever re-attaches
+   * an orphaned id, so the only reason not to reclaim it sooner is a screen
+   * somewhere that read its URL a moment before it was orphaned and has not
+   * finished rendering yet.
+   */
+  MEDIA_ORPHAN_GRACE_HOURS: Joi.number().min(0).max(720).default(24),
+  /**
+   * How long a PENDING media doc (an upload URL was issued; the bytes may
+   * never arrive, or may arrive without `/media/confirm` ever being called)
+   * survives before the sweeper reclaims it. Long, deliberately: unlike an
+   * orphan, a pending upload can still be a real one in progress — a slow
+   * connection, a backgrounded app — and reclaiming it too early turns a
+   * merely late `confirm()` into a 404 instead of a success.
+   */
+  MEDIA_PENDING_GRACE_HOURS: Joi.number().min(1).max(720).default(48),
 
   // Account lifecycle
   ACCOUNT_DELETION_GRACE_DAYS: Joi.number().min(0).max(90).default(30),

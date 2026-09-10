@@ -133,4 +133,10 @@ export const MediaSchema = SchemaFactory.createForClass(Media);
 
 MediaSchema.index({ storageKey: 1 }, { unique: true });
 MediaSchema.index({ ownerId: 1, createdAt: -1 });
+// Backs the sweeper's PENDING branch — how long since the upload URL was
+// issued.
 MediaSchema.index({ status: 1, createdAt: 1 });
+// Backs the sweeper's ORPHANED branch — how long since it was orphaned, which
+// is `updatedAt` (the `markOrphaned` write), not `createdAt` (when the object
+// was first uploaded, possibly years earlier).
+MediaSchema.index({ status: 1, updatedAt: 1 });
