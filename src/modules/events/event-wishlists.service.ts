@@ -273,13 +273,22 @@ export class EventWishlistsService {
 
     wishlist.eventId = event._id;
 
-    // Verified owned by the host, so approving cannot be a way to attach
-    // anyone else's address to a list. Only set on approval: a rejected list
-    // is not on the event and must carry nothing.
-    if (addressId) {
-      const address = await this.addresses.assertOwned(userId, addressId);
-      wishlist.addressId = address._id;
-    }
+    // Whatever address the list arrived with comes off, and only the host's
+    // answer can put one back.
+    //
+    // The guest attached theirs while the list was their own; joining the
+    // host's event changes who the gifts are for. A list offered for someone
+    // else's event is, in the ordinary case, a list of gifts *for the host* —
+    // so leaving the guest's address on it would quietly point every gifter at
+    // the wrong doorstep, and the guest is not there to be asked. Dropping it
+    // is the safe default: the worst case is a list with no address, which the
+    // owner can fix, rather than parcels sent to the wrong person.
+    //
+    // `assertOwned` is what stops approval being a way to attach somebody
+    // else's address — the host may only ever share one of their own.
+    wishlist.addressId = addressId
+      ? (await this.addresses.assertOwned(userId, addressId))._id
+      : null;
     await wishlist.save();
 
     submission.status = EventWishlistSubmissionStatus.APPROVED;

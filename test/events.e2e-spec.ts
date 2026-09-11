@@ -1816,6 +1816,110 @@ describe('Events & invites (e2e)', () => {
       expect(body.data).not.toHaveProperty('address');
     });
 
+    it("drops the guest's own address as the list joins the event", async () => {
+      const host = await newUser('Rohan');
+      const guest = await newUser('Priya');
+      const event = await publicEvent(host);
+      await attend(guest, event.slug);
+
+      // The guest had attached their own address while the list was purely
+      // theirs.
+      const guestAddress = await addAddress(guest);
+      const wl = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists`)
+          .set(auth(guest.token))
+          .send({ title: 'For Rohan', visibility: 'public' })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      await request(app.getHttpServer())
+        .put(`${V1}/wishlists/${wl.data.id}/address`)
+        .set(auth(guest.token))
+        .send({ addressId: guestAddress })
+        .expect(200);
+      expect((await addressOn(wl.data.id, guest))?.id).toBe(guestAddress);
+
+      const offered = (await offer(guest, event.id, wl.data.id).expect(200)).body as Envelope<{
+        id: string;
+      }>;
+      await request(app.getHttpServer())
+        .post(`${V1}/events/${event.id}/wishlist-requests/${offered.data.id}/approve`)
+        .set(auth(host.token))
+        .send({})
+        .expect(200);
+
+      // Joining the host's event changes who the gifts are for, and the guest
+      // is not there to be asked — a list with no address is recoverable,
+      // parcels sent to the wrong doorstep are not.
+      expect(await addressOn(wl.data.id, guest)).toBeNull();
+    });
+
+    it("replaces the guest's address with the host's when they share one", async () => {
+      const host = await newUser('Rohan');
+      const guest = await newUser('Priya');
+      const event = await publicEvent(host);
+      await attend(guest, event.slug);
+
+      const guestAddress = await addAddress(guest);
+      const hostAddress = await addAddress(host);
+      const wl = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists`)
+          .set(auth(guest.token))
+          .send({ title: 'For Rohan', visibility: 'public' })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      await request(app.getHttpServer())
+        .put(`${V1}/wishlists/${wl.data.id}/address`)
+        .set(auth(guest.token))
+        .send({ addressId: guestAddress })
+        .expect(200);
+
+      const offered = (await offer(guest, event.id, wl.data.id).expect(200)).body as Envelope<{
+        id: string;
+      }>;
+      await request(app.getHttpServer())
+        .post(`${V1}/events/${event.id}/wishlist-requests/${offered.data.id}/approve`)
+        .set(auth(host.token))
+        .send({ addressId: hostAddress })
+        .expect(200);
+
+      expect((await addressOn(wl.data.id, guest))?.id).toBe(hostAddress);
+    });
+
+    it("leaves the guest's address alone when the host turns the list down", async () => {
+      const host = await newUser('Rohan');
+      const guest = await newUser('Priya');
+      const event = await publicEvent(host);
+      await attend(guest, event.slug);
+
+      const guestAddress = await addAddress(guest);
+      const wl = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists`)
+          .set(auth(guest.token))
+          .send({ title: 'For Rohan', visibility: 'public' })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      await request(app.getHttpServer())
+        .put(`${V1}/wishlists/${wl.data.id}/address`)
+        .set(auth(guest.token))
+        .send({ addressId: guestAddress })
+        .expect(200);
+
+      const offered = (await offer(guest, event.id, wl.data.id).expect(200)).body as Envelope<{
+        id: string;
+      }>;
+      await request(app.getHttpServer())
+        .post(`${V1}/events/${event.id}/wishlist-requests/${offered.data.id}/reject`)
+        .set(auth(host.token))
+        .expect(200);
+
+      // A declined list never joined the event, so nothing about it changed —
+      // clearing here would be a refusal quietly editing someone's wishlist.
+      expect((await addressOn(wl.data.id, guest))?.id).toBe(guestAddress);
+    });
+
     it("refuses an address that is not the host's", async () => {
       const host = await newUser('Rohan');
       const guest = await newUser('Priya');

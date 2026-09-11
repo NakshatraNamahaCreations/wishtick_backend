@@ -97,6 +97,11 @@ export class Wishlist {
    * a list made for them ship to them. So a reader must resolve this through
    * the address collection and must never assume `ownerId` owns it.
    *
+   * Approval onto an event clears whatever was here first, so the host's
+   * answer is the only thing that can put an address on a list joining their
+   * event — see [EventWishlistsService.respond]. Unlinking clears the host's
+   * again.
+   *
    * Who may actually read it is [AccessPolicyService.canViewAddress] — narrower
    * than `canView`, so a PUBLIC list does not put a home address and a phone
    * number in front of anyone holding the link.
