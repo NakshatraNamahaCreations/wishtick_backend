@@ -50,6 +50,14 @@ import { UserProfile, UserProfileSchema } from './schemas/user-profile.schema';
     AccountLifecycleRegistrar,
     DataExportService,
   ],
-  exports: [ProfileService, AccountLifecycleService, ImportantDatesService, MongooseModule],
+  exports: [
+    ProfileService,
+    AccountLifecycleService,
+    ImportantDatesService,
+    // Wishlists and events both attach an address to a wishlist, and both must
+    // go through the same ownership gate rather than reading the model directly.
+    AddressesService,
+    MongooseModule,
+  ],
 })
 export class ProfileModule {}

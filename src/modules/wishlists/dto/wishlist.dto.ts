@@ -332,6 +332,24 @@ export class AddParticipantDto {
   role?: ParticipantRole;
 }
 
+/**
+ * Attach one saved address to a wishlist, or clear it with an explicit null.
+ *
+ * `IsMongoId` rather than a free string so a malformed id is a 400 here
+ * instead of a 404 from the lookup — the two mean different things to a client.
+ */
+export class SetWishlistAddressDto {
+  @ApiProperty({
+    nullable: true,
+    description:
+      'One of your own saved addresses, or null to stop sharing. Must belong to you: ' +
+      'attaching it shows it to everyone who can gift on this list.',
+  })
+  @IsOptional()
+  @IsMongoId()
+  addressId!: string | null;
+}
+
 export class PublicWishlistQueryDto {
   @ApiPropertyOptional({ description: 'Required when the link is passcode-protected' })
   @IsOptional()

@@ -3,12 +3,19 @@ import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 
 export type AddressDocument = HydratedDocument<Address>;
 
-/** The three chips under "Save address as" (`324:1340`). */
-export enum AddressLabel {
-  HOME = 'home',
-  WORK = 'work',
-  OTHER = 'other',
-}
+/**
+ * The quick-pick chips under "Save address as" (`324:1340`).
+ *
+ * Suggestions, not the permitted set: `label` is free text, so someone can save
+ * "Office" or "Mum's place" without one of these being the closest wrong
+ * answer. Offered by the client as one-tap fills.
+ */
+export const ADDRESS_LABEL_PRESETS = ['Home', 'Work', 'Other'] as const;
+
+export const DEFAULT_ADDRESS_LABEL = 'Home';
+
+/** Long enough for "Grandparents' house", short enough to fit the card's chip. */
+export const ADDRESS_LABEL_MAX_LENGTH = 30;
 
 /**
  * One saved delivery address (`2293:25`, `324:1295`, `324:1340`).
@@ -33,8 +40,23 @@ export class Address {
   @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true })
   userId!: Types.ObjectId;
 
-  @Prop({ type: String, enum: Object.values(AddressLabel), default: AddressLabel.HOME })
-  label!: AddressLabel;
+  /**
+   * What the user calls this address — free text, shown verbatim.
+   *
+   * Was an enum of home/work/other, which meant a third address could only be
+   * "Other" however many of them there were. Stored display-ready (migration
+   * `030-address-custom-labels` title-cases the three old values) so no client
+   * has to keep its own wire-value → label map, which is how "AddressLabel.home"
+   * once reached a real screen.
+   */
+  @Prop({
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: ADDRESS_LABEL_MAX_LENGTH,
+    default: DEFAULT_ADDRESS_LABEL,
+  })
+  label!: string;
 
   // ── Contact information ──────────────────────────────────────────────────
 

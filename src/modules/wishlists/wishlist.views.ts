@@ -1,3 +1,4 @@
+import type { AddressView } from 'src/modules/profile/addresses.service';
 import type { WishlistItemDocument } from './schemas/wishlist-item.schema';
 import type { WishlistDocument } from './schemas/wishlist.schema';
 import type { AccessDecision } from './access/access.types';
@@ -59,6 +60,16 @@ export interface WishlistView {
   access: AccessDecision;
   /** Owner-only. Absent for everyone else. */
   share?: { slug: string; url: string; hasPasscode: boolean; expiresAt: Date | null };
+  /**
+   * Where to send a gift, when one is attached *and* this caller may see it.
+   *
+   * Three distinguishable states, because the client renders each differently:
+   * `undefined` — this caller may not see the address (say so to nobody);
+   * `null` — they may, and none is attached ("add a delivery address");
+   * an address — show it. Gated by
+   * [AccessPolicyService.canViewAddress], not by `access.canView`.
+   */
+  address?: AddressView | null;
 }
 
 /** The unauthenticated share-link view. Deliberately a different, smaller shape. */
@@ -144,10 +155,17 @@ export const toItemView = (item: WishlistItemDocument, maskForOwner = false): It
   };
 };
 
+/**
+ * `address` is passed in already resolved rather than looked up here: whether
+ * this caller may see it is an async policy question, and a view projection is
+ * the wrong place to be making authorization decisions. Pass `undefined` to
+ * omit the field entirely — see [WishlistView.address].
+ */
 export const toWishlistView = (
   wishlist: WishlistDocument,
   access: AccessDecision,
   shareBaseUrl?: string,
+  address?: AddressView | null,
 ): WishlistView => {
   const view: WishlistView = {
     id: wishlist._id.toString(),
@@ -179,5 +197,6 @@ export const toWishlistView = (
       expiresAt: wishlist.share.expiresAt,
     };
   }
+  if (address !== undefined) view.address = address;
   return view;
 };

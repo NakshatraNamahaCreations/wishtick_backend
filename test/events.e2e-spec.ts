@@ -1721,6 +1721,162 @@ describe('Events & invites (e2e)', () => {
       ).toHaveLength(1);
     });
 
+    /** One saved address for an actor, returning its id. */
+    const addAddress = async (actor: Actor, label = 'Home'): Promise<string> => {
+      const res = await request(app.getHttpServer())
+        .post(`${V1}/me/addresses`)
+        .set(auth(actor.token))
+        .send({
+          label,
+          fullName: 'Rohan Rao',
+          mobile: '9890900089',
+          line1: 'D-Block',
+          locality: 'JP Nagar',
+          pincode: '570031',
+          city: 'Mysuru',
+          state: 'Karnataka',
+        })
+        .expect(201);
+      return (res.body as Envelope<{ id: string }>).data.id;
+    };
+
+    /** A guest's public list, offered to the event and approved by the host. */
+    const publicListOnEvent = async (
+      host: Actor,
+      guest: Actor,
+      eventId: string,
+      approveBody: Record<string, unknown> = {},
+    ): Promise<string> => {
+      const wl = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists`)
+          .set(auth(guest.token))
+          .send({ title: 'For Rohan', visibility: 'public' })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      const offered = (await offer(guest, eventId, wl.data.id).expect(200)).body as Envelope<{
+        id: string;
+      }>;
+      await request(app.getHttpServer())
+        .post(`${V1}/events/${eventId}/wishlist-requests/${offered.data.id}/approve`)
+        .set(auth(host.token))
+        .send(approveBody)
+        .expect(200);
+      return wl.data.id;
+    };
+
+    const addressOn = async (wishlistId: string, viewer: Actor) => {
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/wishlists/${wishlistId}`)
+        .set(auth(viewer.token))
+        .expect(200);
+      return (res.body as Envelope<{ address?: { id: string; mobile: string } | null }>).data
+        .address;
+    };
+
+    it("shares the host's own address onto the guest's list when they approve it", async () => {
+      // A list a guest offers for the host's event is a list of gifts *for the
+      // host*, so the parcels ship to the host — which is why the address the
+      // approval attaches is the host's, and why the host is the one asked.
+      const host = await newUser('Rohan');
+      const guest = await newUser('Priya');
+      const other = await newUser('Ananya');
+      const event = await publicEvent(host);
+      await attend(guest, event.slug);
+      await attend(other, event.slug);
+
+      const addressId = await addAddress(host);
+      const wishlistId = await publicListOnEvent(host, guest, event.id, { addressId });
+
+      // The list's owner, and the event's other accepted guests — the people
+      // who would actually send something.
+      expect((await addressOn(wishlistId, guest))?.id).toBe(addressId);
+      expect((await addressOn(wishlistId, other))?.mobile).toBe('9890900089');
+    });
+
+    it('withholds it from a passer-by on that same public list', async () => {
+      const host = await newUser('Rohan');
+      const guest = await newUser('Priya');
+      const stranger = await newUser('Nobody');
+      const event = await publicEvent(host);
+      await attend(guest, event.slug);
+
+      const addressId = await addAddress(host);
+      const wishlistId = await publicListOnEvent(host, guest, event.id, { addressId });
+
+      // Not invited, not a participant. The list is public so they can read it
+      // and even gift from it — but a home address and a mobile number are not
+      // part of what "public" was agreed to.
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/wishlists/${wishlistId}`)
+        .set(auth(stranger.token))
+        .expect(200);
+      const body = res.body as Envelope<{ address?: unknown; access: { canGift: boolean } }>;
+      expect(body.data.access.canGift).toBe(true);
+      expect(body.data).not.toHaveProperty('address');
+    });
+
+    it("refuses an address that is not the host's", async () => {
+      const host = await newUser('Rohan');
+      const guest = await newUser('Priya');
+      const event = await publicEvent(host);
+      await attend(guest, event.slug);
+
+      // The guest's own address. Approving must not be a way to attach somebody
+      // else's — the ownership check is the whole of the consent.
+      const notMine = await addAddress(guest);
+      const wl = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists`)
+          .set(auth(guest.token))
+          .send({ title: 'For Rohan', visibility: 'public' })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      const offered = (await offer(guest, event.id, wl.data.id).expect(200)).body as Envelope<{
+        id: string;
+      }>;
+
+      await request(app.getHttpServer())
+        .post(`${V1}/events/${event.id}/wishlist-requests/${offered.data.id}/approve`)
+        .set(auth(host.token))
+        .send({ addressId: notMine })
+        .expect(404);
+    });
+
+    it("takes the host's address back off when the list leaves the event", async () => {
+      const host = await newUser('Rohan');
+      const guest = await newUser('Priya');
+      const event = await publicEvent(host);
+      await attend(guest, event.slug);
+
+      const addressId = await addAddress(host);
+      const wl = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists`)
+          .set(auth(guest.token))
+          .send({ title: 'For Rohan', visibility: 'public' })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      const offered = (await offer(guest, event.id, wl.data.id).expect(200)).body as Envelope<{
+        id: string;
+      }>;
+      await request(app.getHttpServer())
+        .post(`${V1}/events/${event.id}/wishlist-requests/${offered.data.id}/approve`)
+        .set(auth(host.token))
+        .send({ addressId })
+        .expect(200);
+      expect((await addressOn(wl.data.id, guest))?.id).toBe(addressId);
+
+      await request(app.getHttpServer())
+        .delete(`${V1}/events/${event.id}/wishlist-requests/${offered.data.id}`)
+        .set(auth(host.token))
+        .expect(200);
+
+      // The host shared it for this event and cannot reach a list they do not
+      // own to take it back, so unlinking has to be what revokes it.
+      expect(await addressOn(wl.data.id, guest)).toBeNull();
+    });
+
     it('stays off the invitation until the host approves it', async () => {
       const host = await newUser('Rohan');
       const guest = await newUser('Siya');

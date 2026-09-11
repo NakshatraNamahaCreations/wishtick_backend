@@ -10,6 +10,7 @@ import { MediaService } from 'src/modules/media/media.service';
 import { WishmatesService } from 'src/modules/wishmates/wishmates.service';
 import { WishmateRelationship } from 'src/modules/wishmates/wishmates.views';
 import { MediaPurpose } from 'src/modules/media/schemas/media.schema';
+import { AddressesService, type AddressView } from 'src/modules/profile/addresses.service';
 import { AccessPolicyService } from './access/access-policy.service';
 import type { AccessContext } from './access/access.types';
 import type { CreateWishlistDto, ShareWishlistDto, UpdateWishlistDto } from './dto/wishlist.dto';
@@ -41,6 +42,7 @@ export class WishlistsService {
     private readonly access: AccessPolicyService,
     private readonly media: MediaService,
     private readonly wishmates: WishmatesService,
+    private readonly addresses: AddressesService,
     private readonly config: ConfigService<AppConfig, true>,
   ) {}
 
@@ -152,7 +154,63 @@ export class WishlistsService {
   async getOne(wishlistId: string, ctx: AccessContext): Promise<WishlistView> {
     const wishlist = await this.findOrFail(wishlistId);
     const access = await this.access.assertCanView(wishlist, ctx);
-    return toWishlistView(wishlist, access, this.shareBaseUrl);
+    return toWishlistView(
+      wishlist,
+      access,
+      this.shareBaseUrl,
+      await this.resolveAddress(wishlist, ctx),
+    );
+  }
+
+  /**
+   * The attached address, for a caller entitled to it.
+   *
+   * `undefined` (omit the field) when they are not — which is not the same as
+   * `null` (they are, and none is attached). Resolved only on the detail read:
+   * the list endpoints would need one address lookup per row to serve a field
+   * no list view shows.
+   */
+  private async resolveAddress(
+    wishlist: WishlistDocument,
+    ctx: AccessContext,
+  ): Promise<AddressView | null | undefined> {
+    if (!(await this.access.canViewAddress(wishlist, ctx))) return undefined;
+    if (!wishlist.addressId) return null;
+    return this.addresses.viewById(wishlist.addressId);
+  }
+
+  /**
+   * Attaches one of the caller's own addresses to their list, or clears it.
+   *
+   * Owner-only, and the address must be the caller's — attaching publishes a
+   * home address and a phone number to everyone who can gift on the list, so
+   * the only person who can start that is the person it belongs to. Passing
+   * null takes it back off, which is the whole of "unshare".
+   */
+  async setAddress(
+    wishlistId: string,
+    ctx: AccessContext,
+    addressId: string | null,
+  ): Promise<WishlistView> {
+    const wishlist = await this.findOrFail(wishlistId);
+    const access = await this.access.assertCanManage(wishlist, ctx);
+
+    if (addressId === null) {
+      wishlist.addressId = null;
+    } else {
+      // Throws 404 for an id that is not theirs, so this doubles as the
+      // ownership gate.
+      const address = await this.addresses.assertOwned(ctx.userId!, addressId);
+      wishlist.addressId = address._id;
+    }
+    await wishlist.save();
+
+    return toWishlistView(
+      wishlist,
+      access,
+      this.shareBaseUrl,
+      await this.resolveAddress(wishlist, ctx),
+    );
   }
 
   async update(

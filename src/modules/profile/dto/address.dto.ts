@@ -3,14 +3,17 @@ import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsEmail,
-  IsEnum,
   IsOptional,
   IsString,
   Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
-import { AddressLabel } from '../schemas/address.schema';
+import {
+  ADDRESS_LABEL_MAX_LENGTH,
+  ADDRESS_LABEL_PRESETS,
+  DEFAULT_ADDRESS_LABEL,
+} from '../schemas/address.schema';
 
 const trim = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim() : value;
@@ -24,10 +27,17 @@ const trimToNull = ({ value }: { value: unknown }): unknown => {
 
 /** The field set of "Add New Address" (`324:1340`), in the frame's own order. */
 export class CreateAddressDto {
-  @ApiPropertyOptional({ enum: AddressLabel, default: AddressLabel.HOME })
+  @ApiPropertyOptional({
+    example: 'Office',
+    default: DEFAULT_ADDRESS_LABEL,
+    description: `Free text, shown verbatim. Suggested chips: ${ADDRESS_LABEL_PRESETS.join(', ')}`,
+  })
   @IsOptional()
-  @IsEnum(AddressLabel)
-  label?: AddressLabel;
+  @IsString()
+  @MinLength(1)
+  @MaxLength(ADDRESS_LABEL_MAX_LENGTH)
+  @Transform(trim)
+  label?: string;
 
   @ApiProperty({ example: 'Siya', description: 'Who receives the parcel' })
   @IsString()

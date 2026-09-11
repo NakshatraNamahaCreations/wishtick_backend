@@ -873,4 +873,116 @@ describe('Wishlists (e2e)', () => {
       expect(untouched.data.forUserId).toBe(siya.userId);
     });
   });
+
+  /**
+   * Attaching an address to a wishlist is the *only* way one is ever shared —
+   * no WishMate can read another's address book, and nothing else exposes one.
+   * So these tests are as much about who does not get it as who does.
+   */
+  describe('delivery address', () => {
+    const addAddress = async (actor: Actor, label = 'Home'): Promise<string> => {
+      const res = await request(app.getHttpServer())
+        .post(`${V1}/me/addresses`)
+        .set(auth(actor.token))
+        .send({
+          label,
+          fullName: 'Siya',
+          mobile: '9890900089',
+          line1: 'D-Block',
+          locality: 'JP Nagar',
+          pincode: '570031',
+          city: 'Mysuru',
+          state: 'Karnataka',
+        })
+        .expect(201);
+      return (res.body as Envelope<{ id: string }>).data.id;
+    };
+
+    const attach = (actor: Actor, wishlistId: string, addressId: string | null) =>
+      request(app.getHttpServer())
+        .put(`${V1}/wishlists/${wishlistId}/address`)
+        .set(auth(actor.token))
+        .send({ addressId });
+
+    const read = async (actor: Actor, wishlistId: string) =>
+      (
+        await request(app.getHttpServer())
+          .get(`${V1}/wishlists/${wishlistId}`)
+          .set(auth(actor.token))
+          .expect(200)
+      ).body as Envelope<{ address?: { id: string; formatted: string } | null }>;
+
+    it('shows the attached address to the owner and to people they admitted', async () => {
+      const owner = await newUser();
+      const guest = await newUser();
+      const wishlist = await createWishlist(owner);
+      const addressId = await addAddress(owner);
+
+      // Nothing attached yet: the owner may see it, so the field is present and
+      // null rather than missing — "none attached" and "not for you" are
+      // different answers and the client renders them differently.
+      const before = await read(owner, wishlist.id);
+      expect(before.data.address).toBeNull();
+
+      await attach(owner, wishlist.id, addressId).expect(200);
+      await request(app.getHttpServer())
+        .post(`${V1}/wishlists/${wishlist.id}/participants`)
+        .set(auth(owner.token))
+        .send({ userId: guest.userId, role: 'contributor' })
+        .expect(201);
+
+      const asOwner = await read(owner, wishlist.id);
+      expect(asOwner.data.address?.id).toBe(addressId);
+      // Pre-joined server-side so every client formats it alike.
+      expect(asOwner.data.address?.formatted).toContain('Mysuru');
+
+      const asGuest = await read(guest, wishlist.id);
+      expect(asGuest.data.address?.id).toBe(addressId);
+    });
+
+    it('stops sharing it when the owner clears it', async () => {
+      const owner = await newUser();
+      const wishlist = await createWishlist(owner);
+      const addressId = await addAddress(owner);
+      await attach(owner, wishlist.id, addressId).expect(200);
+
+      await attach(owner, wishlist.id, null).expect(200);
+      expect((await read(owner, wishlist.id)).data.address).toBeNull();
+    });
+
+    it("refuses to attach somebody else's address", async () => {
+      const owner = await newUser();
+      const other = await newUser();
+      const wishlist = await createWishlist(owner);
+      const notMine = await addAddress(other);
+
+      // 404, not 403: an address id must not be probeable through this.
+      await attach(owner, wishlist.id, notMine).expect(404);
+      expect((await read(owner, wishlist.id)).data.address).toBeNull();
+    });
+
+    it('is the owner’s decision alone', async () => {
+      const owner = await newUser();
+      const guest = await newUser();
+      const wishlist = await createWishlist(owner, {
+        visibility: WishlistVisibility.PUBLIC,
+      });
+      const guestAddress = await addAddress(guest);
+
+      // A contributor could otherwise put their own address on someone else's
+      // list, which is a way to make a list say something its owner did not.
+      await request(app.getHttpServer())
+        .post(`${V1}/wishlists/${wishlist.id}/participants`)
+        .set(auth(owner.token))
+        .send({ userId: guest.userId, role: 'contributor' })
+        .expect(201);
+      await attach(guest, wishlist.id, guestAddress).expect(403);
+    });
+
+    it('rejects a malformed id rather than reporting it missing', async () => {
+      const owner = await newUser();
+      const wishlist = await createWishlist(owner);
+      await attach(owner, wishlist.id, 'not-an-object-id').expect(400);
+    });
+  });
 });

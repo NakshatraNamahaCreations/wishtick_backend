@@ -364,3 +364,22 @@ export class SubmitEventWishlistDto {
   @IsMongoId()
   wishlistId!: string;
 }
+
+/**
+ * The host's answer, and optionally their address.
+ *
+ * The body is optional in full: approving without one is the common case, and
+ * the address is a separate decision the client asks about as it accepts.
+ */
+export class ApproveEventWishlistDto {
+  @ApiPropertyOptional({
+    nullable: true,
+    description:
+      'One of your own saved addresses, attached to the guest’s list as you approve it — a list ' +
+      'offered for your event is usually a list of gifts for you, so the parcels come to you. ' +
+      'Everyone who can gift on that list then sees it. Omit to share nothing.',
+  })
+  @IsOptional()
+  @IsMongoId()
+  addressId?: string | null;
+}

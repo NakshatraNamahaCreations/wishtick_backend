@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import {
@@ -24,6 +25,7 @@ import {
   CreateWishlistDto,
   ListItemsQueryDto,
   ReorderItemsDto,
+  SetWishlistAddressDto,
   ShareWishlistDto,
   UpdateItemDto,
   UpdateWishlistDto,
@@ -116,6 +118,28 @@ export class WishlistsController {
     @Body() dto: ShareWishlistDto,
   ): Promise<NonNullable<WishlistView['share']>> {
     return this.wishlists.configureShare(id, { userId }, dto);
+  }
+
+  @Put(':id/address')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Attach a delivery address to this wishlist, or stop sharing one',
+    description:
+      'The only way an address is ever shared: nothing else exposes one, and a WishMate cannot ' +
+      'read another’s address book. Must be one of your own addresses. Everyone who can gift on ' +
+      'the list then sees it — participants and the event’s accepted guests, never a share-link ' +
+      'holder or a passer-by on a public list. Send null to take it back off.',
+  })
+  @ApiResponseDoc({ status: 403, description: 'FORBIDDEN — owner only' })
+  @ApiResponseDoc({ status: 404, description: 'Wishlist, or an address that is not yours' })
+  setAddress(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Body() dto: SetWishlistAddressDto,
+  ): Promise<WishlistView> {
+    // A PUT with no addressId means "none" — replace semantics, so an omitted
+    // field and an explicit null agree rather than one of them crashing.
+    return this.wishlists.setAddress(id, { userId }, dto.addressId ?? null);
   }
 
   // ── Items ─────────────────────────────────────────────────────────────────

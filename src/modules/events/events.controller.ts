@@ -24,6 +24,7 @@ import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { Public } from 'src/common/decorators/public.decorator';
 import {
+  ApproveEventWishlistDto,
   BulkDeleteEventsDto,
   BulkInviteDto,
   CreateEventDto,
@@ -403,14 +404,18 @@ export class EventsController {
     summary: 'Show a guest’s wishlist on this event',
     description:
       'Links the list to the event and, if it was private, lifts it to EVENT_ONLY so the ' +
-      'event’s accepted guests can actually open it.',
+      'event’s accepted guests can actually open it. Optionally attaches one of *your* ' +
+      'addresses to that list — the prompt the client raises as you accept, since a list ' +
+      'offered for your event is usually a list of gifts for you.',
   })
+  @ApiResponseDoc({ status: 404, description: 'Request, or an address that is not yours' })
   approveWishlist(
     @CurrentUser('id') userId: string,
     @Param('id') id: string,
     @Param('requestId') requestId: string,
+    @Body() dto: ApproveEventWishlistDto,
   ): Promise<EventWishlistSubmissionView> {
-    return this.eventWishlists.respond(id, requestId, userId, true);
+    return this.eventWishlists.respond(id, requestId, userId, true, dto.addressId ?? null);
   }
 
   @Post('events/:id/wishlist-requests/:requestId/reject')

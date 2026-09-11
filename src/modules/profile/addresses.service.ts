@@ -4,7 +4,7 @@ import { Model, Types } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import type { CreateAddressDto, UpdateAddressDto } from './dto/address.dto';
-import { Address, AddressLabel, type AddressDocument } from './schemas/address.schema';
+import { Address, DEFAULT_ADDRESS_LABEL, type AddressDocument } from './schemas/address.schema';
 
 export interface AddressView {
   id: string;
@@ -61,7 +61,7 @@ export class AddressesService {
 
     const doc = await this.model.create({
       userId: _userId,
-      label: dto.label ?? AddressLabel.HOME,
+      label: dto.label ?? DEFAULT_ADDRESS_LABEL,
       fullName: dto.fullName,
       mobile: dto.mobile,
       altMobile: dto.altMobile ?? null,
@@ -133,6 +133,48 @@ export class AddressesService {
         await next.save();
       }
     }
+  }
+
+  /**
+   * Resolves one of the *caller's own* addresses, for a flow that is about to
+   * share it with other people.
+   *
+   * The ownership check is the consent: attaching an address to a wishlist
+   * publishes a home address and a phone number to everyone who can gift on
+   * that list, so the only address anybody may attach is one of their own.
+   * 404s on someone else's exactly like an unknown id, so ids stay unguessable.
+   */
+  async assertOwned(userId: string, addressId: string): Promise<AddressDocument> {
+    return this.findOwned(new Types.ObjectId(userId), addressId);
+  }
+
+  /** Whether this address is that user's, without throwing on "no". */
+  async isOwnedBy(
+    userId: Types.ObjectId | string,
+    addressId: Types.ObjectId | string,
+  ): Promise<boolean> {
+    if (!Types.ObjectId.isValid(addressId) || !Types.ObjectId.isValid(userId)) return false;
+    const count = await this.model
+      .countDocuments({ _id: new Types.ObjectId(addressId), userId: new Types.ObjectId(userId) })
+      .exec();
+    return count > 0;
+  }
+
+  /**
+   * Reads an address by id with **no ownership check**, for showing an already-
+   * shared one to a permitted viewer.
+   *
+   * Callers must have established that right themselves — on a wishlist that
+   * is [AccessPolicyService.canViewAddress]. Unchecked by necessity: the whole
+   * point is that the reader is *not* the owner, and the address attached to a
+   * wishlist is not always the list owner's either (a host sharing theirs onto
+   * a guest's list). Returns null rather than throwing so a deleted address
+   * just stops appearing.
+   */
+  async viewById(addressId: Types.ObjectId | string): Promise<AddressView | null> {
+    if (!Types.ObjectId.isValid(addressId)) return null;
+    const doc = await this.model.findById(addressId).lean().exec();
+    return doc ? AddressesService.toView(doc) : null;
   }
 
   private async clearDefault(userId: Types.ObjectId): Promise<void> {

@@ -490,4 +490,88 @@ describe('AccessPolicy matrix (e2e)', () => {
       expect(d.canView).toBe(false);
     });
   });
+
+  // ── Address visibility ────────────────────────────────────────────────────
+
+  /**
+   * Who may read the delivery address attached to a list.
+   *
+   * Its own rule rather than a column of the matrix above, because it is
+   * deliberately *not* any of those four answers: an attached address is a home
+   * address and a mobile number, so it follows "somebody the owner or the host
+   * actually admitted" instead of `canView` (which a stranger has on a public
+   * list) or `canGift` (which a share-link holder has).
+   */
+  describe('address visibility', () => {
+    it('is granted to the owner, a participant and an accepted event guest', async () => {
+      for (const visibility of Object.values(WishlistVisibility)) {
+        const wishlist = await buildWishlist(visibility);
+        for (const [who, userId] of [
+          ['owner', OWNER],
+          ['participant', PARTICIPANT],
+          ['event guest', EVENT_GUEST],
+        ] as const) {
+          const granted = await policy.canViewAddress(wishlist, { userId: userId.toString() });
+          expect({ visibility, who, granted }).toEqual({ visibility, who, granted: true });
+        }
+      }
+    });
+
+    it('is refused to a stranger even on a public list', async () => {
+      // The case that makes this rule exist: `canView` and `canGift` are both
+      // true here, and publishing an address to anyone who finds the list is
+      // not what attaching it to a list of people meant.
+      const wishlist = await buildWishlist(WishlistVisibility.PUBLIC);
+      const decision = await policy.resolve(wishlist, { userId: STRANGER.toString() });
+      expect({ view: decision.canView, gift: decision.canGift }).toEqual({
+        view: true,
+        gift: true,
+      });
+      expect(await policy.canViewAddress(wishlist, { userId: STRANGER.toString() })).toBe(false);
+    });
+
+    it('is refused to a share-link holder', async () => {
+      const wishlist = await buildWishlist(WishlistVisibility.INVITE_ONLY);
+      // Holding the link is not being chosen: a forwarded link must not carry
+      // somebody's address with it.
+      expect(
+        await policy.canViewAddress(wishlist, {
+          userId: STRANGER.toString(),
+          share: { slug: SLUG },
+        }),
+      ).toBe(false);
+    });
+
+    it('is refused to an anonymous caller', async () => {
+      const wishlist = await buildWishlist(WishlistVisibility.PUBLIC);
+      expect(await policy.canViewAddress(wishlist, {})).toBe(false);
+      expect(await policy.canViewAddress(wishlist, { share: { slug: SLUG } })).toBe(false);
+    });
+
+    it('is refused to a revoked participant', async () => {
+      const wishlist = await buildWishlist(WishlistVisibility.PRIVATE);
+      await participants.updateOne({ userId: PARTICIPANT }, { $set: { revokedAt: new Date() } });
+      // Revocation has to take effect on the next read, not eventually.
+      expect(await policy.canViewAddress(wishlist, { userId: PARTICIPANT.toString() })).toBe(false);
+    });
+
+    it('is refused to an event guest once the list leaves the event', async () => {
+      const wishlist = await buildWishlist(WishlistVisibility.EVENT_ONLY);
+      expect(await policy.canViewAddress(wishlist, { userId: EVENT_GUEST.toString() })).toBe(true);
+
+      // Taking the list off the event is how a host's guests lose it.
+      wishlist.eventId = null;
+      await wishlist.save();
+      expect(await policy.canViewAddress(wishlist, { userId: EVENT_GUEST.toString() })).toBe(false);
+    });
+
+    it('survives archiving for the owner only', async () => {
+      const wishlist = await buildWishlist(WishlistVisibility.PRIVATE);
+      wishlist.archivedAt = new Date();
+      await wishlist.save();
+
+      expect(await policy.canViewAddress(wishlist, { userId: OWNER.toString() })).toBe(true);
+      expect(await policy.canViewAddress(wishlist, { userId: PARTICIPANT.toString() })).toBe(false);
+    });
+  });
 });

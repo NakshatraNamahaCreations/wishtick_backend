@@ -143,6 +143,35 @@ export class AccessPolicyService {
     return DENY_ALL;
   }
 
+  /**
+   * Whether the caller may read the delivery address attached to this wishlist.
+   *
+   * Deliberately narrower than `canView`, and deliberately *not* `canGift`.
+   * Both of those are true for a signed-in stranger on a PUBLIC list and for
+   * anyone holding a share link, and an attached address is a home address and
+   * a mobile number — publishing it to whoever forwards the link is not what
+   * attaching it to a list of people meant.
+   *
+   * So: the owner, someone the owner admitted as a participant, or an accepted
+   * invitee of the event the list belongs to. Nobody else, at any visibility.
+   *
+   * The event check runs regardless of visibility, unlike `resolve`'s
+   * EVENT_ONLY-gated branch: an accepted guest of the event is somebody the
+   * host let in either way, and on a PUBLIC event list they would otherwise
+   * resolve as a mere stranger and lose the address they need to send a gift.
+   */
+  async canViewAddress(wishlist: WishlistDocument, ctx: AccessContext): Promise<boolean> {
+    if (!ctx.userId) return false;
+    if (wishlist.archivedAt && wishlist.ownerId.toString() !== ctx.userId) return false;
+
+    if (wishlist.ownerId.toString() === ctx.userId) return true;
+    if (await this.findActiveParticipant(wishlist._id, ctx.userId)) return true;
+
+    return Boolean(
+      wishlist.eventId && (await this.events.isAcceptedInvitee(wishlist.eventId, ctx.userId)),
+    );
+  }
+
   /** Rights of someone the owner (or an event) has actually admitted. */
   private grant(
     relationship: Relationship,

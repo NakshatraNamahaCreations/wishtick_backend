@@ -233,6 +233,51 @@ describe('Addresses (e2e)', () => {
       .expect(404);
   });
 
+  it('keeps a custom label verbatim', async () => {
+    const user = await newUser();
+    // The label used to be an enum of home/work/other, so a third address could
+    // only ever be "Other" however many there were. It is stored display-ready
+    // now, so no client needs its own wire-value → text map.
+    const saved = await addAddress(user, { label: "Mum's place" });
+    expect(saved.label).toBe("Mum's place");
+
+    const renamed = (
+      await request(app.getHttpServer())
+        .patch(`${V1}/me/addresses/${saved.id}`)
+        .set(auth(user.token))
+        .send({ label: 'Office' })
+        .expect(200)
+    ).body as Envelope<AddressView>;
+    expect(renamed.data.label).toBe('Office');
+
+    // Trimmed, so a stray space does not become part of the name.
+    const padded = await addAddress(user, { label: '  Studio  ' });
+    expect(padded.label).toBe('Studio');
+  });
+
+  it('defaults the label and rejects an unusable one', async () => {
+    const user = await newUser();
+    const { label, ...withoutLabel } = PAYLOAD;
+    expect(label).toBeTruthy();
+
+    const defaulted = (
+      await request(app.getHttpServer())
+        .post(`${V1}/me/addresses`)
+        .set(auth(user.token))
+        .send(withoutLabel)
+        .expect(201)
+    ).body as Envelope<AddressView>;
+    expect(defaulted.data.label).toBe('Home');
+
+    for (const bad of ['', ' ', 'x'.repeat(31)]) {
+      await request(app.getHttpServer())
+        .post(`${V1}/me/addresses`)
+        .set(auth(user.token))
+        .send({ ...PAYLOAD, label: bad })
+        .expect(400);
+    }
+  });
+
   it('requires a token', async () => {
     await request(app.getHttpServer()).get(`${V1}/me/addresses`).expect(401);
   });

@@ -19,6 +19,7 @@ import {
   UserProfile,
   type UserProfileDocument,
 } from 'src/modules/profile/schemas/user-profile.schema';
+import { AddressesService } from 'src/modules/profile/addresses.service';
 import { UsersService } from 'src/modules/users/users.service';
 import { EventsService } from './events.service';
 import {
@@ -72,6 +73,7 @@ export class EventWishlistsService {
     @Inject(EVENT_PARTICIPATION)
     private readonly participation: IEventParticipation,
     private readonly users: UsersService,
+    private readonly addresses: AddressesService,
     private readonly emitter: EventEmitter2,
   ) {}
 
@@ -209,6 +211,19 @@ export class EventWishlistsService {
     submissionId: string,
     userId: string,
     approve: boolean,
+    /**
+     * One of the *host's own* addresses, attached to the guest's list as the
+     * host approves it — the answer to "share your address on this wishlist?".
+     *
+     * The host's rather than the owner's because of what these lists are: a
+     * guest offering a list for the host's event is usually a list of gifts
+     * *for the host*, so the parcels ship to the host. Nobody can attach
+     * somebody else's address, which is why this is asked of the host at the
+     * moment they accept rather than of the guest when they offer.
+     *
+     * Undefined means "not asked / declined" and leaves the list untouched.
+     */
+    addressId?: string | null,
   ): Promise<EventWishlistSubmissionView> {
     const event = await this.events.findOwnedOrFail(eventId, userId);
     const submission = await this.loadOrFail(submissionId, event._id);
@@ -257,6 +272,14 @@ export class EventWishlistsService {
     }
 
     wishlist.eventId = event._id;
+
+    // Verified owned by the host, so approving cannot be a way to attach
+    // anyone else's address to a list. Only set on approval: a rejected list
+    // is not on the event and must carry nothing.
+    if (addressId) {
+      const address = await this.addresses.assertOwned(userId, addressId);
+      wishlist.addressId = address._id;
+    }
     await wishlist.save();
 
     submission.status = EventWishlistSubmissionStatus.APPROVED;
@@ -297,6 +320,19 @@ export class EventWishlistsService {
     const wishlist = await this.wishlists.findById(submission.wishlistId).exec();
     if (wishlist && submission.status === EventWishlistSubmissionStatus.APPROVED) {
       wishlist.eventId = null;
+
+      // An address attached by the *host* on approval goes when the link does.
+      // It was shared for this event, the host cannot reach a list they do not
+      // own to take it back, and the event's guests lose their access here
+      // anyway — leaving it would strand someone's home address on a stranger's
+      // list with nobody able to remove it. The owner's own address is left
+      // alone: that one was never about the event.
+      if (
+        wishlist.addressId &&
+        !(await this.addresses.isOwnedBy(wishlist.ownerId, wishlist.addressId))
+      ) {
+        wishlist.addressId = null;
+      }
       await wishlist.save();
     }
 

@@ -84,6 +84,26 @@ export class Wishlist {
   @Prop({ type: SchemaTypes.ObjectId, ref: 'User', default: null })
   forUserId!: Types.ObjectId | null;
 
+  /**
+   * The one delivery address gifters on this list may see, or null.
+   *
+   * This is the *only* way an address is ever shared: a WishMate cannot read
+   * another's address book, and nothing else exposes one. Attaching is an act
+   * of consent, so the endpoint that sets this requires the caller to own the
+   * address — see [WishlistsService.setAddress].
+   *
+   * **Not necessarily the list owner's.** When a host approves a guest's list
+   * onto their event they may attach *their own* address, because the gifts on
+   * a list made for them ship to them. So a reader must resolve this through
+   * the address collection and must never assume `ownerId` owns it.
+   *
+   * Who may actually read it is [AccessPolicyService.canViewAddress] — narrower
+   * than `canView`, so a PUBLIC list does not put a home address and a phone
+   * number in front of anyone holding the link.
+   */
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'Address', default: null })
+  addressId!: Types.ObjectId | null;
+
   @Prop({ type: Boolean, default: true })
   chatEnabled!: boolean;
 
