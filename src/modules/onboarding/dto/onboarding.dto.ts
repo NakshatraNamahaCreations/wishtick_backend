@@ -79,7 +79,12 @@ export class SaveOnboardingStepDto {
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
-  @ArrayMaxSize(30)
+  // Above the seeded total (74 granular interests across the 12 categories),
+  // because onboarding stopped capping how many somebody may pick. A ceiling
+  // below the number of things on offer would reject a user for answering the
+  // question fully; this one is a sanity bound on the payload, not a product
+  // rule. Raise it if the taxonomy grows past it.
+  @ArrayMaxSize(100)
   interests?: string[];
 
   @ApiPropertyOptional({ example: ['fashion', 'health_fitness'] })

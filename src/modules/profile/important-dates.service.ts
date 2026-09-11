@@ -13,9 +13,19 @@ export interface ImportantDateView {
   personName: string;
   relation: string;
   occasionKey: string;
+  /** What they called it, when [occasionKey] is `other`. Null otherwise. */
+  customOccasion: string | null;
   /** Date-only ISO (`1999-07-17`); the year may be meaningful (age) or not. */
   date: string;
 }
+
+/**
+ * The one occasion that carries a name of its own.
+ *
+ * A key rather than a flag on the taxonomy row, because nothing else about it
+ * is special: it is an ordinary term that happens to mean "none of these".
+ */
+export const OTHER_OCCASION_KEY = 'other';
 
 /**
  * A saved date resolved against today — what Home's "Upcoming Events" rail and
@@ -61,6 +71,15 @@ export class ImportantDatesService {
   async create(userId: string, dto: CreateImportantDateDto): Promise<ImportantDateView> {
     await this.taxonomy.assertValidOne(TaxonomyKind.OCCASION, dto.occasionKey, 'occasionKey');
 
+    // "Other" with nothing typed is just a row labelled Other, which tells the
+    // reader nothing a blank would not. Every other key names itself, so a
+    // custom name alongside one is dropped rather than kept and never shown.
+    const isOther = dto.occasionKey === OTHER_OCCASION_KEY;
+    const customOccasion = isOther ? (dto.customOccasion?.trim() ?? '') : '';
+    if (isOther && !customOccasion) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'Tell us what the occasion is', 400);
+    }
+
     const _userId = new Types.ObjectId(userId);
     const count = await this.model.countDocuments({ userId: _userId }).exec();
     if (count >= MAX_DATES_PER_USER) {
@@ -74,8 +93,9 @@ export class ImportantDatesService {
     const doc = await this.model.create({
       userId: _userId,
       personName: dto.personName,
-      relation: dto.relation,
+      relation: dto.relation ?? '',
       occasionKey: dto.occasionKey,
+      customOccasion: customOccasion || null,
       date: ImportantDatesService.parseDateOnly(dto.date),
     });
     return ImportantDatesService.toView(doc.toObject());
@@ -158,6 +178,9 @@ export class ImportantDatesService {
       personName: doc.personName,
       relation: doc.relation,
       occasionKey: doc.occasionKey,
+      // `?? null` rather than a bare read: rows saved before this field
+      // existed have no such key at all.
+      customOccasion: doc.customOccasion ?? null,
       date: doc.date.toISOString().slice(0, 10),
     };
   }

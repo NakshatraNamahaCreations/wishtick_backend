@@ -126,6 +126,14 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     lines: [`You can now share wishlists, events and gifts with each other.`],
     cta: { label: 'View their profile', url: s(p, 'url') },
   }),
+  [NotificationType.CHAT_MESSAGE]: (p) => ({
+    subject: `${who(p, 'senderName')} sent you a message`,
+    title: `${who(p, 'senderName')}${s(p, 'chatTitle') ? ` in ${s(p, 'chatTitle')}` : ''}`,
+    // The message itself, so it can be read without opening anything — the
+    // point of a chat notification. Trimmed by the emitter, not here.
+    lines: [s(p, 'preview', 'Sent you a message.')],
+    cta: { label: 'Open the chat', url: s(p, 'url') },
+  }),
   [NotificationType.EVENT_REMINDER]: (p) => ({
     subject: `Reminder: ${s(p, 'eventTitle', 'your event')} ${s(p, 'whenText', 'soon')}`,
     title: `${s(p, 'eventTitle', 'Your event')} is ${s(p, 'whenText', 'coming up')}`,

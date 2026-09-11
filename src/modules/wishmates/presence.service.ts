@@ -61,13 +61,17 @@ export class PresenceService {
    * Floors at zero and deletes: a missed connect (a restart mid-session) could
    * otherwise decrement into negatives, which would read as permanently
    * offline no matter how many sockets were actually open.
+   *
+   * Returns the number of connections still held, so the caller can tell the
+   * difference between closing one of two tabs and actually going away.
    */
-  async disconnected(userId: string): Promise<void> {
+  async disconnected(userId: string): Promise<number> {
     const key = this.onlineKey(userId);
     const count = await this.cache.client.decr(key);
     if (count <= 0) await this.cache.client.del(key);
     else await this.cache.client.expire(key, ONLINE_TTL_SECONDS);
     await this.touch(userId);
+    return Math.max(count, 0);
   }
 
   /** Records "seen just now", and keeps a live connection from expiring. */
@@ -105,6 +109,41 @@ export class PresenceService {
       online: Number(onlineRaw[i] ?? 0) > 0,
       lastSeenAt: seenRaw[i] ?? null,
     }));
+  }
+
+  private chatKey(chatId: string, userId: string): string {
+    return `presence:chat:${chatId}:${userId}`;
+  }
+
+  /**
+   * Somebody has a conversation open.
+   *
+   * Kept so a chat notification is not sent to the one person who is already
+   * reading the message — a lock screen buzzing about a line you just watched
+   * arrive is the fastest way to have notifications turned off altogether.
+   *
+   * Same TTL as presence and refreshed by the same sweep, so a phone that dies
+   * mid-conversation stops counting as reading it rather than suppressing that
+   * person's notifications forever.
+   */
+  async enteredChat(userId: string, chatId: string): Promise<void> {
+    await this.cache.client.set(this.chatKey(chatId, userId), '1', 'EX', ONLINE_TTL_SECONDS);
+  }
+
+  async leftChat(userId: string, chatId: string): Promise<void> {
+    await this.cache.client.del(this.chatKey(chatId, userId));
+  }
+
+  /** Only extends a key that exists — never resurrects an expired one. */
+  async touchChat(userId: string, chatId: string): Promise<void> {
+    await this.cache.client.expire(this.chatKey(chatId, userId), ONLINE_TTL_SECONDS);
+  }
+
+  /** Which of [userIds] currently has this chat open. */
+  async viewersOf(chatId: string, userIds: string[]): Promise<Set<string>> {
+    if (userIds.length === 0) return new Set();
+    const raw = await this.cache.client.mget(...userIds.map((id) => this.chatKey(chatId, id)));
+    return new Set(userIds.filter((_, i) => raw[i] != null));
   }
 
   /** Clears every connection for a user — used when their sessions are revoked. */

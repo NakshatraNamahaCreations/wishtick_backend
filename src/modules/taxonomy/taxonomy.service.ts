@@ -12,9 +12,15 @@ import { TaxonomyKind, type TaxonomyOption, type TaxonomyOptions } from './taxon
 // v3: Sprint 7 added `relation` for the event-creation picker (`2252:423`).
 // Same reason: without the bump, the picker would be empty on any instance
 // whose cache was warm at deploy.
+// v4: migrations 026, 027 and 029 change rows rather than add a kind — the
+// "Other" occasion, the in-laws replacing the step-parents, and the retired
+// step-siblings. A migration runs from the CLI, outside the app, so it cannot
+// call bustCache(); without this bump every instance with a warm cache would
+// go on serving the old lists for up to an hour after the deploy, and the
+// relation picker would still be offering step-parents nobody can see why.
 // Exported so a test asserting the cache was written cannot go stale silently
 // the next time this is bumped.
-export const TAXONOMY_CACHE_KEY = 'taxonomy:options:v3';
+export const TAXONOMY_CACHE_KEY = 'taxonomy:options:v4';
 const CACHE_KEY = TAXONOMY_CACHE_KEY;
 const CACHE_TTL_SECONDS = 3_600;
 

@@ -240,6 +240,33 @@ describe('Onboarding v2: taxonomy, preferences, important dates (e2e)', () => {
         .get(`${V1}/me/important-dates`)
         .set('Authorization', `Bearer ${token}`);
 
+    it('keeps a date with no relationship given', async () => {
+      // The form stopped asking: a birthday is worth keeping whether or not
+      // you can name what the person is to you, and the field is only ever
+      // displayed beside the name.
+      const token = await newPhoneUser();
+
+      const created = await request(app.getHttpServer())
+        .post(`${V1}/me/important-dates`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ personName: 'Rahul', occasionKey: 'birthday', date: '2001-08-18' })
+        .expect(201);
+      expect((created.body as Envelope<DateView>).data.relation).toBe('');
+
+      // An explicit empty string is the same answer as omitting it, which is
+      // what the client sends when the box was left alone.
+      await request(app.getHttpServer())
+        .post(`${V1}/me/important-dates`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ personName: 'Siya', relation: '', occasionKey: 'birthday', date: '2002-01-09' })
+        .expect(201);
+
+      expect((await dates(token).expect(200)).body as Envelope<DateView[]>).toHaveProperty(
+        'data.length',
+        2,
+      );
+    });
+
     it('saves and lists dates, soonest first', async () => {
       const token = await newPhoneUser();
 

@@ -166,13 +166,11 @@ export class GiftListService {
 
   /** First names only — a list row says "For Rohan", never a full identity. */
   private async resolveNames(userIds: string[]): Promise<Map<string, string>> {
-    const entries = await Promise.all(
-      userIds.map(async (id) => {
-        const user = await this.users.findById(id);
-        const first = user?.name?.trim().split(/\s+/)[0];
-        return [id, first || 'Someone'] as const;
-      }),
-    );
-    return new Map(entries);
+    // Full names first, then take the first word. Resolving them here rather
+    // than off `user.name` is what makes these rows say anything at all: the
+    // account name is empty for a phone sign-up, so the whole list read
+    // "For Someone" before Sep 2026.
+    const full = await this.users.displayNamesFor(userIds);
+    return new Map(userIds.map((id) => [id, full.get(id)?.split(/\s+/)[0] || 'Someone'] as const));
   }
 }

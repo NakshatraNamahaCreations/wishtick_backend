@@ -130,8 +130,9 @@ export class ReelService {
       );
     }
 
-    const author = await this.users.findById(userId);
-    const authorName = dto.authorName ?? author?.name ?? 'A friend';
+    // As above: the typed name wins, else the profile's, and only then the
+    // account's — which a phone sign-up never fills in.
+    const authorName = dto.authorName ?? (await this.users.displayNameFor(userId, 'A friend'));
     const moderationEnabled = this.config.get('reels.moderationEnabled', { infer: true });
     const moderationStatus = moderationEnabled
       ? ModerationStatus.PENDING

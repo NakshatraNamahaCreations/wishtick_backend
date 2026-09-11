@@ -26,12 +26,16 @@ interface AddressView {
   formatted: string;
 }
 
-interface UpcomingOccasionView {
+interface ImportantDateView {
   id: string;
   personName: string;
   relation: string;
   occasionKey: string;
+  customOccasion: string | null;
   date: string;
+}
+
+interface UpcomingOccasionView extends ImportantDateView {
   nextOccurrence: string;
   daysAway: number;
   turningAge: number | null;
@@ -218,6 +222,79 @@ describe('Sprint 4: Home & Discover (e2e)', () => {
         .set(auth(mine))
         .send({ city: 'Delhi' })
         .expect(404);
+    });
+  });
+
+  /**
+   * An occasion the fixed list has no name for.
+   *
+   * The list is shared by everybody, so a naming ceremony or a first day at
+   * school used to be filed under whichever term was least wrong. "Other"
+   * carries the name they type, on their own date only.
+   */
+  describe('an occasion of their own', () => {
+    it('saves the name they typed alongside the key', async () => {
+      const token = await newUser();
+
+      const res = await addDate(token, 5, {
+        occasionKey: 'other',
+        customOccasion: 'Naming ceremony',
+      }).expect(201);
+
+      const saved = (res.body as Envelope<ImportantDateView>).data;
+      expect(saved.occasionKey).toBe('other');
+      expect(saved.customOccasion).toBe('Naming ceremony');
+    });
+
+    // A row labelled "Other" tells the reader nothing a blank would not.
+    it('refuses "Other" with no name', async () => {
+      const token = await newUser();
+
+      await addDate(token, 5, { occasionKey: 'other' }).expect(400);
+      await addDate(token, 5, { occasionKey: 'other', customOccasion: '   ' }).expect(400);
+    });
+
+    // Every other key names itself; a second name would only ever disagree
+    // with the first.
+    it('drops a name sent alongside an occasion that has one', async () => {
+      const token = await newUser();
+
+      const res = await addDate(token, 5, {
+        occasionKey: 'birthday',
+        customOccasion: 'ignore me',
+      }).expect(201);
+
+      expect((res.body as Envelope<ImportantDateView>).data.customOccasion).toBeNull();
+    });
+
+    it('carries the name through to the upcoming rail', async () => {
+      const token = await newUser();
+      await addDate(token, 4, {
+        occasionKey: 'other',
+        customOccasion: 'First day at school',
+      }).expect(201);
+
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/me/important-dates/upcoming`)
+        .set(auth(token))
+        .expect(200);
+
+      const rows = (res.body as Envelope<UpcomingOccasionView[]>).data;
+      expect(rows[0].customOccasion).toBe('First day at school');
+    });
+
+    // The option has to exist in the shared list, or the dropdown cannot
+    // offer it and the server would reject the key anyway.
+    it('offers Other last in the occasion list the client renders', async () => {
+      const res = await request(app.getHttpServer()).get(`${V1}/onboarding/options`).expect(200);
+
+      // Keyed by TaxonomyKind, which spells this one `occasion`.
+      const occasions = (
+        res.body as Envelope<{ options: { occasion: { key: string; label: string }[] } }>
+      ).data.options.occasion;
+      // Last, not merely present: it is the escape hatch, and reading it among
+      // the real occasions makes the list look like it has one more of them.
+      expect(occasions.at(-1)).toMatchObject({ key: 'other', label: 'Other' });
     });
   });
 

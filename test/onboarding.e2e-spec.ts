@@ -124,6 +124,32 @@ describe('Onboarding, profile & media (e2e)', () => {
       }
     });
 
+    /**
+     * The relations the three pickers offer — onboarding's important dates,
+     * event creation and memory creation all render this one list.
+     *
+     * Asserted through the endpoint rather than against TAXONOMY_SEED, which
+     * the seed spec already covers: what a picker shows is what survives
+     * seeding, the `active: true` filter and the hour-long cache, and only
+     * this path exercises all three.
+     */
+    it('offers in-laws and no step-relations', async () => {
+      const res = await request(app.getHttpServer()).get(`${V1}/onboarding/options`).expect(200);
+      const relations = (
+        res.body as Envelope<{
+          options: { relation: { key: string; label: string }[] };
+        }>
+      ).data.options.relation;
+
+      const labels = relations.map((r) => r.label);
+      expect(labels).toContain('Mother-in-law');
+      expect(labels).toContain('Father-in-law');
+      // Retired, not deleted — so the test is that they are not *offered*.
+      for (const gone of ['Step-mother', 'Step-father', 'Step-sister', 'Step-brother']) {
+        expect(labels).not.toContain(gone);
+      }
+    });
+
     it('serves the second request from cache', async () => {
       await request(app.getHttpServer()).get(`${V1}/onboarding/options`).expect(200);
       // The real key, not a copy of it: the key is bumped whenever a new kind
@@ -377,6 +403,63 @@ describe('Onboarding, profile & media (e2e)', () => {
         expect(me.data.profile.timezone).toBe(timezone);
       },
     );
+  });
+
+  describe('how many interests may be chosen', () => {
+    /** Every granular interest the taxonomy seeds — the most anybody can pick. */
+    const everyInterest = async (token: string): Promise<string[]> => {
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/onboarding/options`)
+        .set(auth(token))
+        .expect(200);
+      const options = (res.body as Envelope<{ options: Record<string, { key: string }[]> }>).data
+        .options;
+      return options.interest.map((term) => term.key);
+    };
+
+    it('accepts all of them at once', async () => {
+      // Onboarding stopped capping how many somebody may pick, so the payload
+      // ceiling has to sit above what the taxonomy offers. It was 30 against a
+      // catalogue of 74: answering the question fully would have been a 400.
+      const { token } = await newUser();
+      const interests = await everyInterest(token);
+      expect(interests.length).toBeGreaterThan(30);
+
+      await request(app.getHttpServer())
+        .post(`${V1}/onboarding/steps/interests`)
+        .set(auth(token))
+        .send({ interests })
+        .expect(200);
+    });
+
+    it('accepts every category at once too', async () => {
+      const { token } = await newUser();
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/onboarding/options`)
+        .set(auth(token))
+        .expect(200);
+      const categories = (
+        res.body as Envelope<{ options: Record<string, { key: string }[]> }>
+      ).data.options.interest_category.map((term) => term.key);
+
+      await request(app.getHttpServer())
+        .post(`${V1}/onboarding/steps/interests`)
+        .set(auth(token))
+        .send({ interestCategories: categories })
+        .expect(200);
+    });
+
+    it('still refuses an absurd payload', async () => {
+      // The ceiling is a sanity bound on the request, not a product rule —
+      // but it is still a bound.
+      const { token } = await newUser();
+      const res = await request(app.getHttpServer())
+        .post(`${V1}/onboarding/steps/interests`)
+        .set(auth(token))
+        .send({ interests: Array.from({ length: 101 }, (_, i) => `made_up_${i}`) })
+        .expect(400);
+      expect((res.body as Envelope<unknown>).success).toBe(false);
+    });
   });
 
   describe('POST /onboarding/complete', () => {

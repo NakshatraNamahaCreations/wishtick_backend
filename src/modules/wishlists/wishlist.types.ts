@@ -1,6 +1,13 @@
 export enum WishlistVisibility {
   /** Anyone, link or not. Gifting open to any signed-in user. */
   PUBLIC = 'public',
+  /**
+   * Everyone the owner is connected with, and nobody else. A share link grants
+   * nothing — that is the whole difference from PUBLIC, which this replaced on
+   * the create form: "All WishMates" has to mean the people you chose to
+   * connect with, not anyone who was forwarded a URL.
+   */
+  WISHMATES = 'wishmates',
   /** Explicitly invited people only. A share link grants nothing. */
   PRIVATE = 'private',
   /** Accepted invitees of the linked event. Sprint 5 supplies the event side. */

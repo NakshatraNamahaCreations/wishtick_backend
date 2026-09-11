@@ -7,6 +7,7 @@ import { Gift, GiftSchema } from 'src/modules/gifting/schemas/gift.schema';
 import { GroupGift, GroupGiftSchema } from 'src/modules/group-gifts/schemas/group-gift.schema';
 import { MediaModule } from 'src/modules/media/media.module';
 import { UsersModule } from 'src/modules/users/users.module';
+import { WishmatesModule } from 'src/modules/wishmates/wishmates.module';
 import {
   WishlistItem,
   WishlistItemSchema,
@@ -48,6 +49,11 @@ import { ThankYouService } from './thank-you.service';
     ]),
     BullModule.registerQueue({ name: QUEUE.NOTIFICATIONS }),
     UsersModule,
+    // For PresenceService alone — whether somebody already has a conversation
+    // open, which decides whether a chat message is worth telling them about.
+    // A module rather than a schema because presence lives in Redis, not
+    // Mongo, and WishmatesModule is where that service is provided.
+    WishmatesModule,
     // A module, not a schema: attaching a recording to a thank-you must go
     // through MediaService's ownership and readiness checks.
     MediaModule,

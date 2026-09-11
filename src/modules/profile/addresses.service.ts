@@ -11,8 +11,6 @@ export interface AddressView {
   label: string;
   fullName: string;
   mobile: string;
-  altMobile: string | null;
-  email: string | null;
   line1: string;
   locality: string;
   landmark: string | null;
@@ -64,8 +62,6 @@ export class AddressesService {
       label: dto.label ?? DEFAULT_ADDRESS_LABEL,
       fullName: dto.fullName,
       mobile: dto.mobile,
-      altMobile: dto.altMobile ?? null,
-      email: dto.email ?? null,
       line1: dto.line1,
       locality: dto.locality,
       landmark: dto.landmark ?? null,
@@ -85,8 +81,6 @@ export class AddressesService {
     if (dto.label !== undefined) doc.label = dto.label;
     if (dto.fullName !== undefined) doc.fullName = dto.fullName;
     if (dto.mobile !== undefined) doc.mobile = dto.mobile;
-    if (dto.altMobile !== undefined) doc.altMobile = dto.altMobile ?? null;
-    if (dto.email !== undefined) doc.email = dto.email ?? null;
     if (dto.line1 !== undefined) doc.line1 = dto.line1;
     if (dto.locality !== undefined) doc.locality = dto.locality;
     if (dto.landmark !== undefined) doc.landmark = dto.landmark ?? null;
@@ -215,8 +209,6 @@ export class AddressesService {
       label: doc.label,
       fullName: doc.fullName,
       mobile: doc.mobile,
-      altMobile: doc.altMobile,
-      email: doc.email,
       line1: doc.line1,
       locality: doc.locality,
       landmark: doc.landmark,

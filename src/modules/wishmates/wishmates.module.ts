@@ -6,6 +6,8 @@ import { User, UserSchema } from 'src/modules/users/schemas/user.schema';
 import { WishLink, WishLinkSchema } from './schemas/wish-link.schema';
 import { PresenceService } from './presence.service';
 import { WishmatesController } from './wishmates.controller';
+import { WISHMATE_LINK } from 'src/modules/wishlists/access/wishmate-link.port';
+import { MongoWishmateLink } from './wishmate-link.service';
 import { WishmatesService } from './wishmates.service';
 
 /**
@@ -30,7 +32,15 @@ import { WishmatesService } from './wishmates.service';
     EventParticipationModule,
   ],
   controllers: [WishmatesController],
-  providers: [WishmatesService, PresenceService],
-  exports: [WishmatesService, PresenceService],
+  providers: [
+    WishmatesService,
+    PresenceService,
+    // The one boolean the wishlist access policy wants out of this module:
+    // are these two connected? Supplied as a port so `wishlists/access` keeps
+    // depending on an interface rather than on this module's service — the
+    // same shape EVENT_PARTICIPATION uses.
+    { provide: WISHMATE_LINK, useClass: MongoWishmateLink },
+  ],
+  exports: [WishmatesService, PresenceService, WISHMATE_LINK],
 })
 export class WishmatesModule {}

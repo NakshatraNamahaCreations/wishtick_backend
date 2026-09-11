@@ -3,6 +3,11 @@ import { getModelToken } from '@nestjs/mongoose';
 import { Types, type Model } from 'mongoose';
 import request from 'supertest';
 import { Event, type EventDocument } from 'src/modules/events/schemas/event.schema';
+import {
+  UserProfile,
+  type UserProfileDocument,
+} from 'src/modules/profile/schemas/user-profile.schema';
+import { User, type UserDocument } from 'src/modules/users/schemas/user.schema';
 import { PresenceService } from 'src/modules/wishmates/presence.service';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
@@ -282,6 +287,60 @@ describe('WishMates (e2e)', () => {
       await post(a, `/people/${b.userId}/request`).expect(201);
 
       expect((await inbox(b)).filter((n) => n.type === 'wishmate_request')).toHaveLength(1);
+    });
+
+    /**
+     * Rewrites an account into the shape a phone sign-up actually leaves:
+     * no name on the account, the name they chose on their profile.
+     *
+     * Every other test here signs up with an email *and* a name, which is why
+     * they all passed while the app itself said "Someone" to everybody.
+     */
+    const asPhoneSignup = async (userId: string, displayName: string): Promise<void> => {
+      await ctx.app
+        .get<Model<UserDocument>>(getModelToken(User.name))
+        .updateOne({ _id: new Types.ObjectId(userId) }, { $unset: { name: '' } })
+        .exec();
+      await ctx.app
+        .get<Model<UserProfileDocument>>(getModelToken(UserProfile.name))
+        .updateOne(
+          { userId: new Types.ObjectId(userId) },
+          { $set: { displayName } },
+          { upsert: true },
+        )
+        .exec();
+    };
+
+    it('calls the requester by the name on their profile', async () => {
+      const a = await someone('alice_n5');
+      const b = await someone('bob_n5');
+      await asPhoneSignup(a.userId, 'Ananya Rao');
+
+      await post(a, `/people/${b.userId}/request`).expect(201);
+
+      const asked = (await inbox(b)).filter((n) => n.type === 'wishmate_request');
+      expect(asked).toHaveLength(1);
+      expect(asked[0].title).toContain('Ananya Rao');
+      expect(asked[0].title).not.toContain('Someone');
+    });
+
+    // The other direction, because the two names are resolved at two separate
+    // call sites and only one of them was covered above.
+    it('calls the accepter by the name on their profile', async () => {
+      const a = await someone('alice_n6');
+      const b = await someone('bob_n6');
+      await asPhoneSignup(b.userId, 'Meera Iyer');
+      await post(a, `/people/${b.userId}/request`).expect(201);
+      const linkId = (
+        (await get(b, '/wishlinks/received').expect(200)).body as Envelope<{ linkId: string }[]>
+      ).data[0].linkId;
+
+      await post(b, `/wishlinks/${linkId}/accept`).expect(201);
+
+      const accepted = (await inbox(a)).filter((n) => n.type === 'wishmate_accepted');
+      expect(accepted).toHaveLength(1);
+      expect(accepted[0].title).toContain('Meera Iyer');
+      expect(accepted[0].title).not.toContain('Someone');
     });
 
     // A declined link is re-opened in place rather than replaced, so keying

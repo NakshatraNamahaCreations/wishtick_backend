@@ -4,6 +4,10 @@ import { Model, Types } from 'mongoose';
 import { UserStatus } from 'src/common/enums/user-role.enum';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
+import {
+  UserProfile,
+  type UserProfileDocument,
+} from 'src/modules/profile/schemas/user-profile.schema';
 import { User, type UserDocument } from './schemas/user.schema';
 
 export interface CreateUserInput {
@@ -22,7 +26,62 @@ export interface CreateUserInput {
 
 @Injectable()
 export class UsersService {
-  constructor(@InjectModel(User.name) private readonly userModel: Model<UserDocument>) {}
+  constructor(
+    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
+    // Read-only, and only for [displayNamesFor]: what to call somebody lives
+    // on their profile, not on their account.
+    @InjectModel(UserProfile.name)
+    private readonly profileModel: Model<UserProfileDocument>,
+  ) {}
+
+  /**
+   * What to call these people, in front of other people.
+   *
+   * Profile display name first, the account's `name` only as a fallback. The
+   * phone sign-up the app uses never sets the account name — onboarding writes
+   * the name somebody chooses to their *profile* and never back — so reading
+   * the account alone named every real user "Someone", on push notifications
+   * and gift lists alike.
+   *
+   * One resolver rather than one per module: this lookup had been written out
+   * by hand in nine places, and the three that got it right were no help to
+   * the six that did not. Ids with no name anywhere are simply absent from the
+   * map; the caller supplies the wording for that.
+   */
+  async displayNamesFor(ids: Array<string | Types.ObjectId>): Promise<Map<string, string>> {
+    // Malformed ids are dropped rather than thrown on, matching [findById]
+    // and [findManyByIds] — a bad id in a list of twenty should cost that one
+    // name, not the whole screen.
+    const unique = [...new Set(ids.map((id) => id.toString()))].filter((id) =>
+      Types.ObjectId.isValid(id),
+    );
+    if (unique.length === 0) return new Map();
+
+    const [users, profiles] = await Promise.all([
+      this.findManyByIds(unique),
+      this.profileModel
+        .find({ userId: { $in: unique.map((id) => new Types.ObjectId(id)) } })
+        .exec(),
+    ]);
+
+    const names = new Map<string, string>();
+    // Accounts first so profiles overwrite them, which is the precedence.
+    for (const user of users) {
+      const name = user.name?.trim();
+      if (name) names.set(user._id.toString(), name);
+    }
+    for (const profile of profiles) {
+      const name = profile.displayName?.trim();
+      if (name) names.set(profile.userId.toString(), name);
+    }
+    return names;
+  }
+
+  /** [displayNamesFor] for one person, with the caller's wording for nobody. */
+  async displayNameFor(id: string | Types.ObjectId, fallback: string): Promise<string> {
+    const names = await this.displayNamesFor([id]);
+    return names.get(id.toString()) ?? fallback;
+  }
 
   /** Lowercases email and strips formatting from phone so lookups are stable. */
   static normalizeEmail(email: string): string {

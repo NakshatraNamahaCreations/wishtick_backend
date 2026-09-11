@@ -11,6 +11,8 @@ import { AuthService } from 'src/modules/auth/auth.service';
 import { GROUP_GIFT_FUNDED, type GroupGiftFundedEvent } from 'src/common/events/domain-events';
 import { Message, type MessageDocument } from 'src/modules/chat/schemas/message.schema';
 import { WishlistVisibility } from 'src/modules/wishlists/wishlist.types';
+import { ChatGateway } from 'src/modules/chat/chat.gateway';
+import { PresenceService } from 'src/modules/wishmates/presence.service';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
 const PASSWORD = 'correct-horse-battery-staple';
@@ -293,6 +295,174 @@ describe('Chat (e2e)', () => {
   });
 
   // ── Exit criterion: revoked user force-disconnected, cannot read history ────
+
+  // ── Presence, and telling people who are not looking ────────────────────────
+
+  /**
+   * Two accounts that have accepted each other, and their thread.
+   *
+   * A copy of the chat list's helper rather than a shared one: these tests
+   * need the pair *and* their ids, and hoisting it would reach across two
+   * unrelated describes.
+   */
+  const pair = async (): Promise<{ a: Actor; b: Actor; chatId: string }> => {
+    const a = await newUser();
+    const b = await newUser();
+    for (const [x, y] of [
+      [a, b],
+      [b, a],
+    ]) {
+      await request(app.getHttpServer())
+        .post(`${V1}/people/${y.userId}/request`)
+        .set(auth(x.token))
+        .expect(201);
+    }
+    const opened = (
+      await request(app.getHttpServer())
+        .post(`${V1}/chats/direct/${b.userId}`)
+        .set(auth(a.token))
+        .expect(201)
+    ).body as Envelope<{ chatId: string }>;
+    return { a, b, chatId: opened.data.chatId };
+  };
+
+  /** Whether the server thinks this person is online, read the way the app does. */
+  const onlineness = async (viewer: Actor, targetId: string): Promise<boolean> => {
+    const res = await request(app.getHttpServer())
+      .get(`${V1}/people/${targetId}`)
+      .set(auth(viewer.token))
+      .expect(200);
+    return (res.body as Envelope<{ person: { online: boolean } }>).data.person.online;
+  };
+
+  describe('presence', () => {
+    // The bug this pins: presence was only ever written by the socket, and the
+    // app only opened one from inside a conversation — so "Online" meant "has
+    // a chat thread open" and everybody else read as away.
+    it('counts somebody as online for holding a connection, with no chat open', async () => {
+      const { a, b } = await pair();
+
+      expect(await onlineness(a, b.userId)).toBe(false);
+      await connect(b.token);
+
+      expect(await onlineness(a, b.userId)).toBe(true);
+    });
+
+    // Presence expires so a phone that dies stops reading as online. Nothing
+    // renewed it, so a connection that simply sat there — a chat screen with
+    // nobody typing — went offline while the person was still looking at it.
+    it('renews a connection that is still open, rather than letting it lapse', async () => {
+      const { a, b } = await pair();
+      const socket = await connect(b.token);
+      const presence = app.get(PresenceService);
+
+      // Stand in for the ninety seconds, which no test should sit through.
+      await ctx.redis.expire(`presence:online:${b.userId}`, 1);
+      await presence.touch(b.userId);
+      await ctx.redis.expire(`presence:online:${b.userId}`, 1);
+
+      await app.get(ChatGateway).touchConnected();
+      await delay(1_200);
+
+      expect(await onlineness(a, b.userId)).toBe(true);
+      socket.disconnect();
+    });
+
+    it('tells their WishMates when they arrive', async () => {
+      const { a, b } = await pair();
+      const watcher = await connect(a.token);
+      // Raced against a deadline rather than simply awaited: an announcement
+      // that never comes should fail as "nothing arrived", not as the whole
+      // suite timing out thirty seconds later with no idea why.
+      const heard = Promise.race([
+        new Promise<unknown>((resolve) => watcher.on('presence', resolve)),
+        delay(3_000).then(() => null),
+      ]);
+
+      await connect(b.token);
+
+      await expect(heard).resolves.toMatchObject({ userId: b.userId, online: true });
+    });
+  });
+
+  describe('telling people who are not looking', () => {
+    const inbox = async (
+      actor: Actor,
+    ): Promise<{ type: string; title: string; body: string }[]> => {
+      // Dispatch runs off the queue, which the fake only advances on demand.
+      await ctx.drainNotifications();
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/notifications`)
+        .set(auth(actor.token))
+        .expect(200);
+      return (res.body as Envelope<{ type: string; title: string; body: string }[]>).data;
+    };
+
+    const chatNotes = async (actor: Actor): Promise<{ title: string; body: string }[]> =>
+      (await inbox(actor)).filter((n) => n.type === 'chat_message');
+
+    // Delivery was websocket-only, so a message reached exactly the people who
+    // already had it open — and nobody with the app closed heard anything.
+    it('notifies the other side of a message, with the message in it', async () => {
+      const { a, b, chatId } = await pair();
+
+      await post(a, chatId, { body: 'Are we still on for Saturday?' }).expect(201);
+
+      const notes = await chatNotes(b);
+      expect(notes).toHaveLength(1);
+      expect(notes[0].body).toContain('Are we still on for Saturday?');
+      // And the sender is not told about their own message.
+      expect(await chatNotes(a)).toHaveLength(0);
+    });
+
+    it('says nothing to somebody who has the conversation open', async () => {
+      const { a, b, chatId } = await pair();
+      const theirs = await connect(b.token);
+      await emitAck(theirs, 'join_chat', { chatId });
+
+      await post(a, chatId, { body: 'watching this arrive' }).expect(201);
+
+      expect(await chatNotes(b)).toHaveLength(0);
+    });
+
+    // Leaving has to be believed, or closing a chat would silence it for good.
+    it('starts telling them again once they close it', async () => {
+      const { a, b, chatId } = await pair();
+      const theirs = await connect(b.token);
+      await emitAck(theirs, 'join_chat', { chatId });
+      await emitAck(theirs, 'leave_chat', { chatId });
+
+      await post(a, chatId, { body: 'and now they should hear about it' }).expect(201);
+
+      expect(await chatNotes(b)).toHaveLength(1);
+    });
+
+    // Every message is its own notification. Keyed on the chat, dedupe is
+    // permanent per user — the second message anybody ever sent would vanish.
+    it('notifies for each message, not once per conversation', async () => {
+      const { a, b, chatId } = await pair();
+
+      await post(a, chatId, { body: 'first' }).expect(201);
+      await post(a, chatId, { body: 'second' }).expect(201);
+
+      expect(await chatNotes(b)).toHaveLength(2);
+    });
+
+    // The anti-spoiler holds on the lock screen too, or the surprise is given
+    // away by the notification instead of the conversation.
+    it('never notifies the owner about a message hidden from them', async () => {
+      const owner = await newUser();
+      const friend = await newUser();
+      const wishlistId = await makeWishlist(owner);
+      const chatId = await wishlistChatId(owner, wishlistId);
+      // Both have to have engaged for either to be in the fan-out set.
+      await post(owner, chatId, { body: 'hello' }).expect(201);
+
+      await post(friend, chatId, { body: 'got them the blue one', surprise: true }).expect(201);
+
+      expect(await chatNotes(owner)).toHaveLength(0);
+    });
+  });
 
   describe('force-disconnect on revocation', () => {
     it('evicts a revoked participant from the chat and blocks history', async () => {

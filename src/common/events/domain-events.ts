@@ -139,6 +139,31 @@ export interface WishmateAcceptedEvent {
   requesterId: string;
 }
 
+/**
+ * Somebody wrote in a conversation.
+ *
+ * Chat delivery was websocket-only, which means it reached exactly the people
+ * who already had the conversation open — everybody else learned nothing, and
+ * a message sent to somebody with the app closed was never announced at all.
+ *
+ * Carries the audience rather than the chat, because who should be told is a
+ * chat concern (participants, minus the sender, minus anyone the message is
+ * hidden from) and working it out twice would let the two answers drift.
+ */
+export const CHAT_MESSAGE_POSTED = 'chat.message_posted';
+
+export interface ChatMessagePostedEvent {
+  chatId: string;
+  messageId: string;
+  senderId: string;
+  /** Who to tell. Already excludes the sender and any hidden-from viewer. */
+  recipientIds: string[];
+  /** The text, for the preview. Empty for an attachment-only message. */
+  body: string;
+  /** True for a direct message, which reads differently from a group. */
+  direct: boolean;
+}
+
 export const WISHLIST_PARTICIPANT_REVOKED = 'wishlist.participant_revoked';
 
 export interface WishlistParticipantRevokedEvent {

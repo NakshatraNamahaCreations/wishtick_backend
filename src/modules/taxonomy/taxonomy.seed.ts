@@ -339,6 +339,12 @@ export const TAXONOMY_SEED: SeedTerm[] = [
     // `festival` so no existing row's sortOrder shifts.
     ['rakhi', 'Rakhi'],
     ['best_wishes', 'Best Wishes'],
+    // Last on purpose — sortOrder is the position in this list, and "Other"
+    // belongs at the bottom of the dropdown rather than among the real
+    // occasions. What the person then types is kept on their own date as
+    // `customOccasion`; it never becomes a term here, or one user's "Naming
+    // ceremony" would be offered to everybody.
+    ['other', 'Other'],
   ]),
 
   // Mirrors Event.type in Sprint 5. Kept in the taxonomy so the event-creation
@@ -363,8 +369,14 @@ export const TAXONOMY_SEED: SeedTerm[] = [
   ...relations([
     ['partner', 'Partner', ['Boyfriend', 'Girlfriend', 'Husband', 'Wife', 'Fiancé']],
     ['friends', 'Friends', ['Best friend', 'Close friend', 'Friend', 'Flatmate', 'Neighbour']],
-    ['parents', 'Parents', ['Mother', 'Father', 'Step-mother', 'Step-father', 'Guardian']],
-    ['siblings', 'Siblings', ['Sister', 'Brother', 'Step-sister', 'Step-brother', 'Cousin']],
+    // Step-mother/Step-father were placeholders from the undesigned fill-in
+    // below; in-laws are the relations people actually buy gifts for, and a
+    // step-parent is more often recorded as simply Mother or Father.
+    ['parents', 'Parents', ['Mother', 'Father', 'Mother-in-law', 'Father-in-law', 'Guardian']],
+    // Step-sister/Step-brother go for the reason the step-parents did: they
+    // were part of the same undesigned fill-in, and a step-sibling is more
+    // often recorded as simply Sister or Brother.
+    ['siblings', 'Siblings', ['Sister', 'Brother', 'Cousin']],
     ['colleagues', 'Colleagues', ['Colleague', 'Manager', 'Team-mate', 'Client', 'Mentor']],
     ['kids', 'Kids', ['Daughter', 'Son', 'Niece', 'Nephew', 'Grandchild']],
   ]),

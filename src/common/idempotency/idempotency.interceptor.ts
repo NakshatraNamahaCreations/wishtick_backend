@@ -108,13 +108,24 @@ export class IdempotencyInterceptor implements NestInterceptor {
         // We hold the claim. Run the handler, then store its result.
         return next.handle().pipe(
           tap({
+            // `store` swallows its own failures; this one did not.
             next: (body) => {
               void this.store(cacheKey, { status: 'done', fingerprint, body });
             },
             error: () => {
               // Release the claim on failure so the client can genuinely retry.
               // Caching an error would make a transient failure permanent.
-              void this.cache.del(cacheKey);
+              //
+              // Caught rather than `void`ed: `void` discards the promise
+              // without handling a rejection, and Node exits the process on an
+              // unhandled one. Redis refusing writes — a snapshot it could not
+              // fork — would otherwise turn a degraded cache into a dead
+              // backend, from the error path of an ordinary request.
+              this.cache
+                .del(cacheKey)
+                .catch((err: Error) =>
+                  this.logger.warn(`Could not release idempotency claim: ${err.message}`),
+                );
             },
           }),
         );

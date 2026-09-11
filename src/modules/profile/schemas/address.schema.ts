@@ -32,6 +32,11 @@ export const ADDRESS_LABEL_MAX_LENGTH = 30;
  * Sprint 9 renamed `recipientName`/`phone`/`line2`/`country` and added
  * `altMobile`, `email` and `landmark` because the design asks for each as its
  * own line — migration `022-addresses` moves existing rows across.
+ *
+ * `altMobile` and `email` are gone again: one number is enough to reach
+ * somebody about a delivery, and nothing ever read either of them — they were
+ * collected, stored, and echoed back. Migration `031-address-contact-trim`
+ * unsets what was already written.
  */
 @Schema({ collection: 'addresses', timestamps: true })
 export class Address {
@@ -66,12 +71,6 @@ export class Address {
 
   @Prop({ type: String, required: true, trim: true, maxlength: 20 })
   mobile!: string;
-
-  @Prop({ type: String, default: null, trim: true, maxlength: 20 })
-  altMobile!: string | null;
-
-  @Prop({ type: String, default: null, trim: true, lowercase: true, maxlength: 254 })
-  email!: string | null;
 
   // ── Address information ──────────────────────────────────────────────────
 

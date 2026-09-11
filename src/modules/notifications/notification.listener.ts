@@ -4,6 +4,7 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import {
+  CHAT_MESSAGE_POSTED,
   EVENT_WISHLIST_ANSWERED,
   EVENT_WISHLIST_OFFERED,
   GIFT_FULFILLED,
@@ -21,6 +22,7 @@ import {
   USER_REGISTERED,
   WISHMATE_ACCEPTED,
   WISHMATE_REQUESTED,
+  type ChatMessagePostedEvent,
   type EventWishlistAnsweredEvent,
   type EventWishlistOfferedEvent,
   type GiftLifecycleEvent,
@@ -58,9 +60,27 @@ import {
   WishlistItem,
   type WishlistItemDocument,
 } from 'src/modules/wishlists/schemas/wishlist-item.schema';
+import { PresenceService } from 'src/modules/wishmates/presence.service';
 import { NotificationService } from './notification.service';
 import { NotificationType } from './notification.types';
 import { ThankYouService } from './thank-you.service';
+
+/** How much of a message a notification shows before trailing off. */
+const PREVIEW_LIMIT = 140;
+
+/**
+ * The line a notification shows under the sender's name.
+ *
+ * An attachment-only message has no text at all, and a long one has to stop
+ * somewhere: a lock screen truncates mid-word without saying so, which reads
+ * as a message that was cut off rather than one that continues.
+ */
+export const chatPreview = (body: string): string => {
+  const text = body.trim().replace(/\s+/g, ' ');
+  if (!text) return 'Sent an attachment.';
+  if (text.length <= PREVIEW_LIMIT) return text;
+  return `${text.slice(0, PREVIEW_LIMIT).trimEnd()}…`;
+};
 
 /**
  * Turns domain events into notification requests, one per recipient, and enqueues
@@ -78,6 +98,7 @@ export class NotificationListener {
     @InjectModel(WishlistItem.name) private readonly itemModel: Model<WishlistItemDocument>,
     @InjectModel(GroupGift.name) private readonly groupGiftModel: Model<GroupGiftDocument>,
     private readonly users: UsersService,
+    private readonly presence: PresenceService,
     private readonly notifications: NotificationService,
     private readonly thankYou: ThankYouService,
     config: ConfigService<AppConfig, true>,
@@ -213,6 +234,44 @@ export class NotificationListener {
           url: `${this.web}/wishlinks`,
         },
       });
+    });
+  }
+
+  /**
+   * A message, to everybody in the conversation who is not reading it.
+   *
+   * Chat used to be delivered over the socket alone, so it reached only the
+   * people who already had the thread open — precisely the ones who needed no
+   * telling — and nobody else heard anything at all.
+   *
+   * Whoever has the conversation on screen is skipped: they are watching the
+   * message arrive, and a lock screen buzzing about a line you just read is
+   * how notifications get switched off for good.
+   */
+  @OnEvent(CHAT_MESSAGE_POSTED)
+  async onChatMessagePosted(e: ChatMessagePostedEvent): Promise<void> {
+    await this.guard('chat-message', async () => {
+      const watching = await this.presence.viewersOf(e.chatId, e.recipientIds);
+      const tell = e.recipientIds.filter((id) => !watching.has(id));
+      if (tell.length === 0) return;
+
+      const senderName = await this.userName(e.senderId);
+      const preview = chatPreview(e.body);
+      for (const userId of tell) {
+        await this.notifications.enqueue({
+          userId,
+          type: NotificationType.CHAT_MESSAGE,
+          // The message, so every one of them is its own notification. Keyed
+          // on the chat instead, dedupe is permanent per user — the second
+          // message anybody ever sent them would be dropped in silence.
+          refId: e.messageId,
+          payload: {
+            senderName,
+            preview,
+            url: `${this.web}/chats/${e.chatId}`,
+          },
+        });
+      }
     });
   }
 
@@ -447,9 +506,16 @@ export class NotificationListener {
     return item?.title ?? 'a gift';
   }
 
-  private async userName(userId: string): Promise<string> {
-    const user = await this.users.findById(userId);
-    return user?.name?.trim() || 'Someone';
+  /**
+   * Whose name goes in the notification.
+   *
+   * Through [UsersService.displayNameFor], not `user.name`: this read the
+   * account name alone until Sep 2026, and the phone sign-up the app uses
+   * never sets it — so every one of these notifications said "Someone" to
+   * everybody, however carefully they had filled in their name.
+   */
+  private userName(userId: string): Promise<string> {
+    return this.users.displayNameFor(userId, 'Someone');
   }
 
   private async guard(label: string, fn: () => Promise<void>): Promise<void> {

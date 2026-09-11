@@ -1,7 +1,7 @@
 import type { ConfigService } from '@nestjs/config';
 import type { AppConfig } from 'src/config/configuration';
 import type { EventReminderDueEvent } from 'src/modules/events/event-reminders.processor';
-import { NotificationListener } from './notification.listener';
+import { chatPreview, NotificationListener } from './notification.listener';
 import type { NotificationService } from './notification.service';
 import { NotificationType } from './notification.types';
 
@@ -27,10 +27,11 @@ describe('NotificationListener', () => {
       get: () => 'https://app.wishtick.test',
     } as unknown as ConfigService<AppConfig, true>;
 
-    // The reminder path touches only these two of the six dependencies; the
+    // The reminder path touches only these two of the seven dependencies; the
     // rest would be dead weight to stand up, and a null one fails loudly if
     // this path ever starts reaching for them.
     const listener = new NotificationListener(
+      null as never,
       null as never,
       null as never,
       null as never,
@@ -79,5 +80,37 @@ describe('NotificationListener', () => {
     await listener.onEventReminder(event);
 
     expect(enqueued).toHaveLength(0);
+  });
+
+  /// The line a chat notification shows under the sender's name.
+  describe('the message preview', () => {
+    it('shows a short message whole', () => {
+      expect(chatPreview('Are we still on for Saturday?')).toBe('Are we still on for Saturday?');
+    });
+
+    // A lock screen truncates mid-word without saying so, which reads as a
+    // message that was cut off rather than one that continues.
+    it('trails off rather than being cut off by the lock screen', () => {
+      const long = 'a'.repeat(400);
+
+      const preview = chatPreview(long);
+
+      expect(preview.length).toBeLessThan(long.length);
+      expect(preview.endsWith('…')).toBe(true);
+    });
+
+    // An attachment-only message is legal and carries no text at all; a blank
+    // notification is worse than none.
+    it('says something for a message that is only an attachment', () => {
+      for (const empty of ['', '   ', '\n\n']) {
+        expect(chatPreview(empty)).toBe('Sent an attachment.');
+      }
+    });
+
+    // Newlines survive into a notification as blank space, which reads as a
+    // message that has stopped halfway.
+    it('flattens the shape of a multi-line message', () => {
+      expect(chatPreview('one\n\n  two   three')).toBe('one two three');
+    });
   });
 });

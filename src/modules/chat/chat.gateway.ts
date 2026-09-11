@@ -1,4 +1,4 @@
-import { Logger, UseFilters } from '@nestjs/common';
+import { Logger, type OnModuleDestroy, UseFilters } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import {
   USER_FORCE_DISCONNECT,
@@ -19,6 +19,7 @@ import { WsExceptionsFilter } from 'src/common/filters/ws-exceptions.filter';
 import type { AuthenticatedUser } from 'src/common/types/authenticated-user';
 import { SocketAuthService } from 'src/modules/auth/services/socket-auth.service';
 import { PresenceService } from 'src/modules/wishmates/presence.service';
+import { WishmatesService } from 'src/modules/wishmates/wishmates.service';
 import { ChatService } from './chat.service';
 import {
   CHAT_BROADCAST,
@@ -32,8 +33,32 @@ import {
 } from './chat.types';
 
 interface AuthedSocket extends Socket {
-  data: { user?: AuthenticatedUser };
+  data: {
+    user?: AuthenticatedUser;
+    /**
+     * Which conversations this socket has open.
+     *
+     * Tracked here rather than read back from `socket.rooms` because by the
+     * time a disconnect is delivered those are already empty, and the rooms
+     * have to be given up for the person to stop counting as reading them.
+     */
+    chats?: Set<string>;
+  };
 }
+
+/**
+ * How often every live connection is re-asserted as online.
+ *
+ * Presence expires after ONLINE_TTL_SECONDS so that a phone which dies without
+ * sending a disconnect stops reading as online. Nothing renewed it, though, so
+ * a connection that simply sat there — which is what a chat screen with nobody
+ * typing *is* — expired at ninety seconds and the other side watched them go
+ * offline while they were still looking at the conversation.
+ *
+ * A third of the TTL, so two sweeps can be missed before anybody is wrongly
+ * marked away.
+ */
+const PRESENCE_SWEEP_MS = 30_000;
 
 /**
  * The realtime chat gateway.
@@ -51,8 +76,12 @@ interface AuthedSocket extends Socket {
  */
 @UseFilters(new WsExceptionsFilter())
 @WebSocketGateway({ namespace: CHAT_NAMESPACE })
-export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
+export class ChatGateway
+  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy
+{
   private readonly logger = new Logger(ChatGateway.name);
+
+  private sweep?: ReturnType<typeof setInterval>;
 
   @WebSocketServer()
   private readonly server!: Namespace;
@@ -61,6 +90,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     private readonly socketAuth: SocketAuthService,
     private readonly chat: ChatService,
     private readonly presence: PresenceService,
+    private readonly wishmates: WishmatesService,
   ) {}
 
   /**
@@ -70,6 +100,7 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
    * connect and only then be disconnected.
    */
   afterInit(server: Namespace): void {
+    this.startPresenceSweep();
     server.use((socket: AuthedSocket, next: (err?: Error) => void) => {
       const token =
         (socket.handshake.auth?.token as string | undefined) ??
@@ -84,6 +115,81 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     });
   }
 
+  onModuleDestroy(): void {
+    if (this.sweep) clearInterval(this.sweep);
+    this.sweep = undefined;
+  }
+
+  /**
+   * Keeps every connected user's presence from expiring under them.
+   *
+   * Per instance and over its own sockets, which is the only set it can see —
+   * with several instances behind the adapter each renews the connections it
+   * is actually holding, and together they cover everybody.
+   *
+   * `unref` so this timer alone never keeps the process alive: a test suite
+   * that finishes should exit, not hang for thirty seconds.
+   */
+  private startPresenceSweep(): void {
+    if (this.sweep) return;
+    this.sweep = setInterval(() => {
+      // Caught, not merely `void`ed. `void` discards the promise without
+      // handling a rejection, and Node exits the process on an unhandled one:
+      // a twelve-second Redis blip — a snapshot that could not fork — took the
+      // whole backend down through this line, because every `SET` in the sweep
+      // came back MISCONF. A missed heartbeat costs a presence key its refresh
+      // until the next sweep, which is not worth a process.
+      this.touchConnected().catch((err: Error) =>
+        this.logger.warn(`Presence sweep failed: ${err.message}`),
+      );
+    }, PRESENCE_SWEEP_MS);
+    this.sweep.unref?.();
+  }
+
+  /**
+   * Tells this user's WishMates that they came online, or went away.
+   *
+   * Without this the only presence a client ever heard about was somebody
+   * joining the very chat room it was already sitting in, so a header opened
+   * before the other person arrived said "Offline" for the rest of the
+   * session — the state was correct when it was read and never read again.
+   *
+   * Addressed to each mate's own room, so it reaches them wherever they are in
+   * the app rather than only inside a conversation. Failure is logged and
+   * swallowed: a presence dot is not worth refusing a connection over.
+   */
+  private async announcePresence(userId: string, online: boolean): Promise<void> {
+    try {
+      const mates = await this.wishmates.mateIdsOf(userId);
+      const payload = { userId, online, at: new Date().toISOString() };
+      for (const mate of mates) {
+        this.server.to(userRoom(mate.toString())).emit(WS_EVENT.PRESENCE, payload);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Could not announce presence for ${userId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** Public only so a test can run one sweep without waiting for the timer. */
+  async touchConnected(): Promise<void> {
+    const seen = new Set<string>();
+    for (const socket of this.server.sockets.values()) {
+      const user = (socket as AuthedSocket).data.user;
+      // One touch per user, not per socket — somebody with a phone and a
+      // laptop open is still one presence key.
+      if (user && !seen.has(user.id)) {
+        seen.add(user.id);
+        await this.presence.touch(user.id);
+      }
+      // Per socket, not per user: two devices can have different chats open.
+      for (const chatId of (socket as AuthedSocket).data.chats ?? []) {
+        if (user) await this.presence.touchChat(user.id, chatId);
+      }
+    }
+  }
+
   async handleConnection(client: AuthedSocket): Promise<void> {
     const user = client.data.user;
     if (!user) {
@@ -92,7 +198,10 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     }
     // Own room: lets a broadcast exclude this user and a revocation evict them.
     await client.join(userRoom(user.id));
-    await this.presence.connected(user.id);
+    const held = await this.presence.connected(user.id);
+    // Only the first connection is news. A second device opening does not make
+    // somebody any more online than they already were.
+    if (held === 1) await this.announcePresence(user.id, true);
     this.logger.debug(`Socket ${client.id} authenticated as ${user.id}`);
   }
 
@@ -100,7 +209,11 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const user = client.data.user;
     if (!user) return;
     this.logger.debug(`Socket ${client.id} (${user.id}) disconnected`);
-    await this.presence.disconnected(user.id);
+    for (const chatId of client.data.chats ?? []) {
+      await this.presence.leftChat(user.id, chatId);
+    }
+    const held = await this.presence.disconnected(user.id);
+    if (held === 0) await this.announcePresence(user.id, false);
   }
 
   @SubscribeMessage(WS_EVENT.JOIN)
@@ -114,6 +227,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const { chat } = await this.chat.authorize(chatId, user.id);
     await client.join(chatRoom(chatId));
     await this.chat.addParticipant(chat._id, user.id);
+    (client.data.chats ??= new Set()).add(chatId);
+    await this.presence.enteredChat(user.id, chatId);
     client.to(chatRoom(chatId)).emit(WS_EVENT.PRESENCE, { chatId, userId: user.id, online: true });
     return { joined: chatId };
   }
@@ -126,6 +241,8 @@ export class ChatGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
     const user = ChatGateway.requireUser(client);
     const chatId = ChatGateway.requireChatId(body);
     await client.leave(chatRoom(chatId));
+    client.data.chats?.delete(chatId);
+    await this.presence.leftChat(user.id, chatId);
     client.to(chatRoom(chatId)).emit(WS_EVENT.PRESENCE, { chatId, userId: user.id, online: false });
     return { left: chatId };
   }

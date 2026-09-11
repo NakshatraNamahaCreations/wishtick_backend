@@ -1,14 +1,6 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import {
-  IsBoolean,
-  IsEmail,
-  IsOptional,
-  IsString,
-  Matches,
-  MaxLength,
-  MinLength,
-} from 'class-validator';
+import { IsBoolean, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 import {
   ADDRESS_LABEL_MAX_LENGTH,
   ADDRESS_LABEL_PRESETS,
@@ -54,19 +46,6 @@ export class CreateAddressDto {
   @Matches(/^\+?[0-9][0-9 -]{6,18}$/, { message: 'mobile must be a phone number' })
   @Transform(trim)
   mobile!: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @Matches(/^\+?[0-9][0-9 -]{6,18}$/, { message: 'altMobile must be a phone number' })
-  @Transform(trimToNull)
-  altMobile?: string | null;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsEmail()
-  @MaxLength(254)
-  @Transform(trimToNull)
-  email?: string | null;
 
   @ApiProperty({ example: 'D-Block', description: 'Flat No / Building Name' })
   @IsString()

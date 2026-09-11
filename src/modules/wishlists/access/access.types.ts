@@ -9,6 +9,8 @@ export enum Relationship {
   PARTICIPANT = 'participant',
   /** Accepted invitee of the wishlist's linked event (Sprint 5). */
   EVENT_PARTICIPANT = 'event_participant',
+  /** An accepted WishMate of the owner (the WISHMATES visibility). */
+  WISHMATE = 'wishmate',
   /** Presented a valid share slug (and passcode, where required). */
   LINK_HOLDER = 'link_holder',
   /** No relationship, but the wishlist is public. */

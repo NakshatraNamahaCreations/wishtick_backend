@@ -6,7 +6,12 @@ import { createHash } from 'node:crypto';
 import { AppException } from 'src/common/errors/app.exception';
 import { WishmatesService } from 'src/modules/wishmates/wishmates.service';
 import { ErrorCode } from 'src/common/errors/error-codes';
-import { CONTENT_FLAGGED, type ContentFlaggedEvent } from 'src/common/events/domain-events';
+import {
+  CHAT_MESSAGE_POSTED,
+  CONTENT_FLAGGED,
+  type ChatMessagePostedEvent,
+  type ContentFlaggedEvent,
+} from 'src/common/events/domain-events';
 import { CacheService } from 'src/infra/redis/cache.service';
 import { GroupGiftVisibility } from 'src/modules/group-gifts/group-gift.types';
 import {
@@ -280,6 +285,7 @@ export class ChatService {
     ]);
 
     await this.afterNewMessage(chat, message, userId);
+    this.announceMessage(chat, message, userId);
     this.moderationScan(message);
     return toMessageView(message);
   }
@@ -641,6 +647,34 @@ export class ChatService {
       toMessageView(message),
       message.hideFromUserIds.map((id) => id.toString()),
     );
+  }
+
+  /**
+   * Tells the people who are not watching that somebody wrote.
+   *
+   * Only for messages a person typed. A system note ("goal reached!") is
+   * already announced by whatever caused it, and posting it here would
+   * notify twice for one thing.
+   *
+   * The audience is the engaged set minus the sender minus anyone the message
+   * is hidden from — the anti-spoiler holds for notifications too, or the
+   * surprise is given away by the lock screen rather than the chat.
+   */
+  private announceMessage(chat: ChatDocument, message: MessageDocument, senderId: string): void {
+    const hidden = new Set(this.hideList(message));
+    const recipientIds = chat.participantIds
+      .map((id) => id.toString())
+      .filter((id) => id !== senderId && !hidden.has(id));
+    if (recipientIds.length === 0) return;
+
+    this.emitter.emit(CHAT_MESSAGE_POSTED, {
+      chatId: chat._id.toString(),
+      messageId: message._id.toString(),
+      senderId,
+      recipientIds,
+      body: message.body,
+      direct: chat.type === ChatType.DIRECT,
+    } satisfies ChatMessagePostedEvent);
   }
 
   private async touchChat(chatId: Types.ObjectId, at: Date): Promise<void> {

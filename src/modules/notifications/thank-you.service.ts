@@ -56,16 +56,18 @@ export class ThankYouService {
     // One note per gift; a re-fired event is a no-op via the unique giftId index.
     if (await this.noteModel.exists({ giftId: new Types.ObjectId(e.giftId) })) return;
 
-    const [gift, item, recipient, gifter] = await Promise.all([
+    const [gift, item, names] = await Promise.all([
       this.giftModel.findById(e.giftId).exec(),
       this.itemModel.findById(e.itemId).exec(),
-      this.users.findById(e.recipientId),
-      this.users.findById(e.gifterId),
+      // Not `user.name`: the note is addressed to a person by name, and the
+      // account name is blank for a phone sign-up, so both halves of the
+      // drafted thank-you read "A friend" before Sep 2026.
+      this.users.displayNamesFor([e.recipientId, e.gifterId]),
     ]);
     if (!gift) return;
 
-    const recipientName = recipient?.name?.trim() || 'A friend';
-    const gifterName = gifter?.name?.trim() || 'a friend';
+    const recipientName = names.get(e.recipientId) || 'A friend';
+    const gifterName = names.get(e.gifterId) || 'a friend';
     const itemTitle = item?.title ?? 'your gift';
 
     // Optional event context, if the wishlist is tied to an event.

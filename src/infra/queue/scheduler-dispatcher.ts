@@ -30,7 +30,14 @@ export class SchedulerDispatcher extends WorkerHost implements OnApplicationBoot
 
   onApplicationBootstrap(): void {
     // Every registrar has now run, so no job can arrive before its handler.
-    void this.worker.run();
+    //
+    // Caught, not `void`ed: the worker's blocking `bzpopmin` rejects when
+    // Redis refuses commands — a snapshot it could not fork — and an
+    // unhandled rejection exits the process. BullMQ reconnects on its own, so
+    // the right answer is a logged warning, not a dead backend.
+    this.worker
+      .run()
+      .catch((err: Error) => this.logger.error(`Scheduler worker stopped: ${err.message}`));
   }
 
   async process(job: Job): Promise<unknown> {

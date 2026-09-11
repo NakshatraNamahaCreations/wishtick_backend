@@ -12,6 +12,7 @@ import type { WishlistDocument } from '../schemas/wishlist.schema';
 import { ParticipantRole, ParticipantState, WishlistVisibility } from '../wishlist.types';
 import { DENY_ALL, Relationship, type AccessContext, type AccessDecision } from './access.types';
 import { EVENT_PARTICIPATION, type IEventParticipation } from './event-participation.port';
+import { WISHMATE_LINK, type IWishmateLink } from './wishmate-link.port';
 
 /**
  * The single place that decides who may do what to a wishlist.
@@ -27,12 +28,13 @@ import { EVENT_PARTICIPATION, type IEventParticipation } from './event-participa
  * Resolution is priority-ordered: the first relationship that matches wins, so
  * an owner arriving via their own share link is still an owner.
  *
- * | visibility   | owner | participant | event invitee | link holder | stranger |
- * |--------------|-------|-------------|---------------|-------------|----------|
- * | public       | VCM   | VCG         | VCG           | VG(+C)      | V(+G)    |
- * | private      | VCM   | VCG         | —             | —           | —        |
- * | event_only   | VCM   | VCG         | VCG           | —           | —        |
- * | invite_only  | VCM   | VCG         | —             | VG          | —        |
+ * | visibility   | owner | participant | event invitee | wishmate | link holder | stranger |
+ * |--------------|-------|-------------|---------------|----------|-------------|----------|
+ * | public       | VCM   | VCG         | VCG           | VCG      | VG(+C)      | V(+G)    |
+ * | wishmates    | VCM   | VCG         | VCG           | VCG      | —           | —        |
+ * | private      | VCM   | VCG         | —             | —        | —           | —        |
+ * | event_only   | VCM   | VCG         | VCG           | —        | —           | —        |
+ * | invite_only  | VCM   | VCG         | —             | —        | VG          | —        |
  *
  * V=view C=comment G=gift M=manage
  *
@@ -57,6 +59,7 @@ export class AccessPolicyService {
     @InjectModel(WishlistParticipant.name)
     private readonly participants: Model<WishlistParticipantDocument>,
     @Inject(EVENT_PARTICIPATION) private readonly events: IEventParticipation,
+    @Inject(WISHMATE_LINK) private readonly wishmates: IWishmateLink,
   ) {}
 
   /**
@@ -111,6 +114,25 @@ export class AccessPolicyService {
       // Event invitees behave like contributors: they were invited to the
       // occasion, so they may talk and gift.
       return this.grant(Relationship.EVENT_PARTICIPANT, ParticipantRole.CONTRIBUTOR, wishlist);
+    }
+
+    // A WishMate of the owner. Checked on PUBLIC too: somebody connected to you
+    // is a wishmate first and a member of the public second, and the two differ
+    // — a wishmate may comment whether or not the list is public.
+    if (
+      ctx.userId &&
+      (wishlist.visibility === WishlistVisibility.WISHMATES ||
+        wishlist.visibility === WishlistVisibility.PUBLIC) &&
+      (await this.wishmates.areLinked(wishlist.ownerId, ctx.userId))
+    ) {
+      return {
+        canView: true,
+        canComment: wishlist.chatEnabled,
+        canGift: true,
+        canManage: false,
+        relationship: Relationship.WISHMATE,
+        role: null,
+      };
     }
 
     if (ctx.share && this.shareLinkGrantsAccess(wishlist, ctx.share)) {

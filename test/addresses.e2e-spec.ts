@@ -21,8 +21,6 @@ interface AddressView {
   label: string;
   fullName: string;
   mobile: string;
-  altMobile: string | null;
-  email: string | null;
   line1: string;
   locality: string;
   landmark: string | null;
@@ -107,8 +105,18 @@ describe('Addresses (e2e)', () => {
 
     expect(saved.formatted).toBe('D-Block, JP Nagar, Mysuru, Karnataka 570031');
     expect(saved.countryCode).toBe('IN');
-    expect(saved.altMobile).toBeNull();
     expect(saved.landmark).toBeNull();
+  });
+
+  it('no longer stores a second number or an email', async () => {
+    // Both were collected, stored and echoed back, and nothing ever read
+    // either — no order, no courier hand-off, no notification. The form
+    // stopped asking, so the API stopped accepting.
+    const user = await newUser();
+    const saved = (await addAddress(user)) as unknown as Record<string, unknown>;
+
+    expect(saved).not.toHaveProperty('altMobile');
+    expect(saved).not.toHaveProperty('email');
   });
 
   it('folds a landmark into the formatted line when one is given', async () => {

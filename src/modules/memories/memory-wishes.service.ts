@@ -92,8 +92,11 @@ export class MemoryWishesService {
       contentType = media.contentType;
     }
 
-    const profile = await this.users.findById(userId);
-    const contributorName = dto.contributorName?.trim() || profile?.name?.trim() || 'A friend';
+    // What the contributor typed wins; otherwise their name, resolved from
+    // their profile rather than their account — the account name is blank for
+    // a phone sign-up, so this card was signed "A friend" by default.
+    const contributorName =
+      dto.contributorName?.trim() || (await this.users.displayNameFor(userId, 'A friend'));
 
     const wish = await this.wishModel.create({
       capsuleId: capsule._id,

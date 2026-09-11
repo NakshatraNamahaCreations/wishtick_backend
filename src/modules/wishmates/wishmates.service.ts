@@ -536,8 +536,14 @@ export class WishmatesService {
       .filter((v): v is WishLinkView => v !== null);
   }
 
-  /** Accepted wishmates of one user. */
-  private async mateIdsOf(userId: string): Promise<Types.ObjectId[]> {
+  /**
+   * Accepted wishmates of one user.
+   *
+   * Public because it is also the audience for a presence change: coming
+   * online is told to the people entitled to see it, and that set is exactly
+   * this one.
+   */
+  async mateIdsOf(userId: string): Promise<Types.ObjectId[]> {
     const user = new Types.ObjectId(userId);
     const links = await this.links
       .find({

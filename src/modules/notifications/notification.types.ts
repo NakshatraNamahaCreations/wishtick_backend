@@ -57,6 +57,7 @@ export enum NotificationType {
   THANK_YOU = 'thank_you',
   WISHMATE_REQUEST = 'wishmate_request',
   WISHMATE_ACCEPTED = 'wishmate_accepted',
+  CHAT_MESSAGE = 'chat_message',
   ACCOUNT_SECURITY = 'account_security',
   REEL_RELEASED = 'reel_released',
   MEMORY_UNLOCKED = 'memory_unlocked',
@@ -157,6 +158,15 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.GROUP_GIFTS,
     template: 'group-gift-fulfilled',
+  },
+  [NotificationType.CHAT_MESSAGE]: {
+    // Push, because the entire problem is that they are not looking at the
+    // conversation. No email and no SMS: a chat message is not worth an inbox
+    // or a rupee, and a busy thread would empty both.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.SOCIAL,
+    template: 'chat-message',
   },
   [NotificationType.EVENT_REMINDER]: {
     channels: [

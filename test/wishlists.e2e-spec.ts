@@ -771,6 +771,97 @@ describe('Wishlists (e2e)', () => {
     });
   });
 
+  // -- WishMates-only visibility --------------------------------------------
+
+  describe('a WishMates-only wishlist', () => {
+    const connect = async (a: Actor, b: Actor): Promise<void> => {
+      await request(app.getHttpServer())
+        .post(`${V1}/people/${b.userId}/request`)
+        .set(auth(a.token))
+        .expect(201);
+      const received = await request(app.getHttpServer())
+        .get(`${V1}/wishlinks/received`)
+        .set(auth(b.token))
+        .expect(200);
+      const linkId = (received.body as Envelope<{ linkId: string }[]>).data[0].linkId;
+      await request(app.getHttpServer())
+        .post(`${V1}/wishlinks/${linkId}/accept`)
+        .set(auth(b.token))
+        .expect(201);
+    };
+
+    it('opens to a WishMate', async () => {
+      const owner = await newUser('Rohan');
+      const mate = await newUser('Siya');
+      await connect(owner, mate);
+      const wishlist = await createWishlist(owner, {
+        visibility: WishlistVisibility.WISHMATES,
+      });
+
+      await request(app.getHttpServer())
+        .get(`${V1}/wishlists/${wishlist.id}`)
+        .set(auth(mate.token))
+        .expect(200);
+    });
+
+    it('is closed to somebody who is not one', async () => {
+      // The whole point of the setting. "All WishMates" has to mean the people
+      // you chose to connect with, not anyone who happens to be signed in.
+      const owner = await newUser('Rohan');
+      const stranger = await newUser('Nobody');
+      const wishlist = await createWishlist(owner, {
+        visibility: WishlistVisibility.WISHMATES,
+      });
+
+      await request(app.getHttpServer())
+        .get(`${V1}/wishlists/${wishlist.id}`)
+        .set(auth(stranger.token))
+        .expect(404);
+    });
+
+    it('is closed to a pending request — asking is not being admitted', async () => {
+      const owner = await newUser('Rohan');
+      const asker = await newUser('Maybe');
+      await request(app.getHttpServer())
+        .post(`${V1}/people/${owner.userId}/request`)
+        .set(auth(asker.token))
+        .expect(201);
+      const wishlist = await createWishlist(owner, {
+        visibility: WishlistVisibility.WISHMATES,
+      });
+
+      await request(app.getHttpServer())
+        .get(`${V1}/wishlists/${wishlist.id}`)
+        .set(auth(asker.token))
+        .expect(404);
+    });
+
+    it('is not openable by its share link, however it was forwarded', async () => {
+      // This is the difference from `public`, which the create form used to
+      // offer under this name: there, a link admits anyone at all.
+      const owner = await newUser('Rohan');
+      const wishlist = await createWishlist(owner, {
+        visibility: WishlistVisibility.WISHMATES,
+      });
+      const slug = wishlist.share?.slug;
+      expect(slug).toBeTruthy();
+
+      await request(app.getHttpServer()).get(`${V1}/public/wishlists/${slug}`).expect(404);
+    });
+
+    it('still belongs to its owner', async () => {
+      const owner = await newUser('Rohan');
+      const wishlist = await createWishlist(owner, {
+        visibility: WishlistVisibility.WISHMATES,
+      });
+
+      await request(app.getHttpServer())
+        .get(`${V1}/wishlists/${wishlist.id}`)
+        .set(auth(owner.token))
+        .expect(200);
+    });
+  });
+
   // -- A list made for a WishMate -------------------------------------------
 
   describe('a wishlist made for a WishMate', () => {

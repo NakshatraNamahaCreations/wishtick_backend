@@ -7,10 +7,6 @@ import { ErrorCode } from 'src/common/errors/error-codes';
 import { GROUP_GIFT_INVITED, type GroupGiftInvitedEvent } from 'src/common/events/domain-events';
 import { ParticipantsService } from 'src/modules/wishlists/participants.service';
 import { ParticipantRole } from 'src/modules/wishlists/wishlist.types';
-import {
-  UserProfile,
-  type UserProfileDocument,
-} from 'src/modules/profile/schemas/user-profile.schema';
 import { UsersService } from 'src/modules/users/users.service';
 import {
   WishlistItem,
@@ -118,8 +114,6 @@ export class GroupGiftInvitesService {
     private readonly itemModel: Model<WishlistItemDocument>,
     @InjectModel(Contribution.name)
     private readonly contributionModel: Model<ContributionDocument>,
-    @InjectModel(UserProfile.name)
-    private readonly profileModel: Model<UserProfileDocument>,
     private readonly users: UsersService,
     private readonly gifts: GroupGiftService,
     private readonly wishmates: WishmatesService,
@@ -274,30 +268,12 @@ export class GroupGiftInvitesService {
   }
 
   /**
-   * What to call these people.
-   *
-   * Profile display name first, the account's `name` only as a fallback — the
-   * phone signup the app uses never sets the latter, so reading it alone names
-   * everybody "A friend".
+   * What to call these people. See [UsersService.displayNamesFor] — this was
+   * the same lookup written out here, and the copy of it that notifications
+   * used was not the correct one.
    */
-  private async resolveNames(ids: string[]): Promise<Map<string, string>> {
-    const unique = [...new Set(ids)];
-    if (unique.length === 0) return new Map();
-    const objectIds = unique.map((id) => new Types.ObjectId(id));
-    const [userDocs, profiles] = await Promise.all([
-      this.users.findManyByIds(unique),
-      this.profileModel.find({ userId: { $in: objectIds } }).exec(),
-    ]);
-    const names = new Map<string, string>();
-    for (const u of userDocs) {
-      const name = u.name?.trim();
-      if (name) names.set(u._id.toString(), name);
-    }
-    for (const p of profiles) {
-      const name = p.displayName?.trim();
-      if (name) names.set(p.userId.toString(), name);
-    }
-    return names;
+  private resolveNames(ids: string[]): Promise<Map<string, string>> {
+    return this.users.displayNamesFor(ids);
   }
 
   /**

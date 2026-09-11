@@ -8,7 +8,6 @@ import {
   WISHLIST_PARTICIPANT_REVOKED,
   type WishlistParticipantRevokedEvent,
 } from 'src/common/events/domain-events';
-import type { UserDocument } from 'src/modules/users/schemas/user.schema';
 import { UsersService } from 'src/modules/users/users.service';
 import { AccessPolicyService } from './access/access-policy.service';
 import type { AccessContext } from './access/access.types';
@@ -61,13 +60,15 @@ export class ParticipantsService {
       .exec();
 
     // One batched lookup for the whole list rather than one per row.
-    const users = await this.users.findManyByIds(
+    const names = await this.users.displayNamesFor(
       rows.map((row) => row.userId).filter((id): id is Types.ObjectId => id != null),
     );
-    const byId = new Map(users.map((user) => [user._id.toString(), user]));
 
     return rows.map((row) =>
-      ParticipantsService.toView(row, row.userId ? byId.get(row.userId.toString()) : undefined),
+      ParticipantsService.toView(
+        row,
+        row.userId ? (names.get(row.userId.toString()) ?? null) : null,
+      ),
     );
   }
 
@@ -137,7 +138,7 @@ export class ParticipantsService {
 
     // Verify the account exists; otherwise a stale id silently creates a
     // participant row that can never match anyone.
-    const user = await this.users.findByIdOrFail(dto.userId);
+    await this.users.findByIdOrFail(dto.userId);
 
     const existing = await this.model.findOne({ wishlistId: wishlist._id, userId }).exec();
 
@@ -157,7 +158,7 @@ export class ParticipantsService {
       existing.state = ParticipantState.ACCEPTED;
       existing.acceptedAt = new Date();
       await existing.save();
-      return ParticipantsService.toView(existing, user);
+      return ParticipantsService.toView(existing, await this.nameOf(dto.userId));
     }
 
     const participant = await this.model.create({
@@ -172,7 +173,7 @@ export class ParticipantsService {
       invitedBy: new Types.ObjectId(ctx.userId!),
     });
 
-    return ParticipantsService.toView(participant, user);
+    return ParticipantsService.toView(participant, await this.nameOf(dto.userId));
   }
 
   /**
@@ -216,11 +217,21 @@ export class ParticipantsService {
     );
   }
 
-  private static toView(p: WishlistParticipantDocument, user?: UserDocument): ParticipantView {
+  /**
+   * What to show for one participant. Their profile's name, not their
+   * account's — which a phone sign-up never fills in, so the owner's list of
+   * who they had shared a wishlist with was a column of blanks.
+   */
+  private async nameOf(userId: string): Promise<string | null> {
+    const names = await this.users.displayNamesFor([userId]);
+    return names.get(userId) ?? null;
+  }
+
+  private static toView(p: WishlistParticipantDocument, name: string | null): ParticipantView {
     return {
       id: p._id.toString(),
       userId: p.userId?.toString() ?? null,
-      name: user?.name?.trim() || null,
+      name,
       role: p.role,
       state: p.state,
       createdAt: p.createdAt,

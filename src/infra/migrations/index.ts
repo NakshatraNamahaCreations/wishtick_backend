@@ -24,8 +24,12 @@ import { migration022 } from './scripts/022-addresses';
 import { migration023 } from './scripts/023-catalogue-clicks';
 import { migration024 } from './scripts/024-memory-description';
 import { migration025 } from './scripts/025-memory-replies';
+import { migration026 } from './scripts/026-occasion-other';
+import { migration027 } from './scripts/027-parent-in-laws';
 import { migration028 } from './scripts/028-media-sweep-index';
+import { migration029 } from './scripts/029-sibling-steps-retired';
 import { migration030 } from './scripts/030-address-custom-labels';
+import { migration031 } from './scripts/031-address-contact-trim';
 
 /** Every migration must be registered here to run. Order comes from the id. */
 export const MIGRATIONS: Migration[] = [
@@ -54,8 +58,12 @@ export const MIGRATIONS: Migration[] = [
   migration023,
   migration024,
   migration025,
+  migration026,
+  migration027,
   migration028,
+  migration029,
   migration030,
+  migration031,
 ];
 
 export { MigrationRunner } from './migration.runner';
