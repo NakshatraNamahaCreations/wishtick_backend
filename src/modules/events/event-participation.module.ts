@@ -15,7 +15,8 @@ import { Event, EventSchema } from './schemas/event.schema';
  * to authorize through AccessPolicyService). Having WishlistsModule import the
  * full EventsModule would make the two import each other, and `forwardRef` would
  * paper over a dependency that does not actually need to be circular: the only
- * thing wishlists want from events is one boolean.
+ * things wishlists want from events are "is this person coming?" and "is this
+ * person hosting?".
  *
  *   EventParticipationModule ← WishlistsModule ← EventsModule
  *

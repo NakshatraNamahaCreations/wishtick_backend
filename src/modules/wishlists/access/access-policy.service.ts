@@ -172,6 +172,24 @@ export class AccessPolicyService {
     );
   }
 
+  /**
+   * Whether this list sits on an event the caller does not host.
+   *
+   * The one question that separates "my list on my own event", where the
+   * delivery address is entirely the owner's business, from "my list approved
+   * onto someone else's event", where it is the host's — `eventId` is set in
+   * both cases and cannot tell them apart on its own.
+   *
+   * Lives here rather than in the calling service because it is a question
+   * about who may do what to a wishlist, and because this is the one class with
+   * the events port wired into it.
+   */
+  async isOnSomeoneElsesEvent(wishlist: WishlistDocument, ctx: AccessContext): Promise<boolean> {
+    if (!wishlist.eventId) return false;
+    if (!ctx.userId) return true;
+    return !(await this.events.isHost(wishlist.eventId, ctx.userId));
+  }
+
   /** Rights of someone the owner (or an event) has actually admitted. */
   private grant(
     relationship: Relationship,

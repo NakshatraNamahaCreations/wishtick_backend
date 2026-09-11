@@ -4,6 +4,7 @@ import { Model, Types } from 'mongoose';
 import type { IEventParticipation } from 'src/modules/wishlists/access/event-participation.port';
 import { ATTENDING_RSVPS } from './event.types';
 import { EventInvite, type EventInviteDocument } from './schemas/event-invite.schema';
+import { Event, type EventDocument } from './schemas/event.schema';
 
 /**
  * The real implementation of the port Sprint 3 stubbed out.
@@ -27,7 +28,16 @@ import { EventInvite, type EventInviteDocument } from './schemas/event-invite.sc
 export class MongoEventParticipation implements IEventParticipation {
   constructor(
     @InjectModel(EventInvite.name) private readonly invites: Model<EventInviteDocument>,
+    @InjectModel(Event.name) private readonly events: Model<EventDocument>,
   ) {}
+
+  async isHost(eventId: Types.ObjectId, userId: string): Promise<boolean> {
+    if (!Types.ObjectId.isValid(userId)) return false;
+    const event = await this.events
+      .exists({ _id: eventId, hostId: new Types.ObjectId(userId) })
+      .exec();
+    return event !== null;
+  }
 
   async isAcceptedInvitee(eventId: Types.ObjectId, userId: string): Promise<boolean> {
     if (!Types.ObjectId.isValid(userId)) return false;

@@ -1920,6 +1920,85 @@ describe('Events & invites (e2e)', () => {
       expect((await addressOn(wl.data.id, guest))?.id).toBe(guestAddress);
     });
 
+    it('will not let the owner put their own address back afterwards', async () => {
+      const host = await newUser('Rohan');
+      const guest = await newUser('Priya');
+      const event = await publicEvent(host);
+      await attend(guest, event.slug);
+
+      const guestAddress = await addAddress(guest);
+      const hostAddress = await addAddress(host);
+      const wishlistId = await publicListOnEvent(host, guest, event.id, {
+        addressId: hostAddress,
+      });
+
+      // Approving handed the decision to the host, who was asked for one as
+      // they accepted. Letting the owner overwrite it would undo that silently
+      // and point every gifter at the wrong doorstep.
+      const refused = await request(app.getHttpServer())
+        .put(`${V1}/wishlists/${wishlistId}/address`)
+        .set(auth(guest.token))
+        .send({ addressId: guestAddress })
+        .expect(409);
+      expect((refused.body as Envelope<never>).error?.message).toContain('host of the event');
+
+      // Nor may they simply clear the host's.
+      await request(app.getHttpServer())
+        .put(`${V1}/wishlists/${wishlistId}/address`)
+        .set(auth(guest.token))
+        .send({ addressId: null })
+        .expect(409);
+
+      expect((await addressOn(wishlistId, guest))?.id).toBe(hostAddress);
+      // And the list says so, rather than leaving the client to guess.
+      const view = (
+        await request(app.getHttpServer())
+          .get(`${V1}/wishlists/${wishlistId}`)
+          .set(auth(guest.token))
+          .expect(200)
+      ).body as Envelope<{ canSetAddress: boolean; access: { canManage: boolean } }>;
+      expect(view.data.access.canManage).toBe(true);
+      expect(view.data.canSetAddress).toBe(false);
+    });
+
+    it('gives the decision back when the list comes off the event', async () => {
+      const host = await newUser('Rohan');
+      const guest = await newUser('Priya');
+      const event = await publicEvent(host);
+      await attend(guest, event.slug);
+
+      const guestAddress = await addAddress(guest);
+      const wl = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists`)
+          .set(auth(guest.token))
+          .send({ title: 'For Rohan', visibility: 'public' })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      const offered = (await offer(guest, event.id, wl.data.id).expect(200)).body as Envelope<{
+        id: string;
+      }>;
+      await request(app.getHttpServer())
+        .post(`${V1}/events/${event.id}/wishlist-requests/${offered.data.id}/approve`)
+        .set(auth(host.token))
+        .send({})
+        .expect(200);
+
+      // Withdrawing it is the owner's way out of the host's control, so it has
+      // to actually restore it — otherwise the list is stuck forever.
+      await request(app.getHttpServer())
+        .delete(`${V1}/events/${event.id}/wishlist-requests/${offered.data.id}`)
+        .set(auth(guest.token))
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .put(`${V1}/wishlists/${wl.data.id}/address`)
+        .set(auth(guest.token))
+        .send({ addressId: guestAddress })
+        .expect(200);
+      expect((await addressOn(wl.data.id, guest))?.id).toBe(guestAddress);
+    });
+
     it("refuses an address that is not the host's", async () => {
       const host = await newUser('Rohan');
       const guest = await newUser('Priya');

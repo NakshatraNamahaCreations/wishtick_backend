@@ -18,6 +18,17 @@ export const EVENT_PARTICIPATION = Symbol('EVENT_PARTICIPATION');
  */
 export interface IEventParticipation {
   isAcceptedInvitee(eventId: Types.ObjectId, userId: string): Promise<boolean>;
+
+  /**
+   * Whether this user hosts that event.
+   *
+   * Asked because a wishlist's `eventId` alone cannot tell the two cases apart:
+   * a host linking their own list to their own event sets it, and so does a
+   * guest's list being approved onto somebody else's. The delivery address is
+   * the host's to decide on the second, and the owner's own business on the
+   * first — see [WishlistsService.setAddress].
+   */
+  isHost(eventId: Types.ObjectId, userId: string): Promise<boolean>;
 }
 
 /**
@@ -31,6 +42,15 @@ export interface IEventParticipation {
 @Injectable()
 export class NullEventParticipation implements IEventParticipation {
   isAcceptedInvitee(): Promise<boolean> {
+    return Promise.resolve(false);
+  }
+
+  /**
+   * False is the closed answer here too, though for the opposite reason: not
+   * being the host is what *withholds* control of a list's delivery address, so
+   * an unwired port refuses the write rather than allowing it.
+   */
+  isHost(): Promise<boolean> {
     return Promise.resolve(false);
   }
 }

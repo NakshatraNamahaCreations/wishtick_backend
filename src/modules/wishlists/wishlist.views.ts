@@ -70,6 +70,20 @@ export interface WishlistView {
    * [AccessPolicyService.canViewAddress], not by `access.canView`.
    */
   address?: AddressView | null;
+
+  /**
+   * Whether this caller may change that address.
+   *
+   * Not derivable from `access.canManage`: an owner loses the decision while
+   * their list sits on somebody else's event, because approving it handed the
+   * address to that event's host. Sent so a client does not have to re-derive
+   * a rule it cannot see all the inputs to, and does not offer a button whose
+   * every press would 409.
+   *
+   * Accompanies `address`, so it is present on the detail read and absent from
+   * the list endpoints, which show neither.
+   */
+  canSetAddress?: boolean;
 }
 
 /** The unauthenticated share-link view. Deliberately a different, smaller shape. */
@@ -156,16 +170,16 @@ export const toItemView = (item: WishlistItemDocument, maskForOwner = false): It
 };
 
 /**
- * `address` is passed in already resolved rather than looked up here: whether
- * this caller may see it is an async policy question, and a view projection is
- * the wrong place to be making authorization decisions. Pass `undefined` to
- * omit the field entirely — see [WishlistView.address].
+ * `delivery` is passed in already resolved rather than looked up here: both
+ * halves of it are async policy questions, and a view projection is the wrong
+ * place to be making authorization decisions. Omit it entirely for a caller
+ * who may not see the address — see [WishlistView.address].
  */
 export const toWishlistView = (
   wishlist: WishlistDocument,
   access: AccessDecision,
   shareBaseUrl?: string,
-  address?: AddressView | null,
+  delivery?: { address: AddressView | null; canSet: boolean },
 ): WishlistView => {
   const view: WishlistView = {
     id: wishlist._id.toString(),
@@ -197,6 +211,9 @@ export const toWishlistView = (
       expiresAt: wishlist.share.expiresAt,
     };
   }
-  if (address !== undefined) view.address = address;
+  if (delivery) {
+    view.address = delivery.address;
+    view.canSetAddress = delivery.canSet;
+  }
   return view;
 };

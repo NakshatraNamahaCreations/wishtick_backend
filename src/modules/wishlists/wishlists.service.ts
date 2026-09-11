@@ -12,7 +12,7 @@ import { WishmateRelationship } from 'src/modules/wishmates/wishmates.views';
 import { MediaPurpose } from 'src/modules/media/schemas/media.schema';
 import { AddressesService, type AddressView } from 'src/modules/profile/addresses.service';
 import { AccessPolicyService } from './access/access-policy.service';
-import type { AccessContext } from './access/access.types';
+import type { AccessContext, AccessDecision } from './access/access.types';
 import type { CreateWishlistDto, ShareWishlistDto, UpdateWishlistDto } from './dto/wishlist.dto';
 import { WishlistItem, type WishlistItemDocument } from './schemas/wishlist-item.schema';
 import { Wishlist, type WishlistDocument } from './schemas/wishlist.schema';
@@ -158,25 +158,32 @@ export class WishlistsService {
       wishlist,
       access,
       this.shareBaseUrl,
-      await this.resolveAddress(wishlist, ctx),
+      await this.resolveDelivery(wishlist, ctx, access),
     );
   }
 
   /**
-   * The attached address, for a caller entitled to it.
+   * The attached address and whether this caller may change it.
    *
-   * `undefined` (omit the field) when they are not — which is not the same as
-   * `null` (they are, and none is attached). Resolved only on the detail read:
-   * the list endpoints would need one address lookup per row to serve a field
+   * `undefined` (omit both fields) when they may not even see it — which is not
+   * the same as `null` (they may, and none is attached). Resolved only on the
+   * detail read: the list endpoints would need a lookup per row to serve fields
    * no list view shows.
    */
-  private async resolveAddress(
+  private async resolveDelivery(
     wishlist: WishlistDocument,
     ctx: AccessContext,
-  ): Promise<AddressView | null | undefined> {
+    // Passed in rather than re-resolved: both callers have just done that, and
+    // the policy is deliberately uncached, so asking again is two more queries
+    // for an answer already in hand.
+    access: AccessDecision,
+  ): Promise<{ address: AddressView | null; canSet: boolean } | undefined> {
     if (!(await this.access.canViewAddress(wishlist, ctx))) return undefined;
-    if (!wishlist.addressId) return null;
-    return this.addresses.viewById(wishlist.addressId);
+
+    return {
+      address: wishlist.addressId ? await this.addresses.viewById(wishlist.addressId) : null,
+      canSet: access.canManage && !(await this.access.isOnSomeoneElsesEvent(wishlist, ctx)),
+    };
   }
 
   /**
@@ -186,6 +193,14 @@ export class WishlistsService {
    * home address and a phone number to everyone who can gift on the list, so
    * the only person who can start that is the person it belongs to. Passing
    * null takes it back off, which is the whole of "unshare".
+   *
+   * Refused entirely while the list sits on somebody else's event. Approving a
+   * list onto an event hands the address decision to that event's host — they
+   * are asked for one as they accept, and gifts from the list go to them — so
+   * letting the owner put their own back afterwards would undo that silently
+   * and point gifters at the wrong doorstep. Taking the list off the event
+   * gives the decision back; a list on the owner's *own* event was never
+   * anyone else's business and is untouched by this.
    */
   async setAddress(
     wishlistId: string,
@@ -194,6 +209,15 @@ export class WishlistsService {
   ): Promise<WishlistView> {
     const wishlist = await this.findOrFail(wishlistId);
     const access = await this.access.assertCanManage(wishlist, ctx);
+
+    if (await this.access.isOnSomeoneElsesEvent(wishlist, ctx)) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        'The host of the event this wishlist is on decides its delivery address. ' +
+          'Take the list off the event to set your own again.',
+        409,
+      );
+    }
 
     if (addressId === null) {
       wishlist.addressId = null;
@@ -209,7 +233,7 @@ export class WishlistsService {
       wishlist,
       access,
       this.shareBaseUrl,
-      await this.resolveAddress(wishlist, ctx),
+      await this.resolveDelivery(wishlist, ctx, access),
     );
   }
 

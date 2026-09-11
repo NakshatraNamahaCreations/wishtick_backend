@@ -979,6 +979,32 @@ describe('Wishlists (e2e)', () => {
       await attach(guest, wishlist.id, guestAddress).expect(403);
     });
 
+    it('stays the owner’s decision on their own event', async () => {
+      const owner = await newUser();
+      const addressId = await addAddress(owner);
+      const wishlist = await createWishlist(owner);
+
+      // Linking your own list to your own event sets the same `eventId` a
+      // guest's approved list carries, so the rule that hands the address to
+      // "the host" has to tell the two apart — here the owner *is* the host,
+      // and nobody else ever had a say.
+      await request(app.getHttpServer())
+        .post(`${V1}/events`)
+        .set(auth(owner.token))
+        .send({
+          title: 'My birthday',
+          type: 'birthday',
+          startsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+          timezone: 'Asia/Kolkata',
+          wishlistIds: [wishlist.id],
+        })
+        .expect(201);
+
+      await attach(owner, wishlist.id, addressId).expect(200);
+      const view = await read(owner, wishlist.id);
+      expect(view.data.address?.id).toBe(addressId);
+    });
+
     it('rejects a malformed id rather than reporting it missing', async () => {
       const owner = await newUser();
       const wishlist = await createWishlist(owner);
