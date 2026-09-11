@@ -15,6 +15,16 @@ export interface PurposeRule {
    * Undefined means "no ceiling", not "zero".
    */
   maxDurationSeconds?: number;
+  /**
+   * A separate ceiling for a voice note, where one is wanted.
+   *
+   * Undefined means audio is held to [maxDurationSeconds] like anything else.
+   * The two differ because the thing being capped differs: a video wish is
+   * watched in a story viewer, one after another, so its length compounds
+   * across a whole capsule — while a spoken message is listened to on its own
+   * and needs room to actually say something.
+   */
+  maxAudioDurationSeconds?: number;
   /** Extension used for the storage key, keyed by mime type. */
   extensions: Record<string, string>;
 }
@@ -87,6 +97,11 @@ export const MEDIA_RULES: Record<MediaPurpose, PurposeRule> = {
     ],
     maxBytes: 50 * MB,
     maxDurationSeconds: 20,
+    // Longer than the video cap on purpose: a voice note is a message, and
+    // twenty seconds is not enough to say much. It costs nothing the video
+    // cap is protecting — audio is not transcoded, and thirty seconds of it
+    // is a rounding error against a 50 MB ceiling.
+    maxAudioDurationSeconds: 30,
     extensions: {
       ...IMAGE_EXTENSIONS,
       'video/mp4': 'mp4',
@@ -113,6 +128,11 @@ export const MEDIA_RULES: Record<MediaPurpose, PurposeRule> = {
     ],
     maxBytes: 50 * MB,
     maxDurationSeconds: 20,
+    // Longer than the video cap on purpose: a voice note is a message, and
+    // twenty seconds is not enough to say much. It costs nothing the video
+    // cap is protecting — audio is not transcoded, and thirty seconds of it
+    // is a rounding error against a 50 MB ceiling.
+    maxAudioDurationSeconds: 30,
     extensions: {
       ...IMAGE_EXTENSIONS,
       'video/mp4': 'mp4',

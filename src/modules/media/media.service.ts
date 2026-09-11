@@ -36,6 +36,12 @@ export interface PurposeLimit {
   maxBytes: number;
   /** Null where a purpose has no duration ceiling, or nothing to measure. */
   maxDurationSeconds: number | null;
+  /**
+   * The ceiling for a voice note, which may be roomier than the one above.
+   * Never null where `maxDurationSeconds` is set: it falls back to it, so a
+   * client can read this one field and be right either way.
+   */
+  maxAudioDurationSeconds: number | null;
   mimeTypes: string[];
 }
 
@@ -69,6 +75,7 @@ export class MediaService {
       {
         maxBytes: Math.min(rule.maxBytes, globalMax),
         maxDurationSeconds: rule.maxDurationSeconds ?? null,
+        maxAudioDurationSeconds: rule.maxAudioDurationSeconds ?? rule.maxDurationSeconds ?? null,
         mimeTypes: rule.mimeTypes,
       },
     ]);
@@ -424,7 +431,10 @@ export class MediaService {
     let pendingSwept = 0;
     for await (const media of cursor) {
       const wasOrphaned = media.status === MediaStatus.ORPHANED;
-      await this.discard(media, wasOrphaned ? 'swept: orphaned' : 'swept: pending, never confirmed');
+      await this.discard(
+        media,
+        wasOrphaned ? 'swept: orphaned' : 'swept: pending, never confirmed',
+      );
       if (wasOrphaned) {
         orphanedSwept += 1;
       } else {

@@ -194,6 +194,34 @@ describe('Memories (e2e)', () => {
       expect(body.data[MediaPurpose.WISHLIST_COVER].maxDurationSeconds).toBeNull();
     });
 
+    it('gives a voice note a longer ceiling than a clip', async () => {
+      const actor = await newUser();
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/media/limits`)
+        .set(auth(actor.token))
+        .expect(200);
+
+      const body = res.body as Envelope<
+        Record<
+          string,
+          { maxDurationSeconds: number | null; maxAudioDurationSeconds: number | null }
+        >
+      >;
+
+      // A video wish is watched one after another in a story viewer, so its
+      // length compounds across a capsule; a spoken message is listened to on
+      // its own and twenty seconds is not enough to say much.
+      for (const purpose of [MediaPurpose.MEMORY_WISH, MediaPurpose.MEMORY_REPLY]) {
+        expect(body.data[purpose].maxDurationSeconds).toBe(20);
+        expect(body.data[purpose].maxAudioDurationSeconds).toBe(30);
+      }
+
+      // Never null where a duration cap exists, so a client can read the one
+      // field and be right either way.
+      expect(body.data[MediaPurpose.REEL_WISH].maxAudioDurationSeconds).toBeNull();
+      expect(body.data[MediaPurpose.WISHLIST_COVER].maxAudioDurationSeconds).toBeNull();
+    });
+
     it('is a route of its own, not a media id', async () => {
       // `@Get('limits')` has to be declared before `@Get(':id')`. The other way
       // round, Nest reads this as a request for the media called "limits" and
