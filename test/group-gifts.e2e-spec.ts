@@ -190,6 +190,118 @@ describe('Group gifting (e2e)', () => {
       expect((res.body as Envelope<never>).error?.code).toBe(ErrorCode.CANNOT_GIFT_OWN_ITEM);
     });
 
+    describe('on a list made for a WishMate', () => {
+      /** The owner, the WishMate the list is for, and an item on that list. */
+      const listForSiya = async (): Promise<{
+        owner: Actor;
+        siya: Actor;
+        wishlistId: string;
+        itemId: string;
+      }> => {
+        const owner = await newUser();
+        const siya = await newUser();
+        await request(app.getHttpServer())
+          .post(`${V1}/people/${siya.userId}/request`)
+          .set(auth(owner.token))
+          .expect(201);
+        const received = await request(app.getHttpServer())
+          .get(`${V1}/wishlinks/received`)
+          .set(auth(siya.token))
+          .expect(200);
+        const linkId = (received.body as Envelope<{ linkId: string }[]>).data[0].linkId;
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlinks/${linkId}/accept`)
+          .set(auth(siya.token))
+          .expect(201);
+
+        const wl = (
+          await request(app.getHttpServer())
+            .post(`${V1}/wishlists`)
+            .set(auth(owner.token))
+            .send({ title: 'Siya birthday', visibility: 'public', forUserId: siya.userId })
+            .expect(201)
+        ).body as Envelope<{ id: string }>;
+        const item = (
+          await request(app.getHttpServer())
+            .post(`${V1}/wishlists/${wl.data.id}/items`)
+            .set(auth(owner.token))
+            .send({ title: 'Espresso machine', price: { amountMinor: 4999900 } })
+            .expect(201)
+        ).body as Envelope<{ id: string }>;
+        return { owner, siya, wishlistId: wl.data.id, itemId: item.data.id };
+      };
+
+      it('lets the owner organise one, with that WishMate as the recipient', async () => {
+        const { owner, siya, itemId } = await listForSiya();
+
+        // The owner is not the one being given anything here, so this is not
+        // the "gifting yourself" the owner rule exists to stop.
+        const gg = (await createGroupGift(owner, itemId, {}).expect(201))
+          .body as Envelope<GroupGiftView>;
+
+        const doc = await groupGiftModel.findById(gg.data.id).exec();
+        expect(doc!.recipientId.toString()).toBe(siya.userId);
+        expect(doc!.initiatorId.toString()).toBe(owner.userId);
+      });
+
+      it('still refuses the owner on a list that is for themselves', async () => {
+        const owner = await newUser();
+        const { itemId } = await wishlistWithItem(owner);
+        const res = await createGroupGift(owner, itemId, {}).expect(403);
+        expect((res.body as Envelope<never>).error?.code).toBe(ErrorCode.CANNOT_GIFT_OWN_ITEM);
+      });
+
+      it('shows the organising owner their item as claimed, not still available', async () => {
+        const { owner, wishlistId, itemId } = await listForSiya();
+        await createGroupGift(owner, itemId, {}).expect(201);
+
+        // "Hidden from owner" protects a surprise only when the owner receives
+        // it. Here it would show the organiser their item as up for grabs and
+        // invite them to start a second group gift on it.
+        const items = (
+          await request(app.getHttpServer())
+            .get(`${V1}/wishlists/${wishlistId}/items`)
+            .set(auth(owner.token))
+            .expect(200)
+        ).body as Envelope<{ id: string; status: string }[]>;
+        expect(items.data.find((i) => i.id === itemId)!.status).not.toBe('available');
+      });
+
+      it('lets the owner chip in, and not the WishMate it is for', async () => {
+        const { owner, siya, itemId } = await listForSiya();
+        const gg = (await createGroupGift(owner, itemId, { targetAmountMinor: 2000 }).expect(201))
+          .body as Envelope<GroupGiftView>;
+
+        await contribute(owner, gg.data.id, { amountMinor: 1000 }).expect(201);
+        const refused = await contribute(siya, gg.data.id, { amountMinor: 1000 }).expect(403);
+        expect((refused.body as Envelope<never>).error?.code).toBe(ErrorCode.CANNOT_GIFT_OWN_ITEM);
+      });
+
+      it('has the WishMate, not the organising owner, write the thank-you', async () => {
+        const { owner, siya, itemId } = await listForSiya();
+        const helper = await newUser();
+        const gg = (await createGroupGift(owner, itemId, { targetAmountMinor: 1000 }).expect(201))
+          .body as Envelope<GroupGiftView>;
+        await contribute(helper, gg.data.id, { amountMinor: 1000 }).expect(201);
+        await request(app.getHttpServer())
+          .post(`${V1}/group-gifts/${gg.data.id}/purchase`)
+          .set(auth(owner.token))
+          .send({})
+          .expect(200);
+
+        await request(app.getHttpServer())
+          .post(`${V1}/group-gifts/${gg.data.id}/thank-you`)
+          .set(auth(owner.token))
+          .send({ note: 'Thanks from me' })
+          .expect(403);
+        await request(app.getHttpServer())
+          .post(`${V1}/group-gifts/${gg.data.id}/thank-you`)
+          .set(auth(siya.token))
+          .send({ note: 'You all shouldn’t have.' })
+          .expect(200);
+      });
+    });
+
     it('defaults the target to the item price', async () => {
       const owner = await newUser();
       const initiator = await newUser();

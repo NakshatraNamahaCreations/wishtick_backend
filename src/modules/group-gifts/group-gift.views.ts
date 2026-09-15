@@ -274,10 +274,11 @@ export function toGroupGiftView(input: {
     message: gift.message,
     ogImageUrl: gift.ogImageUrl,
     chatId: gift.chatId ? gift.chatId.toString() : null,
-    recipientName: (() => {
-      const primary = items.get(gift.itemId.toString());
-      return primary ? displayName(names, primary.ownerId.toString()) : null;
-    })(),
+    // The gift's recipient rather than the item's owner — on a list made for a
+    // WishMate the owner organised it and somebody else receives it.
+    recipientName: items.has(gift.itemId.toString())
+      ? displayName(names, gift.recipientId.toString())
+      : null,
     thankYouNote: gift.thankYouNote,
     thankYouAt: gift.thankYouAt,
     createdAt: gift.createdAt,

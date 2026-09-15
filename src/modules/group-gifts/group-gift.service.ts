@@ -170,12 +170,20 @@ export class GroupGiftService {
   }
 
   async create(itemId: string, userId: string, dto: CreateGroupGiftDto): Promise<GroupGiftView> {
-    const item = await this.gifting.loadGiftableItem(itemId, userId);
+    const item = await this.gifting.loadGiftableItem(itemId, userId, {
+      ownerForSomeoneElse: true,
+    });
 
     // Which party this is for, decided once and here. See the note on
     // `GroupGift.eventId`.
     const list = await this.wishlists.findOrFail(item.wishlistId.toString());
     const eventId = list.eventId;
+
+    // Who receives it. Ordinarily the list's owner — but when the owner is the
+    // one organising, the list was made for a WishMate (loadGiftableItem only
+    // let them through for that), and the gift is that WishMate's.
+    const recipientId =
+      list.ownerId.toString() === userId && list.forUserId ? list.forUserId : item.ownerId;
 
     const itemPrice = dto.targetAmountMinor ?? item.price?.amountMinor ?? null;
     // Charges are agreed on the way to "Proceed to Contribution", so they are
@@ -227,9 +235,9 @@ export class GroupGiftService {
               {
                 item: fresh,
                 gifterId: new Types.ObjectId(userId),
-                recipientId: fresh.ownerId,
+                recipientId,
                 mode: GiftMode.ONLINE,
-                visibility,
+                visibility: GroupGiftService.holderVisibility(visibility, recipientId, fresh),
                 expiresAt: null,
                 type: GiftType.GROUP,
                 amountMinorOverride: target,
@@ -245,7 +253,7 @@ export class GroupGiftService {
                   wishlistId: item.wishlistId,
                   eventId,
                   initiatorId: new Types.ObjectId(userId),
-                  recipientId: item.ownerId,
+                  recipientId,
                   giftId: holder._id,
                   title: dto.title,
                   targetAmountMinor: target,
@@ -746,8 +754,10 @@ export class GroupGiftService {
    */
   async setThankYou(groupGiftId: string, userId: string, note: string): Promise<GroupGiftView> {
     const gift = await this.loadOrFail(groupGiftId);
-    const item = await this.itemModel.findById(gift.itemId).exec();
-    if (!item || item.ownerId.toString() !== userId) {
+    // The recipient, not the item's owner: on a list made for a WishMate the
+    // owner organised it, and would otherwise be thanking people for a gift
+    // that went to somebody else.
+    if (gift.recipientId.toString() !== userId) {
       throw new AppException(
         ErrorCode.FORBIDDEN,
         'Only the person the gift is for can write the thank-you note',
@@ -857,7 +867,9 @@ export class GroupGiftService {
 
     const wishlist = await this.wishlists.findOrFail(gift.wishlistId.toString());
     const item = await this.imports.importForWishlist(wishlist, dto, {
-      hiddenFromOwner: gift.visibility === GroupGiftVisibility.HIDDEN_FROM_OWNER,
+      hiddenFromOwner:
+        gift.visibility === GroupGiftVisibility.HIDDEN_FROM_OWNER &&
+        gift.recipientId.equals(wishlist.ownerId),
     });
 
     try {
@@ -925,9 +937,14 @@ export class GroupGiftService {
               {
                 item: fresh,
                 gifterId: new Types.ObjectId(userId),
-                recipientId: fresh.ownerId,
+                // Every line goes to the group's one recipient.
+                recipientId: gift.recipientId,
                 mode: GiftMode.ONLINE,
-                visibility: gift.visibility,
+                visibility: GroupGiftService.holderVisibility(
+                  gift.visibility,
+                  gift.recipientId,
+                  fresh,
+                ),
                 expiresAt: null,
                 type: GiftType.GROUP,
                 amountMinorOverride: fresh.price?.amountMinor ?? null,
@@ -1359,6 +1376,12 @@ export class GroupGiftService {
     if (!decision.canView) {
       throw new AppException(ErrorCode.GROUP_GIFT_NOT_FOUND, 'Group gift not found', 404);
     }
+    // An owner never has canGift on their own list, because ordinarily that
+    // would be paying for their own present. On a list made for a WishMate the
+    // recipient is someone else, so the owner chipping in is just giving.
+    if (wishlist.ownerId.toString() === userId && !gift.recipientId.equals(wishlist.ownerId)) {
+      return;
+    }
     if (!decision.canGift) {
       throw new AppException(ErrorCode.FORBIDDEN, 'You cannot gift from this wishlist', 403);
     }
@@ -1435,11 +1458,9 @@ export class GroupGiftService {
     const itemIds = [gift.itemId, ...gift.lines.map((line) => line.itemId)];
     const itemDocs = await this.itemModel.find({ _id: { $in: itemIds } }).exec();
 
-    // The recipient signs the thank-you card (`2219:603`), and they are the
-    // *item's owner* — an id only knowable after the items are loaded, which is
-    // why this one query is sequential rather than parallel.
-    const primary = itemDocs.find((i) => i._id.toString() === gift.itemId.toString());
-    if (primary) ids.add(primary.ownerId.toString());
+    // The recipient signs the thank-you card (`2219:603`). Read off the gift,
+    // not the item's owner: on a list made for a WishMate they differ.
+    ids.add(gift.recipientId.toString());
 
     const userDocs = await this.users.findManyByIds([...ids]);
     return {
@@ -1447,6 +1468,24 @@ export class GroupGiftService {
       items: new Map(itemDocs.map((i) => [i._id.toString(), i])),
       recentContributions,
     };
+  }
+
+  /**
+   * The visibility for a group gift's holder on one item.
+   *
+   * "Hidden from owner" masks the item's claimed status on its owner's own
+   * list, which protects a surprise only when the owner is the one receiving
+   * it. On a list made for a WishMate the owner is organising — hiding their
+   * own group gift from them would show them the item as still available and
+   * invite them to start another. The group gift itself keeps the chosen
+   * visibility, which is what keeps the real recipient from seeing it.
+   */
+  private static holderVisibility(
+    visibility: GroupGiftVisibility,
+    recipientId: Types.ObjectId,
+    item: WishlistItemDocument,
+  ): GroupGiftVisibility {
+    return recipientId.equals(item.ownerId) ? visibility : GroupGiftVisibility.VISIBLE;
   }
 
   /**
