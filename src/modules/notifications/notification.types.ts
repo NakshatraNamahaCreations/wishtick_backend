@@ -164,7 +164,14 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     // Push, because the entire problem is that they are not looking at the
     // conversation. No email and no SMS: a chat message is not worth an inbox
     // or a rupee, and a busy thread would empty both.
-    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    //
+    // And no in-app row either. The chat list already carries its own unread
+    // dots and previews, so a message listed again in the notification centre
+    // only crowds out the things that have nowhere else to appear — and pushes
+    // the bell's count up for something already counted on the chats tab. A
+    // tapped push routes on `type` alone (to the chat list), so it never needed
+    // the row.
+    channels: [NotificationChannel.PUSH],
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.SOCIAL,
     template: 'chat-message',
