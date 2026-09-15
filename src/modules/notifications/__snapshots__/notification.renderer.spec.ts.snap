@@ -31,6 +31,19 @@ It did not meet our community guidelines.",
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_invite 1`] = `
+{
+  "sms": "You're invited to Aarav's Birthday — https://app.wishtick.test/x",
+  "subject": "Someone invited you to Aarav's Birthday",
+  "text": "Someone invited you to Aarav's Birthday.
+
+Open the invitation to RSVP.
+
+View the invitation: https://app.wishtick.test/x",
+  "title": "You're invited to Aarav's Birthday",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_reminder 1`] = `
 {
   "sms": "Aarav's Birthday is in 2 days — https://app.wishtick.test/x",

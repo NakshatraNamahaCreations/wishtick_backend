@@ -140,6 +140,15 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     lines: [`${s(p, 'eventTitle', 'Your event')} is ${s(p, 'whenText', 'coming up')}.`],
     cta: { label: 'View the event', url: s(p, 'url') },
   }),
+  [NotificationType.EVENT_INVITE]: (p) => ({
+    subject: `${who(p, 'hostName')} invited you to ${s(p, 'eventTitle', 'an event')}`,
+    title: `You're invited to ${s(p, 'eventTitle', 'an event')}`,
+    lines: [
+      `${who(p, 'hostName')} invited you to ${s(p, 'eventTitle', 'their event')}.`,
+      'Open the invitation to RSVP.',
+    ],
+    cta: { label: 'View the invitation', url: s(p, 'url') },
+  }),
   [NotificationType.EVENT_WISHLIST_OFFERED]: (p) => ({
     subject: `${who(p, 'guestName')} offered a wishlist for ${s(p, 'eventTitle', 'your event')}`,
     title: 'A guest offered a wishlist',

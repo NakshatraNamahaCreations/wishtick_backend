@@ -1,9 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectModel } from '@nestjs/mongoose';
 import { randomBytes } from 'node:crypto';
 import { Model, Types } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
+import { EVENT_INVITED, type EventInvitedEvent } from 'src/common/events/domain-events';
 import type { BulkInviteDto } from './dto/event.dto';
 import { EventStatus, EventVisibility, RsvpResponse } from './event.types';
 import type { EventDocument } from './schemas/event.schema';
@@ -33,7 +35,24 @@ export class InvitesService {
     private readonly events: EventsService,
     private readonly wishmates: WishmatesService,
     private readonly users: UsersService,
+    private readonly emitter: EventEmitter2,
   ) {}
+
+  /**
+   * Tells an invited account it was invited. Called after the row is written,
+   * so a notification never announces an invite that failed to save.
+   */
+  private announce(event: EventDocument, invite: EventInviteDocument): void {
+    if (!invite.invitedUserId) return;
+    this.emitter.emit(EVENT_INVITED, {
+      eventId: event._id.toString(),
+      inviteId: invite._id.toString(),
+      inviteToken: invite.token,
+      hostId: event.hostId.toString(),
+      invitedUserId: invite.invitedUserId.toString(),
+      eventTitle: event.title,
+    } satisfies EventInvitedEvent);
+  }
 
   /** 32 bytes: this token is the only thing protecting a private event's details. */
   private static newToken(): string {
@@ -142,9 +161,7 @@ export class InvitesService {
 
     // Already claimed on an earlier tap. Idempotent, like the rest of join:
     // a link gets opened again after an install and must land on the same row.
-    const mine = await this.model
-      .findOne({ eventId: event._id, invitedUserId })
-      .exec();
+    const mine = await this.model.findOne({ eventId: event._id, invitedUserId }).exec();
     if (mine) {
       if (mine.revokedAt !== null) return null;
       return mine;
@@ -230,7 +247,9 @@ export class InvitesService {
         .findOne({
           eventId: event._id,
           revokedAt: null,
-          ...(invitedUserId ? { $or: [{ invitedUserId }, { invitedPhone: phone }] } : { invitedPhone: phone }),
+          ...(invitedUserId
+            ? { $or: [{ invitedUserId }, { invitedPhone: phone }] }
+            : { invitedPhone: phone }),
         })
         .exec();
       if (already) {
@@ -247,6 +266,9 @@ export class InvitesService {
           rsvp: RsvpResponse.PENDING,
         });
         result.created.push(toInviteView(invite));
+        // A number that already belongs to an account is that person invited,
+        // and is told like one. A bare number has nobody to tell.
+        this.announce(event, invite);
       } catch (err) {
         // Either unique index fired: the same number invited twice at once.
         if (InvitesService.isDuplicateKey(err)) {
@@ -442,6 +464,7 @@ export class InvitesService {
         });
 
         result.created.push(toInviteView(invite));
+        this.announce(event, invite);
       } catch (err) {
         // The unique index fired — another request invited the same person
         // between our check and this insert. That is a duplicate, not a failure.

@@ -295,6 +295,32 @@ export interface EventWishlistOfferedEvent {
   wishlistTitle: string;
 }
 
+/**
+ * A host put somebody with an account on an event's guest list.
+ *
+ * Inviting used to write the row and stop there: the email and SMS that once
+ * carried an invitation were removed on the understanding that a WishMate is
+ * "told in the app", and nothing in the app ever told them. The invitation
+ * reached the guest's Invites tab and nowhere else.
+ *
+ * Only for an invite that names an account. A number with nobody behind it
+ * has nobody to tell; the host's share link is how that person arrives.
+ */
+export const EVENT_INVITED = 'event.invited';
+
+export interface EventInvitedEvent {
+  eventId: string;
+  inviteId: string;
+  /**
+   * The guest's own invitation token — what the app opens. Sent only to the
+   * person it belongs to, who holds it already on their Invites tab.
+   */
+  inviteToken: string;
+  hostId: string;
+  invitedUserId: string;
+  eventTitle: string;
+}
+
 /** The host approved or declined a guest's offered wishlist. */
 export const EVENT_WISHLIST_ANSWERED = 'event.wishlist_answered';
 

@@ -50,6 +50,7 @@ export enum NotificationType {
   GROUP_GIFT_PURCHASED = 'group_gift_purchased',
   GROUP_GIFT_FULFILLED = 'group_gift_fulfilled',
   EVENT_REMINDER = 'event_reminder',
+  EVENT_INVITE = 'event_invite',
   EVENT_WISHLIST_OFFERED = 'event_wishlist_offered',
   EVENT_WISHLIST_ANSWERED = 'event_wishlist_answered',
   ITEM_PRICE_DROP = 'item_price_drop',
@@ -178,6 +179,15 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.EVENTS,
     template: 'event-reminder',
+  },
+  [NotificationType.EVENT_INVITE]: {
+    // Push, because an invitation asks for an RSVP and the guest has no other
+    // way of learning one exists. No email or SMS: those were deliberately
+    // taken out of inviting, and a WishMate is reached in the app.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.EVENTS,
+    template: 'event-invite',
   },
   [NotificationType.EVENT_WISHLIST_OFFERED]: {
     // Not DIGEST, for the reason GROUP_GIFT_INVITE is not: this is a question

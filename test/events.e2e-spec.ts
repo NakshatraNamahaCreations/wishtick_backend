@@ -370,6 +370,84 @@ describe('Events & invites (e2e)', () => {
       await request(app.getHttpServer()).get(`${V1}/public/invites/${inviteToken}`).expect(404);
     });
 
+    describe('telling the guest', () => {
+      /** Let the fire-and-forget listener enqueue, then run the queued jobs. */
+      const settle = async (): Promise<void> => {
+        await new Promise((r) => setTimeout(r, 150));
+        await ctx.drainNotifications();
+      };
+
+      const invitesFor = async (actor: Actor) => {
+        const res = await request(app.getHttpServer())
+          .get(`${V1}/notifications`)
+          .set(auth(actor.token))
+          .expect(200);
+        return (res.body as Envelope<{ type: string; refId: string; title: string }[]>).data.filter(
+          (n) => n.type === 'event_invite',
+        );
+      };
+
+      it('notifies a WishMate when they are invited', async () => {
+        // The invite used to reach the guest's Invites tab and nowhere else, so
+        // the only way to learn about one was to go looking.
+        const host = await newUser('Rohan Mehta');
+        const guest = await newUser('Priya Nair');
+        const event = await createEvent(host, { title: 'Diwali Night' });
+        await publish(host, event.id);
+        await settle(); // the signup notifications, out of the way
+
+        await request(app.getHttpServer())
+          .post(`${V1}/events/${event.id}/invites`)
+          .set(auth(host.token))
+          .send({ recipients: [{ userId: guest.userId }] })
+          .expect(200);
+        await settle();
+
+        const mine = await invitesFor(guest);
+        expect(mine).toHaveLength(1);
+        expect(mine[0].title).toContain('Diwali Night');
+        // The refId is the guest's own token — what the app opens it by.
+        expect(mine[0].refId).toBe(await InviteTokenHelper.only(app, host.token, event.id));
+        // And the host, who did the inviting, is not told about it.
+        expect(await invitesFor(host)).toHaveLength(0);
+
+        // Re-inviting somebody already on the list is a duplicate, not a
+        // second buzz on their phone.
+        await request(app.getHttpServer())
+          .post(`${V1}/events/${event.id}/invites`)
+          .set(auth(host.token))
+          .send({ recipients: [{ userId: guest.userId }] })
+          .expect(200);
+        await settle();
+        expect(await invitesFor(guest)).toHaveLength(1);
+      });
+
+      it('notifies an account invited by its phone number, and nobody for a bare number', async () => {
+        const host = await newUser();
+        const guest = await newUser();
+        const phone = '+919912345678';
+        await userModel
+          .updateOne(
+            { _id: new Types.ObjectId(guest.userId) },
+            { $set: { phone, phoneVerifiedAt: new Date() } },
+          )
+          .exec();
+        const event = await createEvent(host);
+        await publish(host, event.id);
+        await settle();
+
+        await request(app.getHttpServer())
+          .post(`${V1}/events/${event.id}/invites/by-phone`)
+          .set(auth(host.token))
+          .send({ phones: [phone, '+919987654321'] })
+          .expect(200);
+        await settle();
+
+        expect(await invitesFor(guest)).toHaveLength(1);
+        expect(await invitesFor(host)).toHaveLength(0);
+      });
+    });
+
     it('refuses to invite before the event is published', async () => {
       const host = await newUser();
       const event = await createEvent(host);
@@ -434,7 +512,12 @@ describe('Events & invites (e2e)', () => {
             forSelf: true,
           })
           .expect(201)
-      ).body as Envelope<{ id: string; forSelf: boolean; personName: string | null; relation: string | null }>;
+      ).body as Envelope<{
+        id: string;
+        forSelf: boolean;
+        personName: string | null;
+        relation: string | null;
+      }>;
 
       // The flag is what tells a self-event from an unfinished draft: both
       // have no person and no relation.
@@ -1420,9 +1503,7 @@ describe('Events & invites (e2e)', () => {
     };
 
     const join = (actor: Actor, slug: string) =>
-      request(app.getHttpServer())
-        .post(`${V1}/events/by-slug/${slug}/join`)
-        .set(auth(actor.token));
+      request(app.getHttpServer()).post(`${V1}/events/by-slug/${slug}/join`).set(auth(actor.token));
 
     it('lets somebody with no account yet be invited, and claim it after signing up', async () => {
       // The whole point: on the day a host starts, none of their friends are
@@ -1431,8 +1512,10 @@ describe('Events & invites (e2e)', () => {
       const event = await privateEvent(host);
       const phone = uniquePhone();
 
-      const invited = (await inviteByPhone(host, event.id, [phone]).expect(200))
-        .body as Envelope<{ created: unknown[]; duplicates: number }>;
+      const invited = (await inviteByPhone(host, event.id, [phone]).expect(200)).body as Envelope<{
+        created: unknown[];
+        duplicates: number;
+      }>;
       expect(invited.data.created).toHaveLength(1);
 
       // They install, sign in with that number, and open the link.
@@ -1462,7 +1545,9 @@ describe('Events & invites (e2e)', () => {
       const guest = await signInByPhone(phone);
 
       const first = (await join(guest, event.slug).expect(201)).body as Envelope<{ token: string }>;
-      const second = (await join(guest, event.slug).expect(201)).body as Envelope<{ token: string }>;
+      const second = (await join(guest, event.slug).expect(201)).body as Envelope<{
+        token: string;
+      }>;
 
       expect(second.data.token).toBe(first.data.token);
     });
@@ -1526,9 +1611,8 @@ describe('Events & invites (e2e)', () => {
       const phone = uniquePhone();
       const spaced = `${phone.slice(0, 3)} ${phone.slice(3, 8)} ${phone.slice(8)}`;
 
-      const res = (
-        await inviteByPhone(host, event.id, [phone, spaced, phone]).expect(200)
-      ).body as Envelope<{ created: unknown[]; duplicates: number }>;
+      const res = (await inviteByPhone(host, event.id, [phone, spaced, phone]).expect(200))
+        .body as Envelope<{ created: unknown[]; duplicates: number }>;
 
       expect(res.data.created).toHaveLength(1);
       expect(res.data.duplicates).toBe(2);
@@ -1631,8 +1715,9 @@ describe('Events & invites (e2e)', () => {
       const event = await publicEvent(host);
       await attend(guest, event.slug);
       const listId = await privateList(guest, 'For Rohan');
-      const offered = (await offer(guest, event.id, listId).expect(200))
-        .body as Envelope<{ id: string }>;
+      const offered = (await offer(guest, event.id, listId).expect(200)).body as Envelope<{
+        id: string;
+      }>;
 
       const mine = (
         await request(app.getHttpServer())
@@ -1675,8 +1760,9 @@ describe('Events & invites (e2e)', () => {
       const listId = await privateList(guest, 'For Rohan');
       await settle(); // flush the signup notifications first
 
-      const offered = (await offer(guest, event.id, listId).expect(200))
-        .body as Envelope<{ id: string }>;
+      const offered = (await offer(guest, event.id, listId).expect(200)).body as Envelope<{
+        id: string;
+      }>;
       await settle();
 
       expect(
@@ -1706,8 +1792,9 @@ describe('Events & invites (e2e)', () => {
       const listId = await privateList(guest, 'For Rohan');
       await settle();
 
-      const offered = (await offer(guest, event.id, listId).expect(200))
-        .body as Envelope<{ id: string }>;
+      const offered = (await offer(guest, event.id, listId).expect(200)).body as Envelope<{
+        id: string;
+      }>;
       await request(app.getHttpServer())
         .post(`${V1}/events/${event.id}/wishlist-requests/${offered.data.id}/reject`)
         .set(auth(host.token))

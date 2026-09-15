@@ -5,6 +5,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import {
   CHAT_MESSAGE_POSTED,
+  EVENT_INVITED,
   EVENT_WISHLIST_ANSWERED,
   EVENT_WISHLIST_OFFERED,
   GIFT_FULFILLED,
@@ -23,6 +24,7 @@ import {
   WISHMATE_ACCEPTED,
   WISHMATE_REQUESTED,
   type ChatMessagePostedEvent,
+  type EventInvitedEvent,
   type EventWishlistAnsweredEvent,
   type EventWishlistOfferedEvent,
   type GiftLifecycleEvent,
@@ -287,6 +289,25 @@ export class NotificationListener {
         payload: {
           accepterName: await this.userName(e.accepterId),
           url: `${this.web}/people/${e.accepterId}`,
+        },
+      });
+    });
+  }
+
+  @OnEvent(EVENT_INVITED)
+  async onEventInvited(e: EventInvitedEvent): Promise<void> {
+    await this.guard('event-invited', async () => {
+      await this.notifications.enqueue({
+        userId: e.invitedUserId,
+        type: NotificationType.EVENT_INVITE,
+        // The token, because it is what the app opens the invitation by, and
+        // it is unique per invite: revoking and re-inviting mints a new one,
+        // so a second invitation is not deduped against the first.
+        refId: e.inviteToken,
+        payload: {
+          hostName: await this.userName(e.hostId),
+          eventTitle: e.eventTitle,
+          url: `${this.web}/i/${e.inviteToken}`,
         },
       });
     });
