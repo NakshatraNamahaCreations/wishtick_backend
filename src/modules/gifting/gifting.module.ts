@@ -8,12 +8,14 @@ import {
   ThankYouNoteSchema,
 } from 'src/modules/notifications/schemas/thank-you-note.schema';
 import { Order, OrderSchema } from 'src/modules/orders/schemas/order.schema';
+import { Conversion, ConversionSchema } from 'src/modules/products/schemas/conversion.schema';
 import { UsersModule } from 'src/modules/users/users.module';
 import { WishlistsModule } from 'src/modules/wishlists/wishlists.module';
 import {
   WishlistItem,
   WishlistItemSchema,
 } from 'src/modules/wishlists/schemas/wishlist-item.schema';
+import { ConversionReconcileService } from './conversion-reconcile.service';
 import { GiftStatusService } from './gift-status.service';
 import { GiftingController } from './gifting.controller';
 import { GiftListService } from './gift-list.service';
@@ -37,6 +39,10 @@ import { WebhookService } from './webhook.service';
       { name: Order.name, schema: OrderSchema },
       { name: GroupGift.name, schema: GroupGiftSchema },
       { name: ThankYouNote.name, schema: ThankYouNoteSchema },
+      // Read (and marked reconciled) by ConversionReconcileService. A schema
+      // rather than the products module: gifting asks what the network
+      // reported, and must not acquire a catalogue to do it.
+      { name: Conversion.name, schema: ConversionSchema },
     ]),
     BullModule.registerQueue({ name: QUEUE.SCHEDULER }),
     // For AccessPolicyService, WishlistsService, and the item model. One-way:
@@ -47,6 +53,7 @@ import { WebhookService } from './webhook.service';
   ],
   controllers: [GiftingController, WebhookController],
   providers: [
+    ConversionReconcileService,
     GiftingService,
     GiftListService,
     GiftStatusService,
@@ -55,6 +62,7 @@ import { WebhookService } from './webhook.service';
     WebhookService,
   ],
   exports: [
+    ConversionReconcileService,
     GiftingService,
     GiftListService,
     GiftStatusService,

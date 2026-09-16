@@ -63,31 +63,95 @@ export interface CuelinksCampaign {
   epc_90_day?: number;
 }
 
-/** One conversion from `GET /transactions`. */
+/**
+ * One conversion from `GET /transactions`.
+ *
+ * Money arrives as decimal *strings* ("1499.00") in the documented shape and as
+ * numbers in some responses, so both are accepted and normalised on our side.
+ */
 export interface CuelinksTransaction {
-  id?: string;
+  id?: string | number;
   campaign_id?: number;
   campaign_name?: string;
+  /** CPS, CPC — how the campaign pays. Recorded, not acted on. */
+  campaign_type?: string;
   /**
    * Sub-IDs we set on the outbound link — how a sale maps back to an item.
    *
-   * The first dimension is `subid`, **not** `subid1`: a live convert call sent
-   * all six and the returned tracking URL carried
-   * `subid,subid2,subid3,subid4,subid5` — `subid1` was silently dropped. Since
-   * dimension one is the item id, using the wrong name loses the attribution
-   * that makes any of this worth reconciling.
+   * Written one way and read back another. The link takes
+   * `subid,subid2,subid3,subid4,subid5` (dimension one is `subid`, **not**
+   * `subid1` — a live convert call sent all six and `subid1` was silently
+   * dropped), while the transactions report names the same five
+   * `sub_id,sub_id_2…sub_id_5`. Both spellings are declared because reading the
+   * wrong one yields `undefined`, which is indistinguishable from a sale we
+   * cannot attribute — see [subIdsOf].
    */
   subid?: string | null;
   subid2?: string | null;
   subid3?: string | null;
   subid4?: string | null;
   subid5?: string | null;
-  sale_amount?: number;
-  commission?: number;
+  sub_id?: string | null;
+  sub_id_2?: string | null;
+  sub_id_3?: string | null;
+  sub_id_4?: string | null;
+  sub_id_5?: string | null;
+  sale_amount?: string | number;
+  /** The documented name for what we earn; `commission` is the older spelling. */
+  user_commission?: string | number;
+  commission?: string | number;
   currency?: string;
+  /** pending | validated | payable | invoice_raised | paid | rejected. */
   status?: string;
+  /** The merchant's own order number — what a buyer sees on their receipt. */
+  order_id?: string | null;
+  /** The network's reference for the same sale. */
+  merchant_reference_id?: string | null;
+  product_name?: string | null;
+  category?: string | null;
+  channel_id?: number | null;
+  channel_name?: string | null;
+  invoice_number?: string | null;
   transaction_date?: string;
+  created_at?: string;
   updated_at?: string;
+}
+
+/**
+ * The five attribution dimensions, whichever spelling this response used.
+ *
+ * In order: item, wishlist, user, group gift, click. The fifth is our own click
+ * id, which is what makes a sale traceable to one person's click rather than to
+ * whoever first caused the product's link to be converted.
+ */
+export const subIdsOf = (
+  row: CuelinksTransaction,
+): {
+  itemId: string | null;
+  wishlistId: string | null;
+  userId: string | null;
+  groupGiftId: string | null;
+  clickId: string | null;
+} => ({
+  itemId: row.subid ?? row.sub_id ?? null,
+  wishlistId: row.subid2 ?? row.sub_id_2 ?? null,
+  userId: row.subid3 ?? row.sub_id_3 ?? null,
+  groupGiftId: row.subid4 ?? row.sub_id_4 ?? null,
+  clickId: row.subid5 ?? row.sub_id_5 ?? null,
+});
+
+/** What one page of `/transactions` may be narrowed to. */
+export interface CuelinksTransactionQuery {
+  page?: number;
+  perPage?: number;
+  /**
+   * Only sales created or *revised* since this moment.
+   *
+   * The reason a revision-aware sync need not re-read history every hour: a
+   * pending sale that becomes validated a week later is modified, not created,
+   * and this is the filter that catches it.
+   */
+  updatedSince?: Date | null;
 }
 
 export interface CuelinksTransactionPage {
@@ -158,10 +222,16 @@ export class CuelinksClient {
    * One page of conversions. Page-based, not cursor-based: `meta.next_page`
    * carries the next number, or null when this was the last.
    */
-  async transactions(page = 1, perPage = 100): Promise<CuelinksTransactionPage> {
+  async transactions(query: CuelinksTransactionQuery = {}): Promise<CuelinksTransactionPage> {
+    const { page = 1, perPage = 100, updatedSince = null } = query;
     const body = await this.get<CuelinksEnvelope<CuelinksTransaction[]>>('/transactions', {
       page: String(page),
       per_page: String(perPage),
+      // Sorted by when each row last changed, so paging stays meaningful
+      // alongside `updated_since`: newest revision first, oldest last.
+      sort: 'updated_at',
+      order: 'desc',
+      ...(updatedSince ? { updated_since: updatedSince.toISOString() } : {}),
     });
     return { transactions: body.data ?? [], nextPage: body.meta?.next_page ?? null };
   }

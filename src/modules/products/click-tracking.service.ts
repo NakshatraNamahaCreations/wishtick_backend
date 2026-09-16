@@ -100,7 +100,12 @@ export class ClickTrackingService {
         this.logger.error(`Failed to record click for item ${itemId}: ${err.message}`);
       });
 
-    return ClickTrackingService.withTracking(destination, trackingId);
+    return ClickTrackingService.withTracking(destination, trackingId, {
+      monetized: monetized?.monetized ?? false,
+      itemId: item._id.toString(),
+      wishlistId: item.wishlistId.toString(),
+      userId: ctx.userId ?? null,
+    });
   }
 
   /**
@@ -161,24 +166,74 @@ export class ClickTrackingService {
         );
       });
 
-    return ClickTrackingService.withTracking(monetized.destination, trackingId);
+    return ClickTrackingService.withTracking(monetized.destination, trackingId, {
+      monetized: monetized.monetized,
+      itemId: null,
+      wishlistId: null,
+      userId: ctx.userId ?? null,
+    });
   }
 
   /**
-   * Appends our click id as `subId`, the near-universal affiliate convention
-   * for a partner's own tracking key, so a conversion postback (Sprint 6's
-   * auto-ticking) can be matched back to this exact click.
+   * Stamps this click's identity onto the outbound link.
+   *
+   * Two things happen here. `subId` is our own click key, the near-universal
+   * affiliate convention for a partner's tracking id. The `subid…subid5`
+   * dimensions are Cuelinks' own, and they are **rewritten**, not merely
+   * added: a product's affiliate link is converted once and then reused, so
+   * the sub-IDs baked into it describe whoever clicked it first. Left alone,
+   * every later sale on that product would be reported against the first
+   * person's id — and a purchase would be credited to a gift that is not
+   * theirs. Overwriting them per click is what makes a reported sale traceable
+   * to this person, this item, and this moment.
+   *
+   * Only for a link we monetized: on a merchant's own URL these mean nothing,
+   * and adding unknown query parameters to somebody else's product page is a
+   * good way to break it.
    *
    * Returns the URL untouched if it will not parse — a slightly less traceable
    * click beats a broken one.
    */
-  private static withTracking(destination: string, trackingId: string): string {
+  private static withTracking(
+    destination: string,
+    trackingId: string,
+    attribution: {
+      monetized: boolean;
+      itemId: string | null;
+      wishlistId: string | null;
+      userId: string | null;
+    },
+  ): string {
     try {
       const url = new URL(destination);
       url.searchParams.set('subId', trackingId);
+      if (attribution.monetized) {
+        // Dimension one is `subid`, not `subid1` — see CuelinksTransaction.
+        ClickTrackingService.setOrDrop(url, 'subid', attribution.itemId);
+        ClickTrackingService.setOrDrop(url, 'subid2', attribution.wishlistId);
+        ClickTrackingService.setOrDrop(url, 'subid3', attribution.userId);
+        // Nothing here knows which group gift a click belongs to, and the one
+        // baked into the link belongs to somebody else's.
+        ClickTrackingService.setOrDrop(url, 'subid4', null);
+        // The fifth was reserved for exactly this: the click itself, which is
+        // what lets a conversion be joined back to a click_events row.
+        url.searchParams.set('subid5', trackingId);
+      }
       return url.toString();
     } catch {
       return destination;
     }
+  }
+
+  /**
+   * Sets a sub-ID, or removes it when this click has no such dimension.
+   *
+   * Removing matters: a catalogue click has no item and no wishlist, and
+   * leaving the previous converter's ids in place would report the sale
+   * against their wishlist.
+   */
+  private static setOrDrop(url: URL, key: string, value: string | null): void {
+    if (value) url.searchParams.set(key, value);
+    else url.searchParams.delete(key);
   }
 }

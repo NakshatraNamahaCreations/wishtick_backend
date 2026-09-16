@@ -219,10 +219,24 @@ export class GiftingService {
     await this.wishlists.recount(gift.wishlistId);
   }
 
-  async purchase(giftId: string, userId: string, dto: GiftActionDto): Promise<GiftView> {
+  /**
+   * [opts.by] records *who said so* when that is not the gifter — the
+   * affiliate network reporting a sale it observed. The authorization is still
+   * the gifter's: this is their gift either way, and the history should not
+   * claim they typed something a machine noticed.
+   */
+  async purchase(
+    giftId: string,
+    userId: string,
+    dto: GiftActionDto,
+    opts: { by?: string; orderRef?: string } = {},
+  ): Promise<GiftView> {
     const gift = await this.loadOwnGift(giftId, userId);
     if (dto.deliveryNotes) gift.deliveryNotes = dto.deliveryNotes;
-    await this.status.transition(gift, GiftStatus.PURCHASED, userId, { note: dto.note });
+    await this.status.transition(gift, GiftStatus.PURCHASED, opts.by ?? userId, {
+      note: dto.note,
+      orderRef: opts.orderRef,
+    });
     // Purchased means committed; the reservation timer no longer applies.
     await this.cancelExpiry(giftId);
     gift.expiresAt = null;

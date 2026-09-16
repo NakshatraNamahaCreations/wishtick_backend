@@ -70,6 +70,41 @@ export class Conversion {
   @Prop({ type: String, default: null })
   status!: string | null;
 
+  /**
+   * The click that produced the sale — our own uuid, sent out as `subid5`.
+   *
+   * The dimension the other four cannot replace: a product's affiliate link is
+   * converted once and reused, so its baked-in sub-IDs describe whoever clicked
+   * it first. This one is stamped per redirect.
+   */
+  @Prop({ type: String, default: null })
+  clickTrackingId!: string | null;
+
+  /** The merchant's own order number, as the buyer sees it on their receipt. */
+  @Prop({ type: String, default: null })
+  orderId!: string | null;
+
+  /** The network's reference for the same sale, when it gives one. */
+  @Prop({ type: String, default: null })
+  merchantReferenceId!: string | null;
+
+  /** What was bought, as the merchant named it. */
+  @Prop({ type: String, default: null })
+  productName!: string | null;
+
+  /**
+   * The gift this sale was matched to, and when.
+   *
+   * `reconciledAt` is set even when nothing matched — an ordinary wishlist
+   * click that nobody reserved produces a sale with no gift behind it, and
+   * retrying it every hour forever would be work with no possible outcome.
+   */
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'Gift', default: null })
+  giftId!: Types.ObjectId | null;
+
+  @Prop({ type: Date, default: null })
+  reconciledAt!: Date | null;
+
   @Prop({ type: Date, default: null })
   transactionAt!: Date | null;
 
@@ -90,6 +125,8 @@ ConversionSchema.index({ itemId: 1, transactionAt: -1 });
 ConversionSchema.index({ groupGiftId: 1, transactionAt: -1 });
 // Reporting sweeps.
 ConversionSchema.index({ network: 1, transactionAt: -1 });
+// The reconciler's own queue: sales that have not been matched to a gift yet.
+ConversionSchema.index({ reconciledAt: 1, network: 1 });
 
 /**
  * When each network was last reconciled.

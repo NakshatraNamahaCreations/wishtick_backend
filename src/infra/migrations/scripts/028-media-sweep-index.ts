@@ -16,7 +16,7 @@ import type { Migration } from '../migration.types';
  */
 export const migration028: Migration = {
   id: '028-media-sweep-index',
-  description: 'Index for the media sweeper\'s ORPHANED-by-updatedAt query',
+  description: "Index for the media sweeper's ORPHANED-by-updatedAt query",
 
   up: async (db: Db): Promise<void> => {
     // Tolerated: Mongoose's autoIndex builds from the same schema on boot in

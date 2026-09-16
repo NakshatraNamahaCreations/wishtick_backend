@@ -3,13 +3,18 @@ import type { Server } from 'node:http';
 import type { INestApplication } from '@nestjs/common';
 import { getModelToken } from '@nestjs/mongoose';
 import { randomUUID } from 'node:crypto';
-import type { Model } from 'mongoose';
+import { Types, type Model } from 'mongoose';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { AuthService } from 'src/modules/auth/auth.service';
+import { ConversionReconcileService } from 'src/modules/gifting/conversion-reconcile.service';
 import { GiftStatus } from 'src/modules/gifting/gift.types';
 import { ReservationExpiryService } from 'src/modules/gifting/reservation-expiry.service';
 import { WebhookService } from 'src/modules/gifting/webhook.service';
 import { Gift, type GiftDocument } from 'src/modules/gifting/schemas/gift.schema';
+import {
+  Conversion,
+  type ConversionDocument,
+} from 'src/modules/products/schemas/conversion.schema';
 import { WishlistItemStatus, WishlistVisibility } from 'src/modules/wishlists/wishlist.types';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
@@ -54,6 +59,8 @@ describe('Gifting (e2e)', () => {
   let ctx: TestApp;
   let app: INestApplication;
   let giftModel: Model<GiftDocument>;
+  let conversionModel: Model<ConversionDocument>;
+  let reconcile: ConversionReconcileService;
   let expiry: ReservationExpiryService;
   let authService: AuthService;
   let seq = 0;
@@ -126,6 +133,8 @@ describe('Gifting (e2e)', () => {
     ctx = await createTestApp();
     app = ctx.app;
     giftModel = app.get<Model<GiftDocument>>(getModelToken(Gift.name));
+    conversionModel = app.get<Model<ConversionDocument>>(getModelToken(Conversion.name));
+    reconcile = app.get(ConversionReconcileService);
     expiry = app.get(ReservationExpiryService);
     authService = app.get(AuthService);
   }, 120_000);
@@ -695,6 +704,130 @@ describe('Gifting (e2e)', () => {
       // A stale expiry job that survives a purchase must be a no-op.
       const result = await expiry.expire(gift.data.id, new Date().toISOString());
       expect(result.released).toBe(false);
+    });
+  });
+
+  // ── Exit criterion: a reported sale ticks the gift nobody confirmed ───────
+
+  describe('sales reported by the affiliate network', () => {
+    /** A held gift, and the item it is on. */
+    const held = async (): Promise<{ gift: GiftView; gifter: Actor; itemId: string }> => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const { itemId } = await wishlistWithItem(owner);
+      const gift = (await reserve(gifter, itemId).expect(201)).body as Envelope<GiftView>;
+      return { gift: gift.data, gifter, itemId };
+    };
+
+    /** A row exactly as ConversionSyncService would have stored it. */
+    const reported = async (over: Record<string, unknown>): Promise<void> => {
+      await conversionModel.create({
+        network: 'cuelinks',
+        externalId: `txn-${randomUUID()}`,
+        currency: 'INR',
+        status: 'pending',
+        transactionAt: new Date(),
+        ...over,
+      });
+    };
+
+    it('marks a held gift bought, and keeps the network’s reference', async () => {
+      // The gifter buying and never answering "yes, I bought it" is the normal
+      // case, not the exception — and the hold used to expire underneath them.
+      const { gift, gifter, itemId } = await held();
+      await reported({
+        itemId: new Types.ObjectId(itemId),
+        userId: new Types.ObjectId(gifter.userId),
+        saleAmountMinor: 249_900,
+        orderId: 'AMZ-404-991',
+      });
+
+      const report = await reconcile.reconcile();
+
+      expect(report.purchased).toBe(1);
+      const updated = await giftModel.findById(gift.id).exec();
+      expect(updated!.status).toBe('purchased');
+      // Namespaced, because two networks can mint the same number — and
+      // nothing else has ever written this field, which is why the affiliate
+      // webhook could only dead-letter.
+      expect(updated!.orderRef).toMatch(/^cuelinks:txn-/);
+      // The history says who did it, and it was not a person.
+      expect(updated!.history.at(-1)!.by).toBe('system:cuelinks');
+    });
+
+    it('credits the gifter it belongs to, never whoever else holds the item', async () => {
+      const { gift, itemId } = await held();
+      const stranger = await newUser();
+      await reported({
+        itemId: new Types.ObjectId(itemId),
+        userId: new Types.ObjectId(stranger.userId),
+      });
+
+      const report = await reconcile.reconcile();
+
+      expect(report.purchased).toBe(0);
+      expect(report.unmatched).toBe(1);
+      expect((await giftModel.findById(gift.id).exec())!.status).toBe('reserved');
+    });
+
+    it('never un-buys a gift a rejected sale was matched to', async () => {
+      const { gift, gifter, itemId } = await held();
+      await reported({
+        itemId: new Types.ObjectId(itemId),
+        userId: new Types.ObjectId(gifter.userId),
+        status: 'rejected',
+      });
+
+      await reconcile.reconcile();
+
+      // They may well have bought it anyway — through a link we could not
+      // track, or with the cookie stripped. A gift that un-purchases itself is
+      // worse than one that is a little optimistic.
+      expect((await giftModel.findById(gift.id).exec())!.status).toBe('reserved');
+    });
+
+    it('looks at each sale once, and again only when it is revised', async () => {
+      const { gifter, itemId } = await held();
+      await reported({
+        itemId: new Types.ObjectId(itemId),
+        userId: new Types.ObjectId(gifter.userId),
+      });
+
+      await reconcile.reconcile();
+      const second = await reconcile.reconcile();
+
+      // An ordinary wishlist click nobody reserved produces a sale with no
+      // gift behind it; retrying those every hour forever is work with no
+      // possible outcome.
+      expect(second.considered).toBe(0);
+    });
+
+    it('confirms the order’s payment once the network validates the sale', async () => {
+      const { gift, gifter, itemId } = await held();
+      await reported({
+        itemId: new Types.ObjectId(itemId),
+        userId: new Types.ObjectId(gifter.userId),
+        status: 'validated',
+        orderId: 'FK-771',
+      });
+
+      await reconcile.reconcile();
+      // The listener runs off the emitted event, after the transition commits.
+      await new Promise((r) => setTimeout(r, 150));
+
+      const order = (
+        await request(app.getHttpServer())
+          .get(`${V1}/gifts/${gift.id}/order`)
+          .set(auth(gifter.token))
+          .expect(200)
+      ).body as Envelope<{
+        stage: string;
+        timeline: { stage: string; reached: boolean; source: string | null }[];
+      }>;
+
+      // The one line on this timeline nobody had to type.
+      const payment = order.data.timeline.find((s) => s.stage === 'payment_confirmed');
+      expect(payment).toMatchObject({ reached: true, source: 'affiliate_webhook' });
     });
   });
 

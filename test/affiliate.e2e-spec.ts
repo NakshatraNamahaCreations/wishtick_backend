@@ -397,21 +397,97 @@ describe('Affiliate monetization & conversions (e2e)', () => {
       expect(requests[1].url).toContain('page=2');
     });
 
-    it('stops at the first page with nothing new, so the steady state is one call', async () => {
+    it('stops at the first page with nothing new on an unbounded first run', async () => {
       reply(page([{ id: 't1', subid: 'a' }], 2));
       reply(page([{ id: 't2', subid: 'b' }], null));
       await conversions.sync();
       expect(requests).toHaveLength(2);
+      // Nothing has been synced before, so the first run asks for the API's
+      // own default window rather than a moment of ours.
+      expect(requests[0].url).not.toContain('updated_since');
+    });
 
-      // Second run: page 1 is all sales we already hold. Walking further would
-      // re-read history every hour for nothing.
+    it('asks only for what changed since the last run, with a day of overlap', async () => {
+      reply(page([{ id: 't1', subid: 'a' }], null));
+      await conversions.sync();
+
       requests.length = 0;
-      reply(page([{ id: 't1', subid: 'a' }], 2));
-      const second = await conversions.sync();
+      reply(page([{ id: 't1', subid: 'a' }], null));
+      await conversions.sync();
 
-      expect(requests).toHaveLength(1);
-      expect(second.inserted).toBe(0);
-      expect(second.updated).toBe(1);
+      const url = new URL(requests[0].url);
+      const since = new Date(url.searchParams.get('updated_since')!);
+      const hoursAgo = (Date.now() - since.getTime()) / 3_600_000;
+      // A day back, not the exact last-sync moment: the two clocks are not the
+      // same clock, and re-reading a few rows is cheaper than losing one.
+      expect(hoursAgo).toBeGreaterThan(23);
+      expect(hoursAgo).toBeLessThan(25);
+    });
+
+    it('keeps paging a narrowed window, where every row may be a revision', async () => {
+      reply(page([{ id: 't1', subid: 'a' }], null));
+      await conversions.sync();
+
+      // Both pages are sales we already hold — which is the normal shape of an
+      // `updated_since` window, since a revision is an update, not an insert.
+      // Stopping at the first such page would drop the rest of the window.
+      requests.length = 0;
+      reply(page([{ id: 't1', subid: 'a', status: 'validated' }], 2));
+      reply(page([{ id: 't1', subid: 'a', status: 'paid' }], null));
+      await conversions.sync();
+
+      expect(requests).toHaveLength(2);
+    });
+
+    it('reads the report’s own spelling of the sub-IDs, and its string money', async () => {
+      // The link is built with `subid…subid5`; the transactions report names
+      // the same five `sub_id…sub_id_5` and quotes money as a decimal string.
+      // Read as numbers off the link's spelling, every field here was null.
+      reply(
+        page([
+          {
+            id: 77,
+            sub_id: '507f1f77bcf86cd799439011',
+            sub_id_3: '507f1f77bcf86cd799439013',
+            sub_id_5: 'click-uuid-1',
+            sale_amount: '1499.50',
+            user_commission: '74.25',
+            currency: 'INR',
+            status: 'validated',
+            order_id: 'AMZ-404-991',
+            product_name: 'Espresso machine',
+            merchant_reference_id: 'ref-9',
+          },
+        ]),
+      );
+
+      await conversions.sync();
+
+      const stored = await conversionModel.findOne({ externalId: '77' }).exec();
+      expect(stored!.itemId!.toString()).toBe('507f1f77bcf86cd799439011');
+      expect(stored!.userId!.toString()).toBe('507f1f77bcf86cd799439013');
+      expect(stored!.clickTrackingId).toBe('click-uuid-1');
+      expect(stored!.saleAmountMinor).toBe(149_950);
+      expect(stored!.commissionMinor).toBe(7_425);
+      expect(stored!.orderId).toBe('AMZ-404-991');
+      expect(stored!.productName).toBe('Espresso machine');
+      expect(stored!.merchantReferenceId).toBe('ref-9');
+    });
+
+    it('re-opens a sale for reconciliation when its status moves', async () => {
+      reply(page([{ id: 't1', subid: 'a', status: 'pending' }], null));
+      await conversions.sync();
+      await conversionModel.updateOne({ externalId: 't1' }, { $set: { reconciledAt: new Date() } });
+
+      reply(page([{ id: 't1', subid: 'a', status: 'validated' }], null));
+      await conversions.sync();
+
+      // Pending becoming validated is the moment an order stops being a claim
+      // and becomes a fact; a row left marked reconciled would never be looked
+      // at again.
+      const stored = await conversionModel.findOne({ externalId: 't1' }).exec();
+      expect(stored!.status).toBe('validated');
+      expect(stored!.reconciledAt).toBeNull();
     });
 
     it('refuses to follow a next_page that does not advance', async () => {

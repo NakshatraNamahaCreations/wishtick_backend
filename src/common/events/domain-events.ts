@@ -296,6 +296,48 @@ export interface EventWishlistOfferedEvent {
 }
 
 /**
+ * A run of the affiliate reconciliation finished with rows to look at.
+ *
+ * Carries no rows: what a sale means for a gift is the gifting module's
+ * business, and the products module must not learn about gifts in order to
+ * say that new sales have landed.
+ */
+export const AFFILIATE_CONVERSIONS_SYNCED = 'affiliate.conversions_synced';
+
+export interface AffiliateConversionsSyncedEvent {
+  network: string;
+  transactions: number;
+}
+
+/**
+ * A reported sale was matched to a gift somebody is holding.
+ *
+ * The affiliate network is the only party besides the gifter that can say a
+ * purchase happened, and it says so hours later — so this is emitted from the
+ * reconciliation, not from anything a person did.
+ */
+export const AFFILIATE_SALE_MATCHED = 'affiliate.sale_matched';
+
+export interface AffiliateSaleMatchedEvent {
+  giftId: string;
+  network: string;
+  /** The network's transaction id — what `Gift.orderRef` now carries. */
+  externalId: string;
+  /** The merchant's own order number, when it gave one. */
+  orderId: string | null;
+  saleAmountMinor: number | null;
+  currency: string;
+  /** The network's status, verbatim. */
+  status: string | null;
+  /**
+   * Whether the network has validated the sale, as opposed to merely seeing
+   * it. A pending sale is enough to say a gift was bought; only a validated
+   * one is enough to say the money is real.
+   */
+  confirmed: boolean;
+}
+
+/**
  * A host put somebody with an account on an event's guest list.
  *
  * Inviting used to write the row and stop there: the email and SMS that once

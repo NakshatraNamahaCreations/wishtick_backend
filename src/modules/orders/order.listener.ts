@@ -3,8 +3,10 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
+  AFFILIATE_SALE_MATCHED,
   GIFT_FULFILLED,
   GIFT_PURCHASED,
+  type AffiliateSaleMatchedEvent,
   type GiftLifecycleEvent,
 } from 'src/common/events/domain-events';
 import { GiftMode } from 'src/modules/gifting/gift.types';
@@ -47,6 +49,44 @@ export class OrderListener {
         itemId: e.itemId,
         amountMinor: gift.amountMinor,
         currency: gift.currency,
+      });
+    });
+  }
+
+  /**
+   * The affiliate network confirming the sale is the one thing on this timeline
+   * that nobody had to type.
+   *
+   * Recorded as `affiliate_webhook`-sourced: it did not come from the gifter,
+   * and a payment the merchant reported is exactly what `payment_confirmed`
+   * was declared for. A merely *pending* sale is left alone — it is enough to
+   * say the gift was bought, which the purchase itself already said, and not
+   * enough to say the money cleared.
+   */
+  @OnEvent(AFFILIATE_SALE_MATCHED)
+  async onSaleMatched(e: AffiliateSaleMatchedEvent): Promise<void> {
+    if (!e.confirmed) return;
+    await this.guard('affiliate-sale-matched', async () => {
+      const gift = await this.gifts.findById(new Types.ObjectId(e.giftId)).exec();
+      if (!gift || gift.mode === GiftMode.OFFLINE) return;
+
+      // The purchase this sale confirms may have been minted moments ago by
+      // the same reconciliation, on a listener that has not finished running:
+      // `emit` does not wait for its handlers, so the order can legitimately
+      // not exist yet. Minting it here is idempotent on the gift id, and makes
+      // this handler independent of the order the two events are served in.
+      await this.orders.createForGift({
+        giftId: e.giftId,
+        gifterId: gift.gifterId.toString(),
+        itemId: gift.itemId.toString(),
+        amountMinor: gift.amountMinor,
+        currency: gift.currency,
+      });
+
+      await this.orders.advanceByGift(e.giftId, {
+        stage: OrderStage.PAYMENT_CONFIRMED,
+        source: OrderStageSource.AFFILIATE_WEBHOOK,
+        note: e.orderId ? `Order ${e.orderId} confirmed by ${e.network}` : undefined,
       });
     });
   }
