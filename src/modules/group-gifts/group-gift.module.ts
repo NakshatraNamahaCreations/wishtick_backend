@@ -4,6 +4,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { QUEUE } from 'src/infra/queue/queue.constants';
 import { ChatModule } from 'src/modules/chat/chat.module';
 import { GiftingModule } from 'src/modules/gifting/gifting.module';
+import { Gift, GiftSchema } from 'src/modules/gifting/schemas/gift.schema';
 import { ProductsModule } from 'src/modules/products/products.module';
 import { UserProfile, UserProfileSchema } from 'src/modules/profile/schemas/user-profile.schema';
 import { UsersModule } from 'src/modules/users/users.module';
@@ -38,6 +39,9 @@ import { SettlementService } from './settlement.service';
       // Registered here too so the service can re-read item status inside the
       // claim transaction and the preview can read the item title.
       { name: WishlistItem.name, schema: WishlistItemSchema },
+      // Read-only, and from one direction: a recipient arrives at their group
+      // gift through the holder gift on their received list.
+      { name: Gift.name, schema: GiftSchema },
       // The saved UPI ID lives on the profile; settle-up reads and optionally
       // writes it. Read-only coupling — this module never owns a profile.
       { name: UserProfile.name, schema: UserProfileSchema },

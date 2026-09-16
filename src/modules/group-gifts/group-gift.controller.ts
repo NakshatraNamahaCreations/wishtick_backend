@@ -40,7 +40,12 @@ import {
   type GroupGiftInviteView,
 } from './group-gift-invites.service';
 import { GroupGiftService } from './group-gift.service';
-import type { GroupGiftShareView, GroupGiftView, ItemGroupGiftView } from './group-gift.views';
+import type {
+  GiftContributorsView,
+  GroupGiftShareView,
+  GroupGiftView,
+  ItemGroupGiftView,
+} from './group-gift.views';
 
 /** Money-adjacent, and creating claims an item; a tight per-IP bucket blunts scripting. */
 const GROUP_GIFT_THROTTLE = { default: { limit: 30, ttl: 60_000 } };
@@ -72,6 +77,24 @@ export class GroupGiftController {
     @Param('itemId') itemId: string,
   ): Promise<ItemGroupGiftView | null> {
     return this.groupGifts.findForItem(itemId, userId);
+  }
+
+  @Get('gifts/:giftId/contributors')
+  @ApiOperation({
+    summary: 'Who chipped in on a group gift you received',
+    description:
+      'For the recipient, from their Gifts Received list — the one way into a group gift ' +
+      'that its recipient is allowed to take, and only once the gift is theirs to know ' +
+      'about. Names only: no amounts, and anonymous givers are counted, never named. ' +
+      'Answers 404 for anybody else, for a single gift, and for a gift still being kept ' +
+      'secret.',
+  })
+  @ApiResponseDoc({ status: 404, description: 'GIFT_NOT_FOUND' })
+  contributors(
+    @CurrentUser('id') userId: string,
+    @Param('giftId') giftId: string,
+  ): Promise<GiftContributorsView> {
+    return this.groupGifts.contributorsForGift(giftId, userId);
   }
 
   @Post('items/:itemId/group-gift')

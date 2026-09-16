@@ -135,13 +135,39 @@ export interface PublicGroupGiftView {
 }
 
 /**
+ * One name on a delivered group gift's "who chipped in" list.
+ *
+ * No amounts, deliberately. The recipient is being told who was involved, and
+ * telling them who gave how much turns a card everybody signed into a table
+ * of what each friendship was worth.
+ */
+export interface GiftContributorView {
+  /** Null when they chose to be anonymous — there is nobody to open. */
+  userId: string | null;
+  name: string;
+  anonymous: boolean;
+  /** The one who started it and collected the money. */
+  organiser: boolean;
+}
+
+/** Who was behind a group gift, for the person who received it. */
+export interface GiftContributorsView {
+  groupGiftId: string;
+  title: string;
+  /** Everyone who put money in, the anonymous ones included. */
+  contributorCount: number;
+  /** Named first, then the anonymous ones; the organiser leads either way. */
+  contributors: GiftContributorView[];
+}
+
+/**
  * A person's name, already resolved by the caller.
  *
  * Was `user.name`, which phone signup never sets — the name people actually
  * type lands on their profile's `displayName` — so every participant and every
  * contributor rendered as "A friend".
  */
-const displayName = (names: Map<string, string>, userId: string): string =>
+export const displayNameOf = (names: Map<string, string>, userId: string): string =>
   names.get(userId)?.trim() || 'A friend';
 
 /** Clamp to [0,100]; a capped over-target group never shows more than 100%. */
@@ -164,13 +190,13 @@ const toContributionView = (
   createdAt: c.createdAt,
   contributor: c.anonymous
     ? null
-    : { userId: c.userId.toString(), name: displayName(names, c.userId.toString()) },
+    : { userId: c.userId.toString(), name: displayNameOf(names, c.userId.toString()) },
 });
 
 const toParticipants = (gift: GroupGiftDocument, names: Map<string, string>): ParticipantView[] =>
   gift.participantIds.map((id) => ({
     userId: id.toString(),
-    name: displayName(names, id.toString()),
+    name: displayNameOf(names, id.toString()),
   }));
 
 /**
@@ -277,7 +303,7 @@ export function toGroupGiftView(input: {
     // The gift's recipient rather than the item's owner — on a list made for a
     // WishMate the owner organised it and somebody else receives it.
     recipientName: items.has(gift.itemId.toString())
-      ? displayName(names, gift.recipientId.toString())
+      ? displayNameOf(names, gift.recipientId.toString())
       : null,
     thankYouNote: gift.thankYouNote,
     thankYouAt: gift.thankYouAt,

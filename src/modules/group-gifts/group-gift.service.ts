@@ -22,7 +22,8 @@ import type { AppConfig } from 'src/config/configuration';
 import { LockService } from 'src/infra/redis/lock.service';
 import { GiftStatusService } from 'src/modules/gifting/gift-status.service';
 import { GiftingService } from 'src/modules/gifting/gifting.service';
-import { GiftMode, GiftStatus, GiftType } from 'src/modules/gifting/gift.types';
+import { GiftMode, GiftStatus, GiftType, GiftVisibility } from 'src/modules/gifting/gift.types';
+import { Gift, type GiftDocument } from 'src/modules/gifting/schemas/gift.schema';
 import { AccessPolicyService } from 'src/modules/wishlists/access/access-policy.service';
 import {
   WishlistItem,
@@ -50,7 +51,9 @@ import type {
   ShareGroupGiftDto,
 } from './dto/group-gift.dto';
 import {
+  displayNameOf,
   toGroupGiftView,
+  type GiftContributorsView,
   type ItemGroupGiftView,
   toPublicGroupGiftView,
   type GroupGiftShareView,
@@ -106,6 +109,9 @@ export class GroupGiftService {
     @InjectModel(GroupGiftInvite.name)
     private readonly inviteModel: Model<GroupGiftInviteDocument>,
     @InjectModel(WishlistItem.name) private readonly itemModel: Model<WishlistItemDocument>,
+    // The holder gift, read from the recipient's side — the one route into a
+    // group gift that its recipient is allowed to take.
+    @InjectModel(Gift.name) private readonly giftModel: Model<GiftDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly status: GiftStatusService,
     private readonly gifting: GiftingService,
@@ -166,6 +172,85 @@ export class GroupGiftService {
           ? 0
           : Math.min(100, Math.round((gift.collectedAmountMinor / gift.targetAmountMinor) * 100)),
       contributorCount: gift.contributorCount,
+    };
+  }
+
+  /**
+   * Who chipped in, for the person the group gift went to (`Gifts Received`).
+   *
+   * The rest of this module hides a group gift from its recipient — that is the
+   * surprise — so they arrive at it from the other end: the holder gift on
+   * their received list, once it is theirs to know about. The same test the
+   * received list applies is applied again here rather than trusted, because
+   * this is a different route to the same secret.
+   *
+   * Amounts are left out on purpose; see [GiftContributorView].
+   */
+  async contributorsForGift(giftId: string, userId: string): Promise<GiftContributorsView> {
+    // Not the recipient, not yet theirs to know about, or not a group gift at
+    // all: one 404 for every one of those, so probing this route tells a
+    // stranger nothing a wrong guess would not.
+    const notFound = new AppException(ErrorCode.GIFT_NOT_FOUND, 'Gift not found', 404);
+    if (!Types.ObjectId.isValid(giftId)) throw notFound;
+
+    const gift = await this.giftModel.findById(giftId).exec();
+    if (!gift || gift.recipientId.toString() !== userId) throw notFound;
+    const knowable =
+      gift.visibility === GiftVisibility.VISIBLE ||
+      [GiftStatus.FULFILLED, GiftStatus.COMPLETED].includes(gift.status);
+    if (!knowable) throw notFound;
+
+    // The holder of the primary item, or of one of the extra lines — both are
+    // gifts on the recipient's list and both belong to the same group.
+    const group = await this.groupGiftModel
+      .findOne({ $or: [{ giftId: gift._id }, { 'lines.giftId': gift._id }] })
+      .exec();
+    if (!group) throw notFound;
+
+    const contributions = await this.contributionModel
+      .find({ groupGiftId: group._id, status: ContributionStatus.CONFIRMED })
+      .sort({ createdAt: 1 })
+      .exec();
+
+    const organiserId = group.initiatorId.toString();
+    const named: string[] = [];
+    let anonymousCount = 0;
+    for (const c of contributions) {
+      if (c.anonymous) {
+        anonymousCount++;
+        continue;
+      }
+      const id = c.userId.toString();
+      // One row per person however many times they chipped in.
+      if (!named.includes(id)) named.push(id);
+    }
+    // The organiser leads the list whether or not they put money in themselves:
+    // they are the reason there was a group at all.
+    const ordered = [organiserId, ...named.filter((id) => id !== organiserId)];
+
+    const userDocs = await this.users.findManyByIds(ordered);
+    const names = await this.resolveNames(ordered, userDocs);
+
+    return {
+      groupGiftId: group._id.toString(),
+      title: group.title,
+      contributorCount: group.contributorCount,
+      contributors: [
+        ...ordered.map((id) => ({
+          userId: id,
+          name: displayNameOf(names, id),
+          anonymous: false,
+          organiser: id === organiserId,
+        })),
+        // Anonymous givers are counted, never named — the same redaction the
+        // contribution timeline applies, and for the same reason.
+        ...Array.from({ length: anonymousCount }, () => ({
+          userId: null,
+          name: 'Someone',
+          anonymous: true,
+          organiser: false,
+        })),
+      ],
     };
   }
 
