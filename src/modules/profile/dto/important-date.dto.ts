@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsDateString, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 
@@ -41,3 +41,12 @@ export class CreateImportantDateDto {
   @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
   customOccasion?: string;
 }
+
+/**
+ * Changing a saved date. Every field is optional — what is not sent is left
+ * alone — but each is validated exactly as on creation.
+ *
+ * `PartialType` rather than a hand-written copy so a validator added to
+ * [CreateImportantDateDto] cannot be forgotten here.
+ */
+export class UpdateImportantDateDto extends PartialType(CreateImportantDateDto) {}

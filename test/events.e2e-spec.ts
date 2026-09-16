@@ -2270,6 +2270,114 @@ describe('Events & invites (e2e)', () => {
       expect(view.data.wishlists.map((w) => w.title)).not.toContain('Host private');
     });
 
+    // Exit criterion: attaching a list to an event is what shows it to that
+    // event's guests — and the only thing that does.
+    describe('a list the host attached to their own event', () => {
+      /** A host list at [visibility], attached to a published public event. */
+      const hostList = async (
+        host: Actor,
+        title: string,
+        visibility: string,
+        attach = true,
+      ): Promise<{ eventId: string; slug: string; wishlistId: string }> => {
+        const wl = (
+          await request(app.getHttpServer())
+            .post(`${V1}/wishlists`)
+            .set(auth(host.token))
+            .send({ title, visibility })
+            .expect(201)
+        ).body as Envelope<{ id: string }>;
+        const event = await createEvent(host, {
+          visibility: 'public',
+          ...(attach ? { wishlistIds: [wl.data.id] } : {}),
+        });
+        await publish(host, event.id);
+        const full = (
+          await request(app.getHttpServer())
+            .get(`${V1}/events/${event.id}`)
+            .set(auth(host.token))
+            .expect(200)
+        ).body as Envelope<EventView & { share?: { slug: string } }>;
+        return { eventId: event.id, slug: full.data.share!.slug, wishlistId: wl.data.id };
+      };
+
+      it('opens for a guest who is not a WishMate of the host', async () => {
+        // The common case, and it used to fail silently: a list made through
+        // the event wizard is WISHMATES, so a guest who was not already
+        // connected to the host opened the invitation and found nothing on it.
+        const host = await newUser('Rohan');
+        const guest = await newUser('Priya');
+        const { slug } = await hostList(host, 'For my guests', 'wishmates');
+        const guestToken = await attend(guest, slug);
+
+        const view = (await inviteView(guestToken, guest).expect(200)).body as Envelope<{
+          wishlists: { slug: string | null; title: string; locked: boolean }[];
+        }>;
+        const row = view.data.wishlists.find((w) => w.title === 'For my guests');
+        expect(row).toBeDefined();
+        expect(row!.locked).toBe(false);
+
+        // And it really opens, rather than merely being listed.
+        await request(app.getHttpServer())
+          .get(`${V1}/public/wishlists/${row!.slug!}`)
+          .set(auth(guest.token))
+          .expect(200);
+      });
+
+      it('shows nothing to a guest who has not answered yet', async () => {
+        const host = await newUser();
+        const guest = await newUser();
+        const { eventId, slug } = await hostList(host, 'For my guests', 'wishmates');
+
+        // Joined, but no RSVP: being on a guest list is not attending, and the
+        // list is for the people who are coming.
+        const joined = (
+          await request(app.getHttpServer())
+            .post(`${V1}/events/by-slug/${slug}/join`)
+            .set(auth(guest.token))
+            .expect(201)
+        ).body as Envelope<{ token: string }>;
+
+        const view = (await inviteView(joined.data.token, guest).expect(200)).body as Envelope<{
+          wishlists: { title: string; locked: boolean }[];
+        }>;
+        expect(view.data.wishlists.map((w) => w.title)).not.toContain('For my guests');
+        expect(eventId).toEqual(expect.any(String));
+      });
+
+      it('leaves a private one shut, however it was attached', async () => {
+        const host = await newUser();
+        const guest = await newUser();
+        const { slug, wishlistId } = await hostList(host, 'Just mine', 'private');
+        const guestToken = await attend(guest, slug);
+
+        const view = (await inviteView(guestToken, guest).expect(200)).body as Envelope<{
+          wishlists: { title: string }[];
+        }>;
+        // Private means the people its owner chose by hand, and being on a
+        // guest list is not being chosen.
+        expect(view.data.wishlists.map((w) => w.title)).not.toContain('Just mine');
+        await request(app.getHttpServer())
+          .get(`${V1}/wishlists/${wishlistId}`)
+          .set(auth(guest.token))
+          .expect(404);
+      });
+
+      it('is never shown until the host attaches it', async () => {
+        const host = await newUser();
+        const guest = await newUser();
+        const { slug } = await hostList(host, 'Unattached', 'wishmates', false);
+        const guestToken = await attend(guest, slug);
+
+        // Nothing rides along by being the host's, or by being for the person
+        // the event is about. An invitation carries what was put on it.
+        const view = (await inviteView(guestToken, guest).expect(200)).body as Envelope<{
+          wishlists: { title: string }[];
+        }>;
+        expect(view.data.wishlists).toHaveLength(0);
+      });
+    });
+
     // Knowing who is asking may only ever *widen* what the link allows. These
     // pin the other side of that: the slug still opens for nobody else.
     it('an event-only list opens by slug for the event and nobody else', async () => {

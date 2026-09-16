@@ -4,6 +4,8 @@ import { getModelToken } from '@nestjs/mongoose';
 import { randomUUID } from 'node:crypto';
 import type { Model } from 'mongoose';
 import { DeviceTokenService } from 'src/modules/notifications/device-token.service';
+import { NotificationService } from 'src/modules/notifications/notification.service';
+import { NotificationType } from 'src/modules/notifications/notification.types';
 import {
   DeviceToken,
   type DeviceTokenDocument,
@@ -226,6 +228,35 @@ describe('Device tokens (e2e)', () => {
     expect(await devices.liveTokensFor(owner.userId)).toEqual(['live-token']);
     // Revoked, not deleted — a client that has not noticed would re-create it.
     expect(await tokenModel.countDocuments({ token: 'dead-token' })).toBe(1);
+  });
+
+  /**
+   * The same notification dispatched twice must reach the phone once.
+   *
+   * Email and SMS have always claimed their delivery before sending; push
+   * alone sent first and recorded afterwards, so a second dispatch of the same
+   * (user, type, ref) pushed again. Nothing used to re-emit — every
+   * push-bearing type came from a one-shot domain event — so it never showed.
+   * A reminder driven by a repeating scan is the first thing that can
+   * legitimately run twice for one occurrence, which is what makes this matter.
+   */
+  it('pushes once however often the same notification is dispatched', async () => {
+    const owner = await newUser();
+    await register(owner, 'phone-a').expect(200);
+
+    const notifications = app.get(NotificationService);
+    const one = {
+      userId: owner.userId,
+      // Any type that carries push; the channel is what is under test.
+      type: NotificationType.GIFT_FULFILLED,
+      refId: 'the-same-occurrence',
+      payload: { itemTitle: 'A kite' },
+    };
+
+    await notifications.dispatch(one);
+    await notifications.dispatch(one);
+
+    expect(ctx.push.tokens).toEqual(['phone-a']);
   });
 
   it('sends no push to someone who has turned the category off', async () => {

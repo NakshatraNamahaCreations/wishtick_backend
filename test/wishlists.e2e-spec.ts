@@ -37,6 +37,7 @@ interface ItemView {
   position: number;
   status: WishlistItemStatus;
   price: { amountMinor: number | null; currency: string };
+  imageUrls: string[];
 }
 
 interface Actor {
@@ -362,6 +363,48 @@ describe('Wishlists (e2e)', () => {
         relation: 'Brother',
         occasionKey: 'anniversary',
       });
+    });
+
+    // A pasted product link keeps its preview picture. The item is a pointer
+    // to somebody else's page, so the address is stored rather than the photo
+    // being copied into our own storage.
+    it('keeps the preview pictures of a pasted link', async () => {
+      const owner = await newUser();
+      const wishlist = await createWishlist(owner);
+
+      const item = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists/${wishlist.id}/items`)
+          .set(auth(owner.token))
+          .send({
+            title: 'Amazon Echo Dot',
+            productLink: 'https://shop.example.test/p/echo-dot',
+            imageUrls: ['https://cdn.example.test/echo-dot.jpg'],
+          })
+          .expect(201)
+      ).body as Envelope<ItemView>;
+
+      expect(item.data.imageUrls).toEqual(['https://cdn.example.test/echo-dot.jpg']);
+    });
+
+    it('takes no picture that is not a plain https address', async () => {
+      const owner = await newUser();
+      const wishlist = await createWishlist(owner);
+
+      for (const imageUrls of [
+        // Mixed content in the web client, and a passive network sees what
+        // somebody is being given.
+        ['http://cdn.example.test/echo-dot.jpg'],
+        // Script smuggled in where an address is expected.
+        ['javascript:alert(1)'],
+        ['not a url at all'],
+      ]) {
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists/${wishlist.id}/items`)
+          .set(auth(owner.token))
+          .send({ title: 'Echo Dot', imageUrls })
+          .expect(400);
+      }
     });
 
     it('will not let a participant add items', async () => {

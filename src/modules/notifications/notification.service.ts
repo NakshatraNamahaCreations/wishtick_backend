@@ -154,7 +154,40 @@ export class NotificationService {
    * moves on. Tokens the provider rejects are revoked here, which is the only
    * thing that keeps the registry from filling with dead addresses.
    */
+  /**
+   * The few payload fields a tapped push needs to land on the right screen.
+   *
+   * `refId` alone cannot always address one: a chat message's refId is the
+   * *message*, which is the dedupe axis and must stay that way — keyed on the
+   * chat instead, the second message anybody ever sent would be dropped as a
+   * duplicate — but no screen is addressed by a message id, so a tapped chat
+   * push could only open the chat list and leave the reader to find the
+   * conversation themselves.
+   *
+   * A named list rather than the whole payload: that also holds the message
+   * preview and the sender's name, and none of that belongs in a data payload
+   * the app routes on.
+   */
+  private static routingData(data: DispatchJobData): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const key of ['chatId', 'senderId', 'direct']) {
+      const value = data.payload[key];
+      if (value !== undefined && value !== null) out[key] = String(value);
+    }
+    return out;
+  }
+
   private async sendPush(data: DispatchJobData): Promise<void> {
+    // Claimed before sending, exactly as `sendChannel` claims email and SMS.
+    // Without this a second dispatch of the same (user, type, ref) pushes a
+    // second time: `record` below is an upsert, which notes what happened but
+    // refuses nothing. Nothing used to re-emit — every push-bearing type was
+    // triggered by a one-shot domain event, and a completed job is removed
+    // from the queue, so the stable jobId no longer coalesces. A reminder
+    // driven by a repeating scan is the first thing here that can legitimately
+    // run twice for one occurrence.
+    if (await this.alreadySent(data, NotificationChannel.PUSH)) return;
+
     const tokens = await this.devices.liveTokensFor(data.userId);
     if (tokens.length === 0) {
       await this.record(data, NotificationChannel.PUSH, DeliveryStatus.SUPPRESSED, {
@@ -169,8 +202,12 @@ export class NotificationService {
         tokens,
         title,
         body: text.split('\n')[0],
-        // FCM data values must be strings; the app routes on these two.
-        data: { type: data.type, refId: data.refId },
+        // FCM data values must be strings; the app routes on these.
+        data: {
+          type: data.type,
+          refId: data.refId,
+          ...NotificationService.routingData(data),
+        },
       });
       await this.devices.revoke(result.unregistered);
       await this.record(data, NotificationChannel.PUSH, DeliveryStatus.SENT, {});
@@ -271,6 +308,32 @@ export class NotificationService {
         removeOnComplete: true,
       },
     );
+  }
+
+  /**
+   * Claims this (user, type, ref, channel) and says whether it is already done.
+   *
+   * The same claim `sendChannel` makes inline: insert QUEUED, and a duplicate
+   * that is already SENT means delivered — anything else is a prior attempt of
+   * this same job and should be retried.
+   */
+  private async alreadySent(data: DispatchJobData, channel: NotificationChannel): Promise<boolean> {
+    const dedupeKey = deliveryDedupe(data.userId, data.type, data.refId, channel);
+    try {
+      await this.deliveryModel.create({
+        userId: new Types.ObjectId(data.userId),
+        type: data.type,
+        channel,
+        refId: data.refId,
+        dedupeKey,
+        status: DeliveryStatus.QUEUED,
+      });
+      return false;
+    } catch (err) {
+      if (!NotificationService.isDuplicateKey(err)) throw err;
+      const log = await this.deliveryModel.findOne({ dedupeKey }).exec();
+      return log?.status === DeliveryStatus.SENT;
+    }
   }
 
   private async record(

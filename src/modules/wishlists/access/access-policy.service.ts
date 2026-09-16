@@ -31,12 +31,16 @@ import { WISHMATE_LINK, type IWishmateLink } from './wishmate-link.port';
  * | visibility   | owner | participant | event invitee | wishmate | link holder | stranger |
  * |--------------|-------|-------------|---------------|----------|-------------|----------|
  * | public       | VCM   | VCG         | VCG           | VCG      | VG(+C)      | V(+G)    |
- * | wishmates    | VCM   | VCG         | VCG           | VCG      | —           | —        |
+ * | wishmates    | VCM   | VCG         | VCG*          | VCG      | —           | —        |
  * | private      | VCM   | VCG         | —             | —        | —           | —        |
- * | event_only   | VCM   | VCG         | VCG           | —        | —           | —        |
- * | invite_only  | VCM   | VCG         | —             | —        | VG          | —        |
+ * | event_only   | VCM   | VCG         | VCG*          | —        | —           | —        |
+ * | invite_only  | VCM   | VCG         | VCG*          | —        | VG          | —        |
  *
  * V=view C=comment G=gift M=manage
+ *
+ * \* An accepted invitee of **the event this list is attached to** — never an
+ * invitee at large. A list with no `eventId` grants them nothing, and PRIVATE
+ * grants them nothing however it was attached.
  *
  * Deliberate choices:
  *
@@ -97,16 +101,22 @@ export class AccessPolicyService {
       return this.grant(Relationship.PARTICIPANT, participant.role, wishlist);
     }
 
-    // Event membership grants access ONLY on an EVENT_ONLY list.
+    // Event membership grants access on any attached list except a PRIVATE one.
     //
-    // A wishlist can carry an eventId while still being PRIVATE — attached to
-    // the occasion, but shared with a hand-picked few. Consulting the event on
-    // every visibility would hand the whole guest list access to a private
-    // list, which is the opposite of what its owner chose. PUBLIC needs no
-    // special case: the public fallback below already grants an invitee the
-    // same rights.
+    // Attaching a wishlist to an event *is* the decision to show it to that
+    // event's guests: the host picks the list, and the people they invited are
+    // exactly the audience they picked it for. Read narrowly — EVENT_ONLY and
+    // nothing else — the common case failed silently: a list created through
+    // the event wizard defaults to WISHMATES, so a guest who was not already a
+    // WishMate of the host opened the invitation and found nothing on it.
+    //
+    // PRIVATE is the one exception, and it is absolute. Private means the
+    // people you chose by hand, and being on a guest list is not being chosen;
+    // an attached private list stays readable only by its owner and the
+    // participants they admitted to it. This is also why attaching still never
+    // *changes* a list's visibility — the owner's setting is theirs.
     if (
-      wishlist.visibility === WishlistVisibility.EVENT_ONLY &&
+      wishlist.visibility !== WishlistVisibility.PRIVATE &&
       ctx.userId &&
       wishlist.eventId &&
       (await this.events.isAcceptedInvitee(wishlist.eventId, ctx.userId))

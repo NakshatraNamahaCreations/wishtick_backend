@@ -140,6 +140,28 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     lines: [`${s(p, 'eventTitle', 'Your event')} is ${s(p, 'whenText', 'coming up')}.`],
     cta: { label: 'View the event', url: s(p, 'url') },
   }),
+  /**
+   * "Siya's Birthday is in a week" — or, when the year they were born is a
+   * real one, "Siya turns 25 in a week", which is the thing worth knowing and
+   * the thing a card would say.
+   *
+   * No CTA: this type has no email, and a push carries its destination in its
+   * data rather than in its words.
+   */
+  [NotificationType.CELEBRATION_REMINDER]: (p) => {
+    const person = who(p, 'personName');
+    const when = s(p, 'whenText', 'soon');
+    const age = Number(p.turningAge);
+    const headline =
+      Number.isFinite(age) && age > 0
+        ? `${person} turns ${age} ${when}`
+        : `${person}'s ${s(p, 'occasionLabel', 'celebration')} is ${when}`;
+    return {
+      subject: headline,
+      title: headline,
+      lines: [`${headline}. Time to find something.`],
+    };
+  },
   [NotificationType.EVENT_INVITE]: (p) => ({
     subject: `${who(p, 'hostName')} invited you to ${s(p, 'eventTitle', 'an event')}`,
     title: `You're invited to ${s(p, 'eventTitle', 'an event')}`,

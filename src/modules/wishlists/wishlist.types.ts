@@ -1,3 +1,12 @@
+/**
+ * How many pictures one item may carry.
+ *
+ * The same cap the catalogue import already applies when it snapshots a
+ * product's photographs, shared so a pasted link cannot store more pictures
+ * than a product imported from a provider can.
+ */
+export const MAX_ITEM_IMAGES = 5;
+
 export enum WishlistVisibility {
   /** Anyone, link or not. Gifting open to any signed-in user. */
   PUBLIC = 'public',

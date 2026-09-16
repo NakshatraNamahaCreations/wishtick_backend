@@ -48,6 +48,11 @@ import {
 } from 'src/modules/events/event-reminders.processor';
 import { reminderWhenText } from 'src/modules/events/event-reminders.service';
 import {
+  CELEBRATION_REMINDER_DUE,
+  celebrationWhenText,
+  type CelebrationReminderDueEvent,
+} from 'src/modules/profile/celebration-reminders.service';
+import {
   PRODUCT_OUT_OF_STOCK,
   PRODUCT_PRICE_CHANGED,
   type ProductOutOfStockEvent,
@@ -271,6 +276,11 @@ export class NotificationListener {
             senderName,
             preview,
             url: `${this.web}/chats/${e.chatId}`,
+            // What the app opens the conversation with. A 1:1 thread is
+            // addressed by the *person*, so the sender is who it opens.
+            chatId: e.chatId,
+            senderId: e.senderId,
+            direct: e.direct,
           },
         });
       }
@@ -392,6 +402,36 @@ export class NotificationListener {
           },
         });
       }
+    });
+  }
+
+  /**
+   * A date somebody saved is coming round.
+   *
+   * The `refId` carries the occurrence, not just the date: delivery dedupe is
+   * permanent per (user, type, ref, channel), so keyed on the date's id alone
+   * this would arrive once in a person's lifetime. The year and the day are
+   * both in it — the year because a birthday comes back, the day so that
+   * correcting a date mints a fresh reminder rather than being swallowed as a
+   * repeat of the one already sent for the wrong day.
+   */
+  @OnEvent(CELEBRATION_REMINDER_DUE)
+  async onCelebrationReminder(e: CelebrationReminderDueEvent): Promise<void> {
+    await this.guard('celebration-reminder', async () => {
+      await this.notifications.enqueue({
+        userId: e.userId,
+        type: NotificationType.CELEBRATION_REMINDER,
+        refId: `${e.importantDateId}:${e.occurrenceYear}:${e.monthDay}:${e.offset}`,
+        payload: {
+          importantDateId: e.importantDateId,
+          personName: e.personName,
+          relation: e.relation,
+          occasionLabel: e.occasionLabel,
+          whenText: celebrationWhenText(e.offset),
+          daysAway: e.daysAway,
+          turningAge: e.turningAge,
+        },
+      });
     });
   }
 

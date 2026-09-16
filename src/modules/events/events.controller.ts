@@ -403,8 +403,9 @@ export class EventsController {
   @ApiOperation({
     summary: 'Show a guest’s wishlist on this event',
     description:
-      'Links the list to the event and, if it was private, lifts it to EVENT_ONLY so the ' +
-      'event’s accepted guests can actually open it. Optionally attaches one of *your* ' +
+      'Links the list to the event, which is what lets the event’s accepted guests open it. ' +
+      'The list’s own visibility is never rewritten, and a private one stays shut to ' +
+      'everyone its owner did not admit by hand. Optionally attaches one of *your* ' +
       'addresses to that list — the prompt the client raises as you accept, since a list ' +
       'offered for your event is usually a list of gifts for you.',
   })

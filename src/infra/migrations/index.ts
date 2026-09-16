@@ -31,6 +31,7 @@ import { migration029 } from './scripts/029-sibling-steps-retired';
 import { migration030 } from './scripts/030-address-custom-labels';
 import { migration031 } from './scripts/031-address-contact-trim';
 import { migration032 } from './scripts/032-conversion-reconcile-index';
+import { migration033 } from './scripts/033-important-date-month-day';
 
 /** Every migration must be registered here to run. Order comes from the id. */
 export const MIGRATIONS: Migration[] = [
@@ -66,6 +67,7 @@ export const MIGRATIONS: Migration[] = [
   migration030,
   migration031,
   migration032,
+  migration033,
 ];
 
 export { MigrationRunner } from './migration.runner';

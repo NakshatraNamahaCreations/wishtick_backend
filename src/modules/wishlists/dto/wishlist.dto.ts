@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsBoolean,
   IsDateString,
   IsEnum,
@@ -17,6 +18,7 @@ import {
 } from 'class-validator';
 import {
   ItemImportance,
+  MAX_ITEM_IMAGES,
   ParticipantRole,
   WishlistItemStatus,
   WishlistVisibility,
@@ -273,6 +275,24 @@ export class CreateItemDto {
   @IsOptional()
   @IsMongoId({ each: true })
   mediaIds?: string[];
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Pictures of the gift that live elsewhere — the preview image of a pasted ' +
+      'product link, read from its Open Graph tags by POST /products/resolve-url. ' +
+      'Kept as addresses rather than copied into our own storage: the item is a ' +
+      "pointer to somebody else's page, and re-hosting their photograph is both a " +
+      'bill and a licence we have no reason to take on. https only — an http image ' +
+      'is blocked as mixed content in the web client and gives a passive network a ' +
+      'view of what somebody is being given. Media you uploaded comes first.',
+    example: ['https://cdn.example.com/echo-dot.jpg'],
+  })
+  @IsOptional()
+  @ArrayMaxSize(MAX_ITEM_IMAGES)
+  @IsUrl({ protocols: ['https'], require_protocol: true }, { each: true })
+  @MaxLength(2048, { each: true })
+  imageUrls?: string[];
 }
 
 export class UpdateItemDto extends CreateItemDto {

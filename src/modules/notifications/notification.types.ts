@@ -50,6 +50,7 @@ export enum NotificationType {
   GROUP_GIFT_PURCHASED = 'group_gift_purchased',
   GROUP_GIFT_FULFILLED = 'group_gift_fulfilled',
   EVENT_REMINDER = 'event_reminder',
+  CELEBRATION_REMINDER = 'celebration_reminder',
   EVENT_INVITE = 'event_invite',
   EVENT_WISHLIST_OFFERED = 'event_wishlist_offered',
   EVENT_WISHLIST_ANSWERED = 'event_wishlist_answered',
@@ -186,6 +187,17 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.EVENTS,
     template: 'event-reminder',
+  },
+  [NotificationType.CELEBRATION_REMINDER]: {
+    // In-app and push only. A yearly "it's her birthday next week" by email
+    // reads as marketing however it is worded, and by SMS it costs money to
+    // say something the phone can say for nothing.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    // Alongside event reminders, so one Events switch covers "things that are
+    // coming up" rather than making somebody find two.
+    category: NotificationCategory.EVENTS,
+    template: 'celebration-reminder',
   },
   [NotificationType.EVENT_INVITE]: {
     // Push, because an invitation asks for an RSVP and the guest has no other

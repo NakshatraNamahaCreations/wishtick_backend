@@ -123,11 +123,20 @@ export class SaveOnboardingStepDto {
   @IsString()
   fitPreference?: string | null;
 
+  /**
+   * Every colour the palette offers, if that is the answer.
+   *
+   * The app used to stop at four — a number taken from a mock, not a product
+   * rule — and the cap here was the next stop after it. The bound that
+   * remains is a sanity limit on request size, well past the number of
+   * swatches the picker draws; the taxonomy is what decides which keys are
+   * real.
+   */
   @ApiPropertyOptional({ example: ['purple_plum', 'green_sage'] })
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
-  @ArrayMaxSize(10)
+  @ArrayMaxSize(100)
   favouriteColors?: string[];
 
   // ── gifting ──

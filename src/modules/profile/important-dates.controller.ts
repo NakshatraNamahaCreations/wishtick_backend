@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
   Query,
 } from '@nestjs/common';
@@ -17,7 +18,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
-import { CreateImportantDateDto } from './dto/important-date.dto';
+import { CreateImportantDateDto, UpdateImportantDateDto } from './dto/important-date.dto';
 import { UpcomingOccasionsQueryDto } from './dto/upcoming-occasions.dto';
 import {
   ImportantDatesService,
@@ -69,6 +70,18 @@ export class ImportantDatesController {
     @Body() dto: CreateImportantDateDto,
   ): Promise<ImportantDateView> {
     return this.dates.create(userId, dto);
+  }
+
+  @Patch(':id')
+  @ApiOperation({ summary: 'Change a saved date' })
+  @ApiResponseDoc({ status: 404, description: 'NOT_FOUND — unknown or not yours' })
+  @ApiResponseDoc({ status: 400, description: 'TAXONOMY_VALUE_INVALID — unknown occasionKey' })
+  update(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateImportantDateDto,
+  ): Promise<ImportantDateView> {
+    return this.dates.update(userId, id, dto);
   }
 
   @Delete(':id')

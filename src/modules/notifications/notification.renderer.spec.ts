@@ -39,6 +39,36 @@ describe('NotificationRenderer', () => {
     }
   });
 
+  /**
+   * The age is the thing worth knowing — it is what a card would say — but a
+   * saved date need not carry a real year, and "turns NaN" is not a sentence.
+   */
+  describe('a celebration reminder', () => {
+    const remind = (over: Record<string, unknown>) =>
+      renderer.content(NotificationType.CELEBRATION_REMINDER, {
+        personName: 'Siya',
+        occasionLabel: 'Birthday',
+        whenText: 'in a week',
+        ...over,
+      }).title;
+
+    it('counts the years when the year saved is a real one', () => {
+      expect(remind({ turningAge: 25 })).toBe('Siya turns 25 in a week');
+    });
+
+    it('names the occasion instead when it is not', () => {
+      expect(remind({ turningAge: null })).toBe("Siya's Birthday is in a week");
+      expect(remind({})).toBe("Siya's Birthday is in a week");
+    });
+
+    // An occasion somebody named themselves arrives as the label.
+    it('uses the name they gave an occasion of their own', () => {
+      expect(remind({ turningAge: null, occasionLabel: 'Naming ceremony' })).toBe(
+        "Siya's Naming ceremony is in a week",
+      );
+    });
+  });
+
   it('compiles responsive HTML with the unsubscribe footer', async () => {
     const rendered = await renderer.render(NotificationType.GIFT_FULFILLED, payload, {
       unsubscribeUrl: 'https://app.wishtick.test/unsubscribe?token=abc&category=gifts',

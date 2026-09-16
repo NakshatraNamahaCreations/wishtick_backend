@@ -1,5 +1,7 @@
 import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
+import { getConnectionToken } from '@nestjs/mongoose';
+import { Types, type Connection } from 'mongoose';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
 interface Envelope<T> {
@@ -281,6 +283,100 @@ describe('Sprint 4: Home & Discover (e2e)', () => {
 
       const rows = (res.body as Envelope<UpcomingOccasionView[]>).data;
       expect(rows[0].customOccasion).toBe('First day at school');
+    });
+
+    // Until now a date could only be created or deleted, so a name or a day
+    // typed wrongly during registration stayed wrong for ever.
+    it('changes a saved date, leaving what was not sent alone', async () => {
+      const token = await newUser();
+      const created = (await addDate(token, 4).expect(201)).body as Envelope<ImportantDateView>;
+
+      const updated = (
+        await request(app.getHttpServer())
+          .patch(`${V1}/me/important-dates/${created.data.id}`)
+          .set(auth(token))
+          .send({ personName: 'Siya Kapoor', date: '1999-07-17' })
+          .expect(200)
+      ).body as Envelope<ImportantDateView>;
+
+      expect(updated.data.personName).toBe('Siya Kapoor');
+      expect(updated.data.date).toBe('1999-07-17');
+      // Untouched by a body that did not mention them.
+      expect(updated.data.relation).toBe('Best Friend');
+      expect(updated.data.occasionKey).toBe('birthday');
+    });
+
+    // Moving the day has to move what the reminder scan matches on, or it goes
+    // on reminding about the old one for ever.
+    it('moves the day the reminder scan keys on', async () => {
+      const token = await newUser();
+      const created = (await addDate(token, 4, { date: '1999-07-17' }).expect(201))
+        .body as Envelope<ImportantDateView>;
+
+      // Read raw: `monthDay` is deliberately off the view — nothing but the
+      // scan has any use for it.
+      const dates = app.get<Connection>(getConnectionToken()).collection('important_dates');
+      const id = new Types.ObjectId(created.data.id);
+      expect((await dates.findOne({ _id: id }))?.monthDay).toBe(717);
+
+      await request(app.getHttpServer())
+        .patch(`${V1}/me/important-dates/${created.data.id}`)
+        .set(auth(token))
+        .send({ date: '1999-12-03' })
+        .expect(200);
+
+      expect((await dates.findOne({ _id: id }))?.monthDay).toBe(1203);
+    });
+
+    it('will not change somebody else’s date, or one that is not there', async () => {
+      const mine = await newUser();
+      const theirs = await newUser();
+      const created = (await addDate(theirs, 4).expect(201)).body as Envelope<ImportantDateView>;
+
+      // Not found rather than forbidden, so ids stay unguessable — the same
+      // answer `remove` gives.
+      await request(app.getHttpServer())
+        .patch(`${V1}/me/important-dates/${created.data.id}`)
+        .set(auth(mine))
+        .send({ personName: 'Mine now' })
+        .expect(404);
+      await request(app.getHttpServer())
+        .patch(`${V1}/me/important-dates/not-an-id`)
+        .set(auth(mine))
+        .send({ personName: 'Nobody' })
+        .expect(404);
+    });
+
+    // The same rule creation applies, checked against the key the row ends up
+    // with rather than the one that happened to be sent.
+    it('keeps the Other rule when the occasion is changed', async () => {
+      const token = await newUser();
+      const created = (await addDate(token, 4).expect(201)).body as Envelope<ImportantDateView>;
+
+      await request(app.getHttpServer())
+        .patch(`${V1}/me/important-dates/${created.data.id}`)
+        .set(auth(token))
+        .send({ occasionKey: 'other' })
+        .expect(400);
+
+      const named = (
+        await request(app.getHttpServer())
+          .patch(`${V1}/me/important-dates/${created.data.id}`)
+          .set(auth(token))
+          .send({ occasionKey: 'other', customOccasion: 'Naming ceremony' })
+          .expect(200)
+      ).body as Envelope<ImportantDateView>;
+      expect(named.data.customOccasion).toBe('Naming ceremony');
+
+      // And switching back to an occasion that names itself drops the name.
+      const back = (
+        await request(app.getHttpServer())
+          .patch(`${V1}/me/important-dates/${created.data.id}`)
+          .set(auth(token))
+          .send({ occasionKey: 'birthday' })
+          .expect(200)
+      ).body as Envelope<ImportantDateView>;
+      expect(back.data.customOccasion).toBeNull();
     });
 
     // The option has to exist in the shared list, or the dropdown cannot

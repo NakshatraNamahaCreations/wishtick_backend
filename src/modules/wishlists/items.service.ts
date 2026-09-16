@@ -12,7 +12,7 @@ import type { AccessContext } from './access/access.types';
 import type { CreateItemDto, ListItemsQueryDto, UpdateItemDto } from './dto/wishlist.dto';
 import { WishlistItem, type WishlistItemDocument } from './schemas/wishlist-item.schema';
 import { WishlistsService } from './wishlists.service';
-import { CLAIMED_ITEM_STATUSES, WishlistItemStatus } from './wishlist.types';
+import { CLAIMED_ITEM_STATUSES, MAX_ITEM_IMAGES, WishlistItemStatus } from './wishlist.types';
 import { toItemView, type ItemView } from './wishlist.views';
 
 /**
@@ -103,7 +103,14 @@ export class ItemsService {
 
     await this.taxonomy.assertValidOne(TaxonomyKind.GIFT_CATEGORY, dto.category, 'category');
     await this.taxonomy.assertValidOne(TaxonomyKind.OCCASION, dto.occasionKey, 'occasionKey');
-    const imageUrls = await this.resolveImages(ctx.userId!, dto.mediaIds ?? []);
+    // Uploaded media first, then any addresses the client supplied — the
+    // preview picture of a pasted product link. A photograph somebody took
+    // and uploaded is more theirs than a shop's product shot, so it is the
+    // one that becomes the item's cover.
+    const imageUrls = [
+      ...(await this.resolveImages(ctx.userId!, dto.mediaIds ?? [])),
+      ...(dto.imageUrls ?? []),
+    ].slice(0, MAX_ITEM_IMAGES);
 
     const item = await this.model.create({
       wishlistId: wishlist._id,

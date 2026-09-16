@@ -9,6 +9,8 @@ import { UsersModule } from 'src/modules/users/users.module';
 import { AccountLifecycleRegistrar } from './account-lifecycle.processor';
 import { AccountLifecycleService } from './account-lifecycle.service';
 import { AccountRestoreController } from './account-restore.controller';
+import { CelebrationRemindersRegistrar } from './celebration-reminders.processor';
+import { CelebrationRemindersService } from './celebration-reminders.service';
 import { AddressesController } from './addresses.controller';
 import { AddressesService } from './addresses.service';
 import { DataExportService } from './data-export.service';
@@ -48,12 +50,16 @@ import { UserProfile, UserProfileSchema } from './schemas/user-profile.schema';
     AddressesService,
     AccountLifecycleService,
     AccountLifecycleRegistrar,
+    CelebrationRemindersService,
+    CelebrationRemindersRegistrar,
     DataExportService,
   ],
   exports: [
     ProfileService,
     AccountLifecycleService,
     ImportantDatesService,
+    // The e2e suite drives one tick by hand — there is no worker in tests.
+    CelebrationRemindersService,
     // Wishlists and events both attach an address to a wishlist, and both must
     // go through the same ownership gate rather than reading the model directly.
     AddressesService,

@@ -5,7 +5,7 @@ import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { TaxonomyService } from 'src/modules/taxonomy/taxonomy.service';
 import { TaxonomyKind } from 'src/modules/taxonomy/taxonomy.types';
-import type { CreateImportantDateDto } from './dto/important-date.dto';
+import type { CreateImportantDateDto, UpdateImportantDateDto } from './dto/important-date.dto';
 import { ImportantDate, type ImportantDateDocument } from './schemas/important-date.schema';
 
 export interface ImportantDateView {
@@ -96,8 +96,63 @@ export class ImportantDatesService {
       relation: dto.relation ?? '',
       occasionKey: dto.occasionKey,
       customOccasion: customOccasion || null,
+      // `monthDay` is not set here — the schema derives it from this.
       date: ImportantDatesService.parseDateOnly(dto.date),
     });
+    return ImportantDatesService.toView(doc.toObject());
+  }
+
+  /**
+   * Changes a saved date. Every field is optional; what is not sent is left
+   * alone.
+   *
+   * There was no way to correct one of these until now — the form lived only
+   * inside onboarding, so a name or a date typed wrongly during registration
+   * stayed wrong, and went on reminding its owner on the wrong day.
+   */
+  async update(
+    userId: string,
+    id: string,
+    dto: UpdateImportantDateDto,
+  ): Promise<ImportantDateView> {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new AppException(ErrorCode.NOT_FOUND, 'Date not found', 404);
+    }
+    // Scoped to the caller, like `remove` — someone else's id is not found
+    // rather than forbidden, so ids stay unguessable.
+    const doc = await this.model
+      .findOne({ _id: new Types.ObjectId(id), userId: new Types.ObjectId(userId) })
+      .exec();
+    if (!doc) {
+      throw new AppException(ErrorCode.NOT_FOUND, 'Date not found', 404);
+    }
+
+    if (dto.occasionKey !== undefined) {
+      await this.taxonomy.assertValidOne(TaxonomyKind.OCCASION, dto.occasionKey, 'occasionKey');
+    }
+
+    if (dto.personName !== undefined) doc.personName = dto.personName;
+    if (dto.relation !== undefined) doc.relation = dto.relation;
+    // `monthDay` follows on its own — the schema derives it before validation,
+    // so it cannot be left pointing at the old day.
+    if (dto.date !== undefined) doc.date = ImportantDatesService.parseDateOnly(dto.date);
+
+    // The occasion and its custom name move together: the same rule `create`
+    // applies, re-run against the key the row will *end up* with rather than
+    // the one that was sent, so changing only the name of an `other` row is
+    // still checked and switching away from `other` drops the stale name.
+    const occasionKey = dto.occasionKey ?? doc.occasionKey;
+    if (dto.occasionKey !== undefined || dto.customOccasion !== undefined) {
+      const isOther = occasionKey === OTHER_OCCASION_KEY;
+      const customOccasion = isOther ? (dto.customOccasion ?? doc.customOccasion ?? '').trim() : '';
+      if (isOther && !customOccasion) {
+        throw new AppException(ErrorCode.VALIDATION_FAILED, 'Tell us what the occasion is', 400);
+      }
+      doc.occasionKey = occasionKey;
+      doc.customOccasion = customOccasion || null;
+    }
+
+    await doc.save();
     return ImportantDatesService.toView(doc.toObject());
   }
 

@@ -127,10 +127,12 @@ export class PublicInvitesService {
    * Which of the event's wishlists this invitee may open.
    *
    * Every list is resolved through AccessPolicyService rather than assumed
-   * visible because it is attached to the event. An EVENT_ONLY list appears
-   * only once they have RSVP'd yes/maybe *and* are signed in as the invited
-   * user; a PRIVATE list the host attached never appears at all. Attaching a
-   * wishlist to an event is not a decision to publish it.
+   * visible because it is attached to the event. An attached list opens once
+   * the guest has RSVP'd yes/maybe *and* is signed in as the invited user — at
+   * every visibility but one. A PRIVATE list the host attached never appears
+   * at all: private means the people its owner chose by hand, and being on a
+   * guest list is not being chosen. Attaching is a decision to show a list to
+   * this event's guests, never a decision to publish it.
    *
    * Two ways in, unioned: the host's own row (`Event.wishlistIds`), and lists a
    * guest offered and the host approved, which are linked the other way round —

@@ -207,7 +207,9 @@ describe('AccessPolicy matrix (e2e)', () => {
       );
     });
 
-    it('event invitee: nothing — the list is private, not event-scoped', async () => {
+    // The one visibility attaching a list to an event does not open. Private
+    // means the people its owner chose by hand; a guest list is not that.
+    it('event invitee: nothing — private stays private however it was attached', async () => {
       await check(
         wishlist,
         { userId: EVENT_GUEST.toString() },
@@ -317,11 +319,14 @@ describe('AccessPolicy matrix (e2e)', () => {
       );
     });
 
-    it('event invitee: nothing', async () => {
+    // An unlisted list opens for anyone holding the slug, so refusing the one
+    // audience its owner attached it to was the odd rule out: a guest at the
+    // event is a stronger relationship than a forwarded link.
+    it('event invitee: view, comment, gift — the host put it on their event', async () => {
       await check(
         wishlist,
         { userId: EVENT_GUEST.toString() },
-        { view: false, comment: false, gift: false, manage: false },
+        { view: true, comment: true, gift: true, manage: false },
         'event/invite',
       );
     });

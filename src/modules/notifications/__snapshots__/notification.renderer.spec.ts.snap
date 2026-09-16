@@ -9,6 +9,15 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: celebration_reminder 1`] = `
+{
+  "sms": "Someone's celebration is in 2 days",
+  "subject": "Someone's celebration is in 2 days",
+  "text": "Someone's celebration is in 2 days. Time to find something.",
+  "title": "Someone's celebration is in 2 days",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: chat_message 1`] = `
 {
   "sms": "Someone — https://app.wishtick.test/x",
