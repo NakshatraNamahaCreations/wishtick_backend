@@ -48,6 +48,16 @@ export interface DiscoverExploreQuery {
   category: string | null;
   minPriceMinor: number | null;
   maxPriceMinor: number | null;
+  /**
+   * Who the shelf is for, when it is for a WishMate.
+   *
+   * Handed back by the app verbatim on every page, which is what keeps
+   * "Explore More" about the person rather than dropping them at the first
+   * tap. Absent on Discover's own shelves — a saved date is not an account.
+   */
+  recipientUserId?: string | null;
+  /** Display only — the "Shopping for Priyal" bar. */
+  recipientName?: string | null;
 }
 
 export interface DiscoverFeed {

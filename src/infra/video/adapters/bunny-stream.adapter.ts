@@ -4,6 +4,22 @@ import type { AppConfig } from 'src/config/configuration';
 import { signedDirectoryUrl } from '../bunny-token';
 import { VideoState, type IVideoProvider, type VideoInfo } from '../video.port';
 
+/**
+ * The MP4 fallback file to hand out, from a video's `availableResolutions`.
+ *
+ * Bunny writes `play_<height>p.mp4` for each encoded height **up to 720p** and
+ * no higher, so a 1080p entry in the list has no file behind it. The tallest
+ * one that does exist wins: this is somebody's wish, headed for a story.
+ */
+export function mp4FallbackFile(availableResolutions: string | null | undefined): string | null {
+  const heights = (availableResolutions ?? '')
+    .split(',')
+    .map((r) => Number.parseInt(r.trim(), 10))
+    .filter((h) => Number.isFinite(h) && h > 0 && h <= 720);
+  if (heights.length === 0) return null;
+  return `play_${Math.max(...heights)}p.mp4`;
+}
+
 /** An upstream failure, carrying the status so a caller can tell 404 from 500. */
 export class BunnyStreamHttpError extends Error {
   constructor(
@@ -104,6 +120,25 @@ export class BunnyStreamAdapter implements IVideoProvider {
       hostname: this.cfg.cdnHostname,
       directory: videoId,
       file: fileName,
+      ttlSeconds: this.cfg.tokenTtlSeconds,
+    });
+  }
+
+  async downloadUrl(videoId: string): Promise<string | null> {
+    const video = await this.call<{
+      hasMP4Fallback?: boolean;
+      availableResolutions?: string | null;
+    }>('GET', `/library/${this.cfg.libraryId}/videos/${videoId}`);
+    if (!video.hasMP4Fallback) return null;
+
+    const file = mp4FallbackFile(video.availableResolutions);
+    if (!file) return null;
+
+    return signedDirectoryUrl({
+      securityKey: this.cfg.tokenKey,
+      hostname: this.cfg.cdnHostname,
+      directory: videoId,
+      file,
       ttlSeconds: this.cfg.tokenTtlSeconds,
     });
   }

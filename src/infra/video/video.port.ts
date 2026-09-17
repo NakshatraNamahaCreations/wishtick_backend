@@ -61,5 +61,16 @@ export interface IVideoProvider {
 
   thumbnailUrl(videoId: string, fileName: string): string;
 
+  /**
+   * A short-lived signed URL for a single MP4 of the clip, or null when the
+   * host has none.
+   *
+   * For saving and sharing, which an HLS playlist cannot do: a share sheet
+   * needs one file, not a ladder of segments. The encoder only writes an MP4
+   * when the library has MP4 fallback switched on, so null is an ordinary
+   * answer rather than a failure.
+   */
+  downloadUrl(videoId: string): Promise<string | null>;
+
   delete(videoId: string): Promise<void>;
 }

@@ -3,7 +3,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { CacheService } from 'src/infra/redis/cache.service';
-import { ResultFreshness, type NormalizedProduct } from '../products/product.types';
+import {
+  ResultFreshness,
+  type NormalizedProduct,
+  type ProductSearchQuery,
+} from '../products/product.types';
 import { ProductsService } from '../products/products.service';
 import { ProfileService } from '../profile/profile.service';
 import { TasteService } from '../taste/taste.service';
@@ -12,7 +16,11 @@ import { WishmateRelationship } from '../wishmates/wishmates.views';
 import { WishmatesService } from '../wishmates/wishmates.service';
 import { bandFor, MAX_VENDOR_QUERIES_PER_REQUEST, planQueries } from './suggestion.retrieval';
 import { MIN_SCORE_TO_SHOW, rankForTaste, type RetrievedRow } from './suggestion.scoring';
-import { worstFreshness, type GiftSuggestionsView } from './suggestions.views';
+import {
+  worstFreshness,
+  type GiftSuggestionsView,
+  type RecipientSearchView,
+} from './suggestions.views';
 
 /** A ranked shelf is kept this long, per person and per taste. */
 const RESULT_CACHE_TTL_SECONDS = 900;
@@ -93,6 +101,10 @@ export class SuggestionsService {
       ...ranked,
       note: this.noteFor(ranked.reasonCode, isSelf, displayName),
       exploreQuery: {
+        // The person travels with the query, so the grid behind "Explore
+        // More" goes on ranking for them page after page.
+        recipientUserId: targetId,
+        recipientName: displayName,
         category: taste.shelves[0] ?? null,
         minPriceMinor: null,
         // The same rule as the searches: only a price somebody asked for.
@@ -100,6 +112,62 @@ export class SuggestionsService {
           taste.budget.source === 'explicit' ? (bandFor(taste.budget.maxMinor) ?? null) : null,
       },
       generatedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * One page of an ordinary product search, reordered for [targetId].
+   *
+   * Retrieval is the shared, cached search everybody makes — nothing about the
+   * person reaches the vendor or the cache key. Only the order of the page
+   * that comes back changes, and nothing is dropped from it: a page that came
+   * back short would read as the end of the results.
+   *
+   * Reordered within the page, not across pages. The provider's order still
+   * decides what is on page 2; this only decides what leads it.
+   */
+  async searchFor(
+    viewerId: string,
+    targetId: string,
+    query: ProductSearchQuery,
+  ): Promise<RecipientSearchView> {
+    const relationship = await this.wishmates.relationshipWithExisting(viewerId, targetId);
+    if (
+      relationship !== WishmateRelationship.SELF &&
+      relationship !== WishmateRelationship.WISHMATES
+    ) {
+      throw new AppException(
+        ErrorCode.NOT_WISHMATES,
+        'Gift ideas are only shown for your WishMates.',
+        403,
+      );
+    }
+
+    const [result, taste, profile] = await Promise.all([
+      this.products.search(query),
+      this.taste.profileFor(targetId, {
+        minPriceMinor: query.minPriceMinor ?? null,
+        maxPriceMinor: query.maxPriceMinor ?? null,
+      }),
+      this.profiles.getOrCreate(targetId),
+    ]);
+    const recipient = { userId: targetId, displayName: profile.displayName?.trim() || null };
+
+    // Nothing to rank by: the provider's own order, and an honest flag.
+    if (taste.completeness === 0) {
+      return { ...result, recipient, personalised: false };
+    }
+
+    const ranked = rankForTaste(
+      result.items.map((product) => ({ product, foundIn: [0] })),
+      taste,
+      { limit: result.items.length, diverse: false },
+    );
+    return {
+      ...result,
+      items: ranked.map((item) => item.product),
+      recipient,
+      personalised: ranked.some((item) => item.signals.interest > 0),
     };
   }
 

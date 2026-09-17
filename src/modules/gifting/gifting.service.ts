@@ -24,9 +24,9 @@ import {
 import type { WishlistDocument } from 'src/modules/wishlists/schemas/wishlist.schema';
 import { WishlistItemStatus } from 'src/modules/wishlists/wishlist.types';
 import { WishlistsService } from 'src/modules/wishlists/wishlists.service';
-import type { GiftActionDto, GiftOfflineDto, ReserveItemDto } from './dto/gift.dto';
+import type { GiftActionDto, GiftOfflineDto, ReserveItemDto, SetShowNameDto } from './dto/gift.dto';
 import { GiftStatusService } from './gift-status.service';
-import { GiftMode, GiftStatus, GiftVisibility } from './gift.types';
+import { GiftMode, GiftStatus, GiftType, GiftVisibility } from './gift.types';
 import { toGifterView, type GiftView } from './gift.views';
 import {
   RESERVATION_EXPIRY_JOB,
@@ -117,7 +117,7 @@ export class GiftingService {
               {
                 item: fresh,
                 gifterId: new Types.ObjectId(userId),
-                recipientId: fresh.ownerId,
+                recipientId: await this.recipientOf(fresh),
                 mode: GiftMode.ONLINE,
                 visibility:
                   dto.hiddenFromOwner === false
@@ -149,8 +149,103 @@ export class GiftingService {
 
   // ── Offline gifting ────────────────────────────────────────────────────────
 
+  /**
+   * "I already bought this" — on a free item, or on the caller's own
+   * reservation, which it turns into the purchase.
+   *
+   * Either way the item is bought from here on and greys out for everyone.
+   */
   async giftOffline(itemId: string, userId: string, dto: GiftOfflineDto): Promise<GiftView> {
     const item = await this.loadGiftableItem(itemId, userId);
+
+    const gift = await this.locks.withBestEffortLock(
+      `gift-item:${itemId}`,
+      async () => {
+        const session = await this.connection.startSession();
+        try {
+          let created!: GiftDocument;
+          await session.withTransaction(async () => {
+            const fresh = await this.itemModel.findById(item._id).session(session).exec();
+            if (!fresh || fresh.archivedAt) {
+              throw new AppException(ErrorCode.WISHLIST_ITEM_NOT_FOUND, 'Item not found', 404);
+            }
+            if (fresh.status === WishlistItemStatus.RESERVED) {
+              const held = await this.giftModel
+                .findOne({ itemId: fresh._id, active: true })
+                .session(session)
+                .exec();
+              if (
+                held?.gifterId.toString() === userId &&
+                held.type === GiftType.SINGLE &&
+                held.status === GiftStatus.RESERVED
+              ) {
+                created = await this.status.purchaseOffline(held, userId, {
+                  deliveryNotes: dto.deliveryNotes ?? null,
+                  showBuyerName: dto.showName,
+                  session,
+                });
+                return;
+              }
+            }
+            if (fresh.status !== WishlistItemStatus.AVAILABLE) {
+              throw new AppException(
+                ErrorCode.ITEM_NOT_AVAILABLE,
+                'This item has already been claimed',
+                409,
+                { status: fresh.status },
+              );
+            }
+            created = await this.status.recordOffline(
+              {
+                item: fresh,
+                gifterId: new Types.ObjectId(userId),
+                recipientId: await this.recipientOf(fresh),
+                visibility:
+                  dto.hiddenFromOwner === false
+                    ? GiftVisibility.VISIBLE
+                    : GiftVisibility.HIDDEN_FROM_OWNER,
+                deliveryNotes: dto.deliveryNotes ?? null,
+                showBuyerName: dto.showName ?? false,
+              },
+              session,
+            );
+          });
+          return created;
+        } finally {
+          await session.endSession();
+        }
+      },
+      { ttlMs: 5_000, retries: 5, retryDelayMs: 60 },
+    );
+
+    await this.wishlists.recount(gift.wishlistId);
+    // An offline gift has no reservation to expire — it is already bought. A
+    // converted hold had one, and it must not release a purchase.
+    await this.cancelExpiry(gift._id.toString());
+    // The gifter's confirmation. The order listener skips offline gifts, so no
+    // order is minted for something bought where we cannot track it.
+    this.emitter.emit(GIFT_PURCHASED, GiftingService.lifecyclePayload(gift));
+    return toGifterView(gift);
+  }
+
+  /**
+   * The owner's "I got this myself".
+   *
+   * Recorded as a gift from the owner to the owner, so it locks the item
+   * through the same index and is undone through the same cancel. Refused while
+   * someone else holds the item — in words that do not say a surprise is on
+   * its way.
+   */
+  async markGotItMyself(itemId: string, userId: string): Promise<GiftView> {
+    if (!Types.ObjectId.isValid(itemId)) {
+      throw new AppException(ErrorCode.WISHLIST_ITEM_NOT_FOUND, 'Item not found', 404);
+    }
+    const item = await this.itemModel
+      .findOne({ _id: new Types.ObjectId(itemId), archivedAt: null })
+      .exec();
+    if (!item || item.ownerId.toString() !== userId || item.hiddenFromOwner) {
+      throw new AppException(ErrorCode.WISHLIST_ITEM_NOT_FOUND, 'Item not found', 404);
+    }
 
     const gift = await this.locks.withBestEffortLock(
       `gift-item:${itemId}`,
@@ -166,21 +261,18 @@ export class GiftingService {
             if (fresh.status !== WishlistItemStatus.AVAILABLE) {
               throw new AppException(
                 ErrorCode.ITEM_NOT_AVAILABLE,
-                'This item has already been claimed',
+                'This item cannot be marked right now',
                 409,
-                { status: fresh.status },
               );
             }
             created = await this.status.recordOffline(
               {
                 item: fresh,
-                gifterId: new Types.ObjectId(userId),
+                gifterId: fresh.ownerId,
                 recipientId: fresh.ownerId,
-                visibility:
-                  dto.hiddenFromOwner === false
-                    ? GiftVisibility.VISIBLE
-                    : GiftVisibility.HIDDEN_FROM_OWNER,
-                deliveryNotes: dto.deliveryNotes ?? null,
+                visibility: GiftVisibility.VISIBLE,
+                deliveryNotes: null,
+                type: GiftType.SELF,
               },
               session,
             );
@@ -194,7 +286,75 @@ export class GiftingService {
     );
 
     await this.wishlists.recount(gift.wishlistId);
-    // An offline gift has no reservation to expire — it is already bought.
+    return toGifterView(gift);
+  }
+
+  /**
+   * A sale the affiliate network saw on an item nobody had reserved.
+   *
+   * Locks the item for the person who bought it, as though they had reserved
+   * and confirmed. Null when that is not possible — the item is held, gone, or
+   * theirs to own rather than give — and the sale then matches nothing.
+   */
+  async claimReportedSale(
+    itemId: string,
+    userId: string,
+    opts: { by: string; orderRef: string },
+  ): Promise<GiftDocument | null> {
+    let item: WishlistItemDocument;
+    try {
+      item = await this.loadGiftableItem(itemId, userId);
+    } catch {
+      return null;
+    }
+    if (item.status !== WishlistItemStatus.AVAILABLE) return null;
+
+    let held: GiftDocument;
+    try {
+      held = await this.locks.withBestEffortLock(
+        `gift-item:${itemId}`,
+        async () => {
+          const session = await this.connection.startSession();
+          try {
+            let created!: GiftDocument;
+            await session.withTransaction(async () => {
+              const fresh = await this.itemModel.findById(item._id).session(session).exec();
+              if (!fresh || fresh.archivedAt || fresh.status !== WishlistItemStatus.AVAILABLE) {
+                throw new AppException(ErrorCode.ITEM_NOT_AVAILABLE, 'Taken meanwhile', 409);
+              }
+              created = await this.status.createReservation(
+                {
+                  item: fresh,
+                  gifterId: new Types.ObjectId(userId),
+                  recipientId: await this.recipientOf(fresh),
+                  mode: GiftMode.ONLINE,
+                  visibility: GiftVisibility.HIDDEN_FROM_OWNER,
+                  expiresAt: null,
+                },
+                session,
+              );
+            });
+            return created;
+          } finally {
+            await session.endSession();
+          }
+        },
+        { ttlMs: 5_000, retries: 5, retryDelayMs: 60 },
+      );
+    } catch (err) {
+      if (err instanceof AppException) return null;
+      throw err;
+    }
+
+    await this.purchase(held._id.toString(), userId, { note: 'Purchase reported' }, opts);
+    await this.wishlists.recount(held.wishlistId);
+    return this.giftModel.findById(held._id).exec();
+  }
+
+  /** Whether other guests may see the caller's name on the item they bought. */
+  async setShowName(giftId: string, userId: string, dto: SetShowNameDto): Promise<GiftView> {
+    const gift = await this.loadOwnGift(giftId, userId);
+    await this.status.setShowBuyerName(gift, dto.showName);
     return toGifterView(gift);
   }
 
@@ -241,6 +401,9 @@ export class GiftingService {
     await this.cancelExpiry(giftId);
     gift.expiresAt = null;
     await gift.save();
+    if (dto.showName !== undefined && gift.type === GiftType.SINGLE) {
+      await this.status.setShowBuyerName(gift, dto.showName);
+    }
     this.emitter.emit(GIFT_PURCHASED, GiftingService.lifecyclePayload(gift));
     return toGifterView(gift);
   }
@@ -330,6 +493,18 @@ export class GiftingService {
   /** Whether a list names a WishMate other than its owner as who it is for. */
   static isForSomeoneElse(wishlist: WishlistDocument): boolean {
     return Boolean(wishlist.forUserId && !wishlist.forUserId.equals(wishlist.ownerId));
+  }
+
+  /**
+   * Who a single gift is for: the WishMate a list names, else its owner.
+   *
+   * Group gifts already worked this way; single ones recorded the list's
+   * creator, so a gift for Priya on a list her sister made landed in the
+   * sister's Gifts Received.
+   */
+  private async recipientOf(item: WishlistItemDocument): Promise<Types.ObjectId> {
+    const wishlist = await this.wishlists.findOrFail(item.wishlistId.toString());
+    return GiftingService.isForSomeoneElse(wishlist) ? wishlist.forUserId! : item.ownerId;
   }
 
   private async loadActiveGiftForItem(itemId: string): Promise<GiftDocument> {

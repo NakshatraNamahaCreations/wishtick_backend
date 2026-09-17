@@ -9,6 +9,7 @@ import { AuthService } from 'src/modules/auth/auth.service';
 import { ConversionReconcileService } from 'src/modules/gifting/conversion-reconcile.service';
 import { GiftStatus } from 'src/modules/gifting/gift.types';
 import { ReservationExpiryService } from 'src/modules/gifting/reservation-expiry.service';
+import { reservationExpiryJobId } from 'src/modules/gifting/reservation-expiry.types';
 import { WebhookService } from 'src/modules/gifting/webhook.service';
 import { Gift, type GiftDocument } from 'src/modules/gifting/schemas/gift.schema';
 import {
@@ -645,6 +646,355 @@ describe('Gifting (e2e)', () => {
         WishlistItemStatus.RESERVED,
       );
       expect(JSON.stringify(ownerView.body)).not.toContain(gifter.userId);
+    });
+  });
+
+  // ── Bought items lock, and say by whom only when asked to ─────────────────
+
+  describe('bought items', () => {
+    interface Lock {
+      by: 'gifter' | 'owner';
+      buyerName: string | null;
+      mine: { giftId: string; showName: boolean } | null;
+    }
+    interface ItemBody {
+      status: string;
+      lock: Lock | null;
+    }
+
+    const itemAs = async (actor: Actor, wishlistId: string, itemId: string): Promise<ItemBody> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/wishlists/${wishlistId}/items/${itemId}`)
+            .set(auth(actor.token))
+            .expect(200)
+        ).body as Envelope<ItemBody>
+      ).data;
+
+    const listAs = async (actor: Actor, wishlistId: string): Promise<ItemBody[]> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/wishlists/${wishlistId}/items`)
+            .set(auth(actor.token))
+            .expect(200)
+        ).body as Envelope<ItemBody[]>
+      ).data;
+
+    const boughtOffline = (
+      gifter: Actor,
+      itemId: string,
+      body: Record<string, unknown> = {},
+    ): request.Test =>
+      request(app.getHttpServer())
+        .post(`${V1}/items/${itemId}/gift-offline`)
+        .set(auth(gifter.token))
+        .set(idem())
+        .send(body);
+
+    const shareSlug = async (owner: Actor, wishlistId: string): Promise<string> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/wishlists/${wishlistId}`)
+            .set(auth(owner.token))
+            .expect(200)
+        ).body as Envelope<{ share: { slug: string } }>
+      ).data.share.slug;
+
+    it('greys a bought item for everyone and names nobody by default', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const other = await newUser();
+      const { wishlistId, itemId } = await wishlistWithItem(owner);
+
+      const gift = (await boughtOffline(gifter, itemId).expect(201)).body as Envelope<GiftView>;
+
+      const asOther = await itemAs(other, wishlistId, itemId);
+      expect(asOther.status).toBe(WishlistItemStatus.GIFTED_OFFLINE);
+      expect(asOther.lock).toEqual({ by: 'gifter', buyerName: null, mine: null });
+
+      // The owner learns it is taken — not how, and not by whom.
+      const asOwner = await itemAs(owner, wishlistId, itemId);
+      expect(asOwner.status).toBe(WishlistItemStatus.PURCHASED);
+      expect(asOwner.lock).toEqual({ by: 'gifter', buyerName: null, mine: null });
+
+      // The buyer can find their own gift from the item.
+      const asGifter = await itemAs(gifter, wishlistId, itemId);
+      expect(asGifter.lock?.mine).toEqual({ giftId: gift.data.id, showName: false });
+
+      // And nobody can buy it a second time.
+      await boughtOffline(other, itemId).expect(409);
+      await reserve(other, itemId).expect(409);
+    });
+
+    it('names the buyer to other guests once they choose to — never to the owner', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const other = await newUser();
+      const { wishlistId, itemId } = await wishlistWithItem(owner);
+      const gift = (await boughtOffline(gifter, itemId).expect(201)).body as Envelope<GiftView>;
+
+      await request(app.getHttpServer())
+        .patch(`${V1}/gifts/${gift.data.id}/show-name`)
+        .set(auth(gifter.token))
+        .send({ showName: true })
+        .expect(200);
+
+      expect((await listAs(other, wishlistId))[0].lock?.buyerName).toBe('Aarav');
+      expect((await itemAs(owner, wishlistId, itemId)).lock?.buyerName).toBeNull();
+      expect((await itemAs(gifter, wishlistId, itemId)).lock?.mine?.showName).toBe(true);
+
+      // On the share link: a signed-in guest sees the name, the link alone does not.
+      const slug = await shareSlug(owner, wishlistId);
+      const signedIn = (
+        await request(app.getHttpServer())
+          .get(`${V1}/public/wishlists/${slug}`)
+          .set(auth(other.token))
+          .expect(200)
+      ).body as Envelope<{ items: ItemBody[] }>;
+      expect(signedIn.data.items[0].lock?.buyerName).toBe('Aarav');
+      const anonymous = (
+        await request(app.getHttpServer()).get(`${V1}/public/wishlists/${slug}`).expect(200)
+      ).body as Envelope<{ items: ItemBody[] }>;
+      expect(anonymous.data.items[0].lock).toEqual({ by: 'gifter', buyerName: null, mine: null });
+
+      // Turned off again, it is gone.
+      await request(app.getHttpServer())
+        .patch(`${V1}/gifts/${gift.data.id}/show-name`)
+        .set(auth(gifter.token))
+        .send({ showName: false })
+        .expect(200);
+      expect((await listAs(other, wishlistId))[0].lock?.buyerName).toBeNull();
+    });
+
+    it('can be named at the moment of confirming an online purchase', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const other = await newUser();
+      const { wishlistId, itemId } = await wishlistWithItem(owner);
+      const gift = (await reserve(gifter, itemId).expect(201)).body as Envelope<GiftView>;
+
+      await request(app.getHttpServer())
+        .post(`${V1}/gifts/${gift.data.id}/purchase`)
+        .set(auth(gifter.token))
+        .send({ showName: true })
+        .expect(200);
+
+      expect((await itemAs(other, wishlistId, itemId)).lock?.buyerName).toBe('Aarav');
+    });
+
+    it('leaves a reservation looking ordinary until it is bought', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const other = await newUser();
+      const { wishlistId, itemId } = await wishlistWithItem(owner);
+      await reserve(gifter, itemId).expect(201);
+
+      expect((await itemAs(other, wishlistId, itemId)).lock).toBeNull();
+      expect((await itemAs(owner, wishlistId, itemId)).lock).toBeNull();
+      // Still held: the server refuses a second gifter either way.
+      await boughtOffline(other, itemId).expect(409);
+    });
+
+    it('turns your own reservation into bought-elsewhere', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const { wishlistId, itemId } = await wishlistWithItem(owner);
+      const held = (await reserve(gifter, itemId).expect(201)).body as Envelope<GiftView>;
+
+      const bought = (await boughtOffline(gifter, itemId, { showName: true }).expect(201))
+        .body as Envelope<GiftView>;
+
+      // The same gift, not a second one.
+      expect(bought.data.id).toBe(held.data.id);
+      const stored = await giftModel.findById(held.data.id).exec();
+      expect(stored!.status).toBe(GiftStatus.PURCHASED);
+      expect(stored!.mode).toBe('offline');
+      expect(stored!.expiresAt).toBeNull();
+      // Its hold timer can no longer release a purchase.
+      expect(ctx.scheduler.removed).toContain(reservationExpiryJobId(held.data.id));
+      expect((await itemAs(gifter, wishlistId, itemId)).status).toBe(
+        WishlistItemStatus.GIFTED_OFFLINE,
+      );
+    });
+
+    it('lets the owner mark something they got themselves, and undo it', async () => {
+      const owner = await newUser();
+      const other = await newUser();
+      const { wishlistId, itemId } = await wishlistWithItem(owner);
+
+      const self = (
+        await request(app.getHttpServer())
+          .post(`${V1}/items/${itemId}/got-it`)
+          .set(auth(owner.token))
+          .expect(201)
+      ).body as Envelope<GiftView>;
+
+      expect((await itemAs(other, wishlistId, itemId)).lock).toEqual({
+        by: 'owner',
+        buyerName: null,
+        mine: null,
+      });
+      expect((await itemAs(owner, wishlistId, itemId)).lock).toEqual({
+        by: 'owner',
+        buyerName: null,
+        mine: { giftId: self.data.id, showName: false },
+      });
+      await reserve(other, itemId).expect(409);
+
+      // It is not a gift, so it is in nobody's lists.
+      for (const path of ['given', 'received', 'on-hold']) {
+        const rows = (
+          await request(app.getHttpServer())
+            .get(`${V1}/gifts/${path}`)
+            .set(auth(owner.token))
+            .expect(200)
+        ).body as Envelope<unknown[]>;
+        expect(rows.data).toHaveLength(0);
+      }
+      // Nor can it carry a name.
+      await request(app.getHttpServer())
+        .patch(`${V1}/gifts/${self.data.id}/show-name`)
+        .set(auth(owner.token))
+        .send({ showName: true })
+        .expect(409);
+
+      await request(app.getHttpServer())
+        .post(`${V1}/gifts/${self.data.id}/cancel`)
+        .set(auth(owner.token))
+        .send({})
+        .expect(200);
+      expect((await itemAs(other, wishlistId, itemId)).lock).toBeNull();
+      await reserve(other, itemId).expect(201);
+    });
+
+    it('only lets the owner say they got it themselves', async () => {
+      const owner = await newUser();
+      const other = await newUser();
+      const { itemId } = await wishlistWithItem(owner);
+      await request(app.getHttpServer())
+        .post(`${V1}/items/${itemId}/got-it`)
+        .set(auth(other.token))
+        .expect(404);
+    });
+
+    it('will not send a second guest to the shop for a bought item', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const other = await newUser();
+      const wl = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists`)
+          .set(auth(owner.token))
+          .send({ title: 'Gift me', visibility: WishlistVisibility.PUBLIC })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      const item = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists/${wl.data.id}/items`)
+          .set(auth(owner.token))
+          .send({ title: 'Kettle', productLink: 'https://example.com/kettle' })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      await boughtOffline(gifter, item.data.id).expect(201);
+
+      const link = (actor: Actor): request.Test =>
+        request(app.getHttpServer())
+          .get(`${V1}/items/${item.data.id}/gift-link`)
+          .set(auth(actor.token));
+      const refused = await link(other).expect(409);
+      expect((refused.body as Envelope<never>).error?.code).toBe(ErrorCode.ITEM_NOT_AVAILABLE);
+      await link(gifter).expect(200);
+      await link(owner).expect(200);
+    });
+
+    it('on a list made for someone, hides the buyer from them but not from its maker', async () => {
+      const maker = await newUser();
+      const siya = await newUser();
+      const gifter = await newUser();
+      await request(app.getHttpServer())
+        .post(`${V1}/people/${siya.userId}/request`)
+        .set(auth(maker.token))
+        .expect(201);
+      const received = (
+        await request(app.getHttpServer())
+          .get(`${V1}/wishlinks/received`)
+          .set(auth(siya.token))
+          .expect(200)
+      ).body as Envelope<{ linkId: string }[]>;
+      await request(app.getHttpServer())
+        .post(`${V1}/wishlinks/${received.data[0].linkId}/accept`)
+        .set(auth(siya.token))
+        .expect(201);
+      const wl = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists`)
+          .set(auth(maker.token))
+          .send({ title: 'Siya birthday', visibility: 'public', forUserId: siya.userId })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      const item = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists/${wl.data.id}/items`)
+          .set(auth(maker.token))
+          .send({ title: 'Espresso machine' })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+
+      const gift = (await boughtOffline(gifter, item.data.id, { showName: true }).expect(201))
+        .body as Envelope<GiftView>;
+
+      expect((await itemAs(maker, wl.data.id, item.data.id)).lock?.buyerName).toBe('Aarav');
+      const asSiya = await itemAs(siya, wl.data.id, item.data.id);
+      expect(asSiya.lock?.buyerName).toBeNull();
+      expect(asSiya.status).toBe(WishlistItemStatus.PURCHASED);
+      // And the gift is recorded as for Siya, not for the list's maker.
+      const stored = await giftModel.findById(gift.data.id).exec();
+      expect(stored!.recipientId.toString()).toBe(siya.userId);
+    });
+
+    it('locks an item for whoever the network saw buy it without reserving', async () => {
+      const owner = await newUser();
+      const buyer = await newUser();
+      const other = await newUser();
+      const { wishlistId, itemId } = await wishlistWithItem(owner);
+      await conversionModel.create({
+        network: 'cuelinks',
+        externalId: `txn-${randomUUID()}`,
+        currency: 'INR',
+        status: 'pending',
+        transactionAt: new Date(),
+        itemId: new Types.ObjectId(itemId),
+        userId: new Types.ObjectId(buyer.userId),
+      });
+
+      const report = await reconcile.reconcile();
+
+      expect(report.purchased).toBe(1);
+      expect((await itemAs(buyer, wishlistId, itemId)).lock?.mine).not.toBeNull();
+      expect((await itemAs(other, wishlistId, itemId)).status).toBe(WishlistItemStatus.PURCHASED);
+      await reserve(other, itemId).expect(409);
+    });
+
+    it('matches nothing when the network reports the owner buying their own item', async () => {
+      const owner = await newUser();
+      const { wishlistId, itemId } = await wishlistWithItem(owner);
+      await conversionModel.create({
+        network: 'cuelinks',
+        externalId: `txn-${randomUUID()}`,
+        currency: 'INR',
+        status: 'pending',
+        transactionAt: new Date(),
+        itemId: new Types.ObjectId(itemId),
+        userId: new Types.ObjectId(owner.userId),
+      });
+
+      const report = await reconcile.reconcile();
+
+      expect(report.unmatched).toBe(1);
+      expect((await itemAs(owner, wishlistId, itemId)).lock).toBeNull();
     });
   });
 

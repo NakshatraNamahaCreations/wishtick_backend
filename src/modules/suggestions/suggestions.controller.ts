@@ -9,7 +9,8 @@ import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { GiftSuggestionsQueryDto } from './dto/suggestions.dto';
 import { SuggestionsService } from './suggestions.service';
-import type { GiftSuggestionsView } from './suggestions.views';
+import { SearchProductsQueryDto } from '../products/dto/product.dto';
+import type { GiftSuggestionsView, RecipientSearchView } from './suggestions.views';
 
 /**
  * Each request can reach the paid product search up to three times, so it is
@@ -46,5 +47,32 @@ export class SuggestionsController {
     @Query() query: GiftSuggestionsQueryDto,
   ): Promise<GiftSuggestionsView> {
     return this.suggestions.forPerson(viewerId, userId, query);
+  }
+
+  @Get('people/:userId/gift-search')
+  @Throttle(SUGGESTIONS_THROTTLE)
+  @ApiOperation({
+    summary: 'A page of product search, ordered for a WishMate',
+    description:
+      'The same search as /products/search — same results, same paging, same cache — with ' +
+      'each page reordered by what the person likes. Nothing is dropped from a page. ' +
+      'Accepted WishMates and the person themself only.',
+  })
+  @ApiResponseDoc({ status: 403, description: 'NOT_WISHMATES' })
+  @ApiResponseDoc({ status: 404, description: 'NOT_FOUND' })
+  @ApiResponseDoc({ status: 503, description: 'PRODUCT_SEARCH_UNAVAILABLE' })
+  giftSearch(
+    @CurrentUser('id') viewerId: string,
+    @Param('userId') userId: string,
+    @Query() query: SearchProductsQueryDto,
+  ): Promise<RecipientSearchView> {
+    return this.suggestions.searchFor(viewerId, userId, {
+      q: query.q,
+      category: query.category,
+      minPriceMinor: query.minPriceMinor,
+      maxPriceMinor: query.maxPriceMinor,
+      page: query.page ?? 1,
+      pageSize: query.pageSize ?? 20,
+    });
   }
 }

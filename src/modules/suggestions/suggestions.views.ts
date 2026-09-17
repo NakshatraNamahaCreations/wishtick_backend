@@ -1,6 +1,7 @@
 import type { DiscoverExploreQuery } from '../discover/discover.types';
 import type { NormalizedProduct } from '../products/product.types';
 import { ResultFreshness } from '../products/product.types';
+import type { SearchResponse } from '../products/products.service';
 
 export interface GiftSuggestionView {
   product: NormalizedProduct;
@@ -54,6 +55,17 @@ export interface GiftSuggestionsView {
    */
   exploreQuery: DiscoverExploreQuery;
   generatedAt: string;
+}
+
+/**
+ * One page of a product search, reordered for a WishMate.
+ *
+ * The ordinary search response — same items, same paging — plus who it was
+ * ordered for, and whether their taste actually moved anything.
+ */
+export interface RecipientSearchView extends SearchResponse {
+  recipient: { userId: string; displayName: string | null };
+  personalised: boolean;
 }
 
 const RANK: Record<ResultFreshness, number> = {

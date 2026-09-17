@@ -266,9 +266,30 @@ export async function createTestApp(
   const connection = app.get<Connection>(getConnectionToken());
   await new MigrationRunner(connection.db!, MIGRATIONS).up();
 
-  const throttlerStorage = app.get<ThrottlerStorage & { storage?: Map<string, unknown> }>(
-    ThrottlerStorage,
-  );
+  const throttlerStorage = app.get<
+    ThrottlerStorage & {
+      storage?: Map<string, unknown>;
+      timeoutIds?: Map<string, unknown>;
+      clearExpirationTimes?: (throttlerName: string) => void;
+    }
+  >(ThrottlerStorage);
+
+  /**
+   * Empties the in-memory throttler, timers first.
+   *
+   * Every request arms a timer that decrements its counter after the throttle
+   * window (60s here). Clearing only the map left those timers running, and
+   * one that fired after a reset looked up a key that was gone and threw
+   * inside the timer — which Jest blames on whatever test is running at that
+   * moment. Only suites longer than the window ever saw it, so group gifts
+   * failed a different handful of unrelated tests on every run.
+   */
+  const clearThrottler = (): void => {
+    for (const name of throttlerStorage.timeoutIds?.keys() ?? []) {
+      throttlerStorage.clearExpirationTimes?.(name);
+    }
+    throttlerStorage.storage?.clear();
+  };
 
   const drainNotifications = async (): Promise<void> => {
     const svc = app.get(NotificationService);
@@ -301,7 +322,7 @@ export async function createTestApp(
     analytics,
     drainNotifications,
     reset: async () => {
-      throttlerStorage.storage?.clear();
+      clearThrottler();
       // Clears throttle counters, OTP codes, the access-token denylist, and the
       // taxonomy/dashboard caches. The taxonomy simply re-reads from Mongo.
       await redis.flushall();
@@ -313,6 +334,8 @@ export async function createTestApp(
       analytics.reset();
     },
     close: async () => {
+      // A pending throttle timer would otherwise outlive the app it belongs to.
+      clearThrottler();
       // Order matters: close the app (and its Mongo connection) before killing
       // the server it points at, or Mongoose retries against a dead socket and
       // Jest hangs on the open handle.

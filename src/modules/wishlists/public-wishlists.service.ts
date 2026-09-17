@@ -15,7 +15,14 @@ import { WishlistItem, type WishlistItemDocument } from './schemas/wishlist-item
 import type { WishlistDocument } from './schemas/wishlist.schema';
 import { WishlistsService } from './wishlists.service';
 import { CLAIMED_ITEM_STATUSES } from './wishlist.types';
-import type { OpenGraphPreview, PublicItemView, PublicWishlistView } from './wishlist.views';
+import {
+  namedBuyerIds,
+  toItemLock,
+  type ItemViewer,
+  type OpenGraphPreview,
+  type PublicItemView,
+  type PublicWishlistView,
+} from './wishlist.views';
 
 @Injectable()
 export class PublicWishlistsService {
@@ -98,7 +105,7 @@ export class PublicWishlistsService {
   ): Promise<PublicWishlistView> {
     const wishlist = await this.resolveBySlug(slug, passcode, viewerUserId);
 
-    const [items, ownerFirstName] = await Promise.all([
+    const [loaded, ownerFirstName] = await Promise.all([
       this.items
         .find({ wishlistId: wishlist._id, archivedAt: null })
         .sort({ position: 1, _id: 1 })
@@ -106,6 +113,26 @@ export class PublicWishlistsService {
         .exec(),
       this.ownerFirstName(wishlist),
     ]);
+    // Host-added group items are not the owner's; hidden from them here as
+    // on every other surface.
+    const recipientId =
+      wishlist.forUserId && !wishlist.forUserId.equals(wishlist.ownerId)
+        ? wishlist.forUserId
+        : wishlist.ownerId;
+    const isRecipient = Boolean(viewerUserId) && recipientId.toString() === viewerUserId;
+    const items =
+      wishlist.ownerId.toString() === viewerUserId
+        ? loaded.filter((i) => !i.hiddenFromOwner)
+        : loaded;
+    // Names are for signed-in guests and WishMates. Someone holding only the
+    // link learns that an item is bought, and not by whom.
+    const ids = viewerUserId && !isRecipient ? namedBuyerIds(items) : [];
+    const full = ids.length > 0 ? await this.users.displayNamesFor(ids) : new Map<string, string>();
+    const viewer: ItemViewer = {
+      userId: viewerUserId ?? null,
+      isRecipient,
+      buyerNames: new Map([...full].map(([id, name]) => [id, name.split(/\s+/)[0] ?? name])),
+    };
 
     return {
       title: wishlist.title,
@@ -113,7 +140,7 @@ export class PublicWishlistsService {
       coverUrl: wishlist.coverUrl,
       ownerFirstName,
       itemCount: items.length,
-      items: items.map((item) => PublicWishlistsService.toPublicItem(item)),
+      items: items.map((item) => PublicWishlistsService.toPublicItem(item, viewer)),
     };
   }
 
@@ -159,7 +186,7 @@ export class PublicWishlistsService {
     return fromUser ? (fromUser.trim().split(/\s+/)[0] ?? null) : null;
   }
 
-  private static toPublicItem(item: WishlistItemDocument): PublicItemView {
+  private static toPublicItem(item: WishlistItemDocument, viewer: ItemViewer): PublicItemView {
     return {
       id: item._id.toString(),
       title: item.title,
@@ -182,6 +209,7 @@ export class PublicWishlistsService {
       // A boolean, never the status or the gifter. Enough to prevent duplicate
       // gifting; not enough to reveal who is buying what.
       isClaimed: CLAIMED_ITEM_STATUSES.includes(item.status),
+      lock: toItemLock(item, viewer),
     };
   }
 }

@@ -1,4 +1,4 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsBoolean, IsDateString, IsOptional, IsString, MaxLength } from 'class-validator';
 
@@ -32,6 +32,16 @@ export class GiftOfflineDto {
   @IsOptional()
   @IsBoolean()
   hiddenFromOwner?: boolean;
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'Show your first name on the bought item to other guests. Never shown to the person ' +
+      'the gift is for.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  showName?: boolean;
 }
 
 export class GiftActionDto {
@@ -48,4 +58,20 @@ export class GiftActionDto {
   @MaxLength(500)
   @Transform(trim)
   deliveryNotes?: string;
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'Show your first name on the bought item to other guests. Never shown to the person ' +
+      'the gift is for.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  showName?: boolean;
+}
+
+export class SetShowNameDto {
+  @ApiProperty({ description: 'Show your first name on the bought item to other guests' })
+  @IsBoolean()
+  showName!: boolean;
 }

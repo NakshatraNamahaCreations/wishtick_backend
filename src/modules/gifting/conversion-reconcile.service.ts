@@ -98,7 +98,25 @@ export class ConversionReconcileService {
 
     for (const conversion of pending) {
       report.considered++;
-      const gift = await this.match(conversion);
+      const rejected = REJECTED_STATUSES.has((conversion.status ?? '').toLowerCase());
+      const orderRef = ConversionReconcileService.orderRef(conversion);
+      let gift = await this.match(conversion);
+
+      if (!gift && !rejected && conversion.itemId && conversion.userId) {
+        // Bought without reserving first. The item is theirs from here on, so
+        // nobody else is sent to buy it a second time.
+        gift = await this.gifting.claimReportedSale(
+          conversion.itemId.toString(),
+          conversion.userId.toString(),
+          { by: `system:${conversion.network}`, orderRef },
+        );
+        if (gift) {
+          report.purchased++;
+          await this.close(conversion, gift);
+          this.emitMatched(conversion, gift);
+          continue;
+        }
+      }
 
       if (!gift) {
         // Marked anyway: an ordinary wishlist click nobody reserved produces a
@@ -108,9 +126,6 @@ export class ConversionReconcileService {
         await this.close(conversion, null);
         continue;
       }
-
-      const rejected = REJECTED_STATUSES.has((conversion.status ?? '').toLowerCase());
-      const orderRef = ConversionReconcileService.orderRef(conversion);
 
       if (!rejected && gift.status === GiftStatus.RESERVED) {
         // Through the ordinary purchase path, so everything a purchase entails
@@ -136,18 +151,7 @@ export class ConversionReconcileService {
 
       await this.close(conversion, gift);
 
-      if (!rejected) {
-        this.emitter.emit(AFFILIATE_SALE_MATCHED, {
-          giftId: gift._id.toString(),
-          network: conversion.network,
-          externalId: conversion.externalId,
-          orderId: conversion.orderId,
-          saleAmountMinor: conversion.saleAmountMinor,
-          currency: conversion.currency,
-          status: conversion.status,
-          confirmed: CONFIRMED_STATUSES.has((conversion.status ?? '').toLowerCase()),
-        } satisfies AffiliateSaleMatchedEvent);
-      }
+      if (!rejected) this.emitMatched(conversion, gift);
     }
 
     if (report.considered > 0) {
@@ -177,6 +181,19 @@ export class ConversionReconcileService {
         active: true,
       })
       .exec();
+  }
+
+  private emitMatched(conversion: ConversionDocument, gift: GiftDocument): void {
+    this.emitter.emit(AFFILIATE_SALE_MATCHED, {
+      giftId: gift._id.toString(),
+      network: conversion.network,
+      externalId: conversion.externalId,
+      orderId: conversion.orderId,
+      saleAmountMinor: conversion.saleAmountMinor,
+      currency: conversion.currency,
+      status: conversion.status,
+      confirmed: CONFIRMED_STATUSES.has((conversion.status ?? '').toLowerCase()),
+    } satisfies AffiliateSaleMatchedEvent);
   }
 
   private async close(conversion: ConversionDocument, gift: GiftDocument | null): Promise<void> {

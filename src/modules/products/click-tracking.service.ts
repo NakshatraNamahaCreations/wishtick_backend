@@ -10,6 +10,7 @@ import {
   WishlistItem,
   type WishlistItemDocument,
 } from 'src/modules/wishlists/schemas/wishlist-item.schema';
+import { WishlistItemStatus } from 'src/modules/wishlists/wishlist.types';
 import { WishlistsService } from 'src/modules/wishlists/wishlists.service';
 import { MonetizationService } from './affiliate/monetization.service';
 import { ClickEvent, type ClickEventDocument } from './schemas/click-event.schema';
@@ -37,7 +38,7 @@ export class ClickTrackingService {
    */
   async resolveRedirect(
     itemId: string,
-    ctx: AccessContext & { referer?: string; userAgent?: string },
+    ctx: AccessContext & { referer?: string; userAgent?: string; forGifting?: boolean },
   ): Promise<string> {
     if (!Types.ObjectId.isValid(itemId)) {
       throw new AppException(ErrorCode.WISHLIST_ITEM_NOT_FOUND, 'Item not found', 404);
@@ -52,6 +53,21 @@ export class ClickTrackingService {
 
     const wishlist = await this.wishlists.findOrFail(item.wishlistId.toString());
     await this.access.assertCanView(wishlist, ctx);
+
+    // "Gift Now" on something another guest already holds would send a second
+    // person to buy it. The owner and the holder themselves may still open it.
+    if (
+      ctx.forGifting &&
+      item.status !== WishlistItemStatus.AVAILABLE &&
+      item.ownerId.toString() !== ctx.userId &&
+      item.activeGiftBuyerId?.toString() !== ctx.userId
+    ) {
+      throw new AppException(
+        ErrorCode.ITEM_NOT_AVAILABLE,
+        'Someone is already getting this gift',
+        409,
+      );
+    }
 
     const product = item.sourceProductId
       ? await this.products.findSnapshotById(item.sourceProductId)

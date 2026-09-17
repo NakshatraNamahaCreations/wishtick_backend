@@ -72,6 +72,7 @@ export class GiftStatusService {
       expiresAt: Date | null;
       type?: GiftType;
       amountMinorOverride?: number | null;
+      showBuyerName?: boolean;
     },
     session: ClientSession,
   ): Promise<GiftDocument> {
@@ -91,6 +92,7 @@ export class GiftStatusService {
             amountMinor: input.amountMinorOverride ?? input.item.price?.amountMinor ?? null,
             currency: input.item.price?.currency ?? 'INR',
             visibility: input.visibility,
+            showBuyerName: input.showBuyerName ?? false,
             reservedAt: now,
             expiresAt: input.expiresAt,
             history: [
@@ -104,7 +106,12 @@ export class GiftStatusService {
       await this.itemModel
         .updateOne(
           { _id: input.item._id },
-          { $set: { status: WishlistItemStatus.RESERVED, activeGiftVisibility: input.visibility } },
+          {
+            $set: {
+              status: WishlistItemStatus.RESERVED,
+              ...GiftStatusService.itemMirror(gift),
+            },
+          },
           { session },
         )
         .exec();
@@ -183,8 +190,8 @@ export class GiftStatusService {
 
     // On cancellation the item frees up and the gift-visibility flag clears, so
     // the owner's projection stops masking. Everything else keeps the flag.
-    const itemUpdate: Record<string, unknown> = { status: GIFT_TO_ITEM_STATUS[to] };
-    if (to === GiftStatus.CANCELLED) itemUpdate.activeGiftVisibility = null;
+    const itemUpdate: Record<string, unknown> = { status: GiftStatusService.itemStatusFor(gift) };
+    if (to === GiftStatus.CANCELLED) Object.assign(itemUpdate, GiftStatusService.CLEARED_MIRROR);
 
     await this.itemModel
       .updateOne({ _id: gift.itemId }, { $set: itemUpdate }, { session: opts.session })
@@ -192,6 +199,60 @@ export class GiftStatusService {
 
     this.logger.log(`Gift ${gift._id.toString()} → ${to} by ${by}`);
     return gift;
+  }
+
+  /**
+   * Turns the caller's own reservation into "bought elsewhere".
+   *
+   * The same move as [transition] to purchased, plus the mode change — kept
+   * here because mode decides which item status the purchase mirrors to.
+   */
+  async purchaseOffline(
+    gift: GiftDocument,
+    by: string,
+    opts: { deliveryNotes?: string | null; showBuyerName?: boolean; session?: ClientSession },
+  ): Promise<GiftDocument> {
+    gift.mode = GiftMode.OFFLINE;
+    gift.expiresAt = null;
+    if (opts.deliveryNotes) gift.deliveryNotes = opts.deliveryNotes;
+    if (opts.showBuyerName !== undefined) gift.showBuyerName = opts.showBuyerName;
+    await this.transition(gift, GiftStatus.PURCHASED, by, {
+      note: 'offline',
+      session: opts.session,
+    });
+    await this.mirrorShowName(gift, opts.session);
+    return gift;
+  }
+
+  /**
+   * Whether other guests see the buyer's first name on the item.
+   *
+   * Only for a single gift that still holds the item. A group's buyer is a
+   * group whose members chose their own anonymity, and the owner's own
+   * purchase names nobody.
+   */
+  async setShowBuyerName(gift: GiftDocument, show: boolean): Promise<GiftDocument> {
+    if (gift.active !== true || gift.type !== GiftType.SINGLE) {
+      throw new AppException(
+        ErrorCode.INVALID_GIFT_TRANSITION,
+        'Only a gift you are still giving can show your name',
+        409,
+      );
+    }
+    gift.showBuyerName = show;
+    await gift.save();
+    await this.mirrorShowName(gift);
+    return gift;
+  }
+
+  private async mirrorShowName(gift: GiftDocument, session?: ClientSession): Promise<void> {
+    await this.itemModel
+      .updateOne(
+        { _id: gift.itemId, activeGiftId: gift._id },
+        { $set: { activeGiftShowName: gift.showBuyerName } },
+        { session },
+      )
+      .exec();
   }
 
   /**
@@ -230,6 +291,8 @@ export class GiftStatusService {
       recipientId: Types.ObjectId;
       visibility: string;
       deliveryNotes: string | null;
+      showBuyerName?: boolean;
+      type?: GiftType;
     },
     session: ClientSession,
   ): Promise<GiftDocument> {
@@ -242,12 +305,14 @@ export class GiftStatusService {
             wishlistId: input.item.wishlistId,
             gifterId: input.gifterId,
             recipientId: input.recipientId,
+            type: input.type ?? GiftType.SINGLE,
             mode: GiftMode.OFFLINE,
             status: GiftStatus.PURCHASED,
             active: true,
             amountMinor: input.item.price?.amountMinor ?? null,
             currency: input.item.price?.currency ?? 'INR',
             visibility: input.visibility,
+            showBuyerName: input.showBuyerName ?? false,
             deliveryNotes: input.deliveryNotes,
             reservedAt: now,
             purchasedAt: now,
@@ -270,7 +335,7 @@ export class GiftStatusService {
           {
             $set: {
               status: WishlistItemStatus.GIFTED_OFFLINE,
-              activeGiftVisibility: input.visibility,
+              ...GiftStatusService.itemMirror(gift),
             },
           },
           { session },
@@ -288,6 +353,41 @@ export class GiftStatusService {
       }
       throw err;
     }
+  }
+
+  /**
+   * What the item carries about the gift holding it. See the fields on
+   * WishlistItem.
+   */
+  private static itemMirror(gift: GiftDocument): Record<string, unknown> {
+    return {
+      activeGiftVisibility: gift.visibility,
+      activeGiftId: gift._id,
+      activeGiftBuyerId: gift.gifterId,
+      activeGiftShowName: gift.showBuyerName ?? false,
+      // By type, never by comparing ids: the owner of a list made for someone
+      // else organises group gifts on it, and those are not theirs to keep.
+      activeGiftByOwner: gift.type === GiftType.SELF,
+    };
+  }
+
+  private static readonly CLEARED_MIRROR = {
+    activeGiftVisibility: null,
+    activeGiftId: null,
+    activeGiftBuyerId: null,
+    activeGiftShowName: false,
+    activeGiftByOwner: false,
+  };
+
+  /**
+   * An offline purchase shows as `gifted_offline` rather than `purchased`, so
+   * the owner's dashboard can say it was bought elsewhere.
+   */
+  private static itemStatusFor(gift: GiftDocument): WishlistItemStatus {
+    if (gift.status === GiftStatus.PURCHASED && gift.mode === GiftMode.OFFLINE) {
+      return WishlistItemStatus.GIFTED_OFFLINE;
+    }
+    return GIFT_TO_ITEM_STATUS[gift.status];
   }
 
   private static isDuplicateKey(err: unknown): boolean {

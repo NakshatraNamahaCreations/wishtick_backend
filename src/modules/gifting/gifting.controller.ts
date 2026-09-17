@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiHeader,
@@ -9,7 +19,7 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { Idempotent } from 'src/common/idempotency/idempotent.decorator';
-import { GiftActionDto, GiftOfflineDto, ReserveItemDto } from './dto/gift.dto';
+import { GiftActionDto, GiftOfflineDto, ReserveItemDto, SetShowNameDto } from './dto/gift.dto';
 import { GiftListService } from './gift-list.service';
 import { GiftingService } from './gifting.service';
 import type { GiftListItemView, GiftView } from './gift.views';
@@ -83,7 +93,36 @@ export class GiftingController {
     return this.gifting.giftOffline(itemId, userId, dto);
   }
 
+  @Post('items/:itemId/got-it')
+  @HttpCode(HttpStatus.CREATED)
+  @Throttle(GIFT_THROTTLE)
+  @ApiOperation({
+    summary: 'Mark your own item as got it yourself',
+    description:
+      'Owner only. Locks the item for everyone, like a purchase. Undo with ' +
+      'POST gifts/:giftId/cancel, using the id this returns or the item’s lock.',
+  })
+  @ApiResponseDoc({ status: 409, description: 'ITEM_NOT_AVAILABLE' })
+  gotIt(@CurrentUser('id') userId: string, @Param('itemId') itemId: string): Promise<GiftView> {
+    return this.gifting.markGotItMyself(itemId, userId);
+  }
+
   // ── Gift-scoped transitions ────────────────────────────────────────────────
+
+  @Patch('gifts/:giftId/show-name')
+  @ApiOperation({
+    summary: 'Show or hide your name on an item you bought',
+    description:
+      'Other guests see your first name on the greyed item when on. The person the gift is ' +
+      'for never does.',
+  })
+  setShowName(
+    @CurrentUser('id') userId: string,
+    @Param('giftId') giftId: string,
+    @Body() dto: SetShowNameDto,
+  ): Promise<GiftView> {
+    return this.gifting.setShowName(giftId, userId, dto);
+  }
 
   @Post('gifts/:giftId/purchase')
   @HttpCode(HttpStatus.OK)

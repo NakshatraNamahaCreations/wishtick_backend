@@ -48,6 +48,7 @@ export class GiftLinkController {
         userId,
         referer: req.get('referer') ?? undefined,
         userAgent: req.get('user-agent') ?? undefined,
+        forGifting: true,
       }),
     };
   }

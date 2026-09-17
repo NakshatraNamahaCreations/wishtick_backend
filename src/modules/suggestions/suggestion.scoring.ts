@@ -301,7 +301,18 @@ function similarity(a: Set<string>, b: Set<string>): number {
 export function rankForTaste(
   rows: RetrievedRow[],
   taste: TasteProfile,
-  opts: { limit: number },
+  opts: {
+    limit: number;
+    /**
+     * Whether to thin the shelf — the merchant cap and the duplicate collapse.
+     *
+     * On for a suggestion shelf, which is a handful of picks. Off when
+     * reordering one page of a search somebody is paging through: dropping
+     * rows there would make pages come back short, and the reader would take
+     * a short page for the end of the results.
+     */
+    diverse?: boolean;
+  },
 ): ScoredProduct[] {
   const scored: ScoredProduct[] = rows.map(({ product, foundIn }) => {
     const title = titleOf(product);
@@ -358,6 +369,8 @@ export function rankForTaste(
       (a.product.amountMinor ?? Infinity) - (b.product.amountMinor ?? Infinity) ||
       a.product.externalId.localeCompare(b.product.externalId),
   );
+
+  if (opts.diverse === false) return scored.slice(0, opts.limit);
 
   const picked: ScoredProduct[] = [];
   const perMerchant = new Map<string, number>();

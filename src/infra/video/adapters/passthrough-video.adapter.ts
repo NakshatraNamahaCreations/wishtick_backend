@@ -40,6 +40,10 @@ export class PassthroughVideoAdapter implements IVideoProvider {
     PassthroughVideoAdapter.unreachable('thumbnailUrl');
   }
 
+  downloadUrl(): Promise<string | null> {
+    PassthroughVideoAdapter.unreachable('downloadUrl');
+  }
+
   delete(): Promise<void> {
     PassthroughVideoAdapter.unreachable('delete');
   }

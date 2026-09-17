@@ -430,3 +430,26 @@ describe('the shelf that comes back', () => {
     expect(scored.reasons.length).toBeLessThanOrEqual(2);
   });
 });
+
+describe('reordering one page of a search', () => {
+  it('drops nothing, however alike the rows are', () => {
+    // A page that comes back short reads as the end of the results.
+    const rows = Array.from({ length: 6 }, (_, i) =>
+      row(product({ title: 'Same Product', merchant: 'MegaStore', externalId: `dup_${i}` })),
+    );
+
+    const page = rankForTaste(rows, taste(), { limit: rows.length, diverse: false });
+
+    expect(page).toHaveLength(6);
+  });
+
+  it('still puts what they like first', () => {
+    const page = rankForTaste(
+      [row(product({ title: 'Ceramic Vase' })), row(product({ title: 'Running Shoes' }))],
+      taste(likes('shoes')),
+      { limit: 2, diverse: false },
+    );
+
+    expect(page[0].product.title).toBe('Running Shoes');
+  });
+});

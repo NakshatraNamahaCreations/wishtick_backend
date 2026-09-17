@@ -2,8 +2,39 @@ import type { AddressView } from 'src/modules/profile/addresses.service';
 import type { WishlistItemDocument } from './schemas/wishlist-item.schema';
 import type { WishlistDocument } from './schemas/wishlist.schema';
 import type { AccessDecision } from './access/access.types';
-import { WishlistItemStatus } from './wishlist.types';
+import { BOUGHT_ITEM_STATUSES, WishlistItemStatus } from './wishlist.types';
 import type { ItemImportance, WishlistVisibility } from './wishlist.types';
+
+/**
+ * An item that has been bought, as one viewer may see it. Null on an item
+ * nobody has bought — a reservation included, which keeps its ordinary look.
+ *
+ * What it says depends on who is asking:
+ *  - the person the list is for learns only that it is taken ([by], and
+ *    [mine] for their own "got it myself") — never who, never how;
+ *  - the buyer gets [mine], to undo it or change whether they are named;
+ *  - everyone else gets [buyerName] only if the buyer chose to show it.
+ */
+export interface ItemLockView {
+  /** `owner` for the owner's own "I got this myself", otherwise `gifter`. */
+  by: 'gifter' | 'owner';
+  /** The buyer's first name, when they chose to show it and the viewer may see it. */
+  buyerName: string | null;
+  /** Present when the viewer is the one who bought it. */
+  mine: { giftId: string; showName: boolean } | null;
+}
+
+/** Who is looking at an item, for [toItemView]. */
+export interface ItemViewer {
+  userId?: string | null;
+  /**
+   * The person the list is for: its owner, or the WishMate a list made by
+   * somebody else names. Sees surprises masked and never learns a buyer.
+   */
+  isRecipient: boolean;
+  /** First names by user id, for buyers who chose to be named. */
+  buyerNames?: Map<string, string>;
+}
 
 export interface ItemView {
   id: string;
@@ -21,6 +52,8 @@ export interface ItemView {
   quantity: number;
   giftPreferences: { color: string | null; size: string | null; variantNotes: string | null };
   status: WishlistItemStatus;
+  /** Set once the item is bought — what greys it out. See [ItemLockView]. */
+  lock: ItemLockView | null;
   position: number;
   createdAt: Date;
 
@@ -118,6 +151,11 @@ export interface PublicItemView {
    * out who bought what.
    */
   isClaimed: boolean;
+  /**
+   * Set once it is bought. A buyer's name appears only for a signed-in viewer
+   * who is not the person the list is for — never to an anonymous link.
+   */
+  lock: ItemLockView | null;
 }
 
 export interface OpenGraphPreview {
@@ -130,16 +168,56 @@ export interface OpenGraphPreview {
 }
 
 /**
- * Projects an item.
+ * The lock one viewer sees on [item], or null while it is not bought.
  *
- * `maskForOwner` hides a surprise from the wishlist owner: when the item's
- * active gift is `hidden_from_owner`, the owner sees it as `available` rather
- * than `reserved`/`purchased`. Other viewers always pass `false` and see the
- * true, claimed status (so duplicate gifting is still prevented). Only the
- * *status* is masked — the view never carried a gifter identity to leak.
+ * Shared by the signed-in and share-link projections so the rule about who
+ * learns a buyer's name lives in one place.
  */
-export const toItemView = (item: WishlistItemDocument, maskForOwner = false): ItemView => {
-  const hidden = maskForOwner && item.activeGiftVisibility === 'hidden_from_owner';
+export const toItemLock = (item: WishlistItemDocument, viewer: ItemViewer): ItemLockView | null => {
+  if (!BOUGHT_ITEM_STATUSES.includes(item.status)) return null;
+
+  const buyerId = item.activeGiftBuyerId?.toString() ?? null;
+  const giftId = item.activeGiftId?.toString() ?? null;
+  const isMine = Boolean(viewer.userId && buyerId && buyerId === viewer.userId);
+  const byOwner = item.activeGiftByOwner === true;
+  const named =
+    !viewer.isRecipient && !isMine && !byOwner && item.activeGiftShowName === true && buyerId;
+
+  return {
+    by: byOwner ? 'owner' : 'gifter',
+    buyerName: named ? (viewer.buyerNames?.get(buyerId) ?? null) : null,
+    mine: isMine && giftId ? { giftId, showName: byOwner ? false : item.activeGiftShowName } : null,
+  };
+};
+
+/** The buyers whose names [items] may show, for one batched name lookup. */
+export const namedBuyerIds = (items: WishlistItemDocument[]): string[] => [
+  ...new Set(
+    items
+      .filter((i) => i.activeGiftShowName && i.activeGiftBuyerId && !i.activeGiftByOwner)
+      .map((i) => i.activeGiftBuyerId!.toString()),
+  ),
+];
+
+/**
+ * Projects an item for one viewer.
+ *
+ * The person the list is for sees a surprise masked: a hidden reservation as
+ * `available`, and a hidden purchase as plain `purchased` — greyed, but not
+ * saying whether it was bought here or elsewhere. Everyone else sees the true
+ * status, so duplicate gifting is still prevented. No view carries a gifter's
+ * id; a name appears only through [toItemLock].
+ */
+export const toItemView = (
+  item: WishlistItemDocument,
+  viewer: ItemViewer = { isRecipient: false },
+): ItemView => {
+  const hidden = viewer.isRecipient && item.activeGiftVisibility === 'hidden_from_owner';
+  const status = !hidden
+    ? item.status
+    : BOUGHT_ITEM_STATUSES.includes(item.status)
+      ? WishlistItemStatus.PURCHASED
+      : WishlistItemStatus.AVAILABLE;
   return {
     id: item._id.toString(),
     title: item.title,
@@ -162,7 +240,8 @@ export const toItemView = (item: WishlistItemDocument, maskForOwner = false): It
       size: item.giftPreferences?.size ?? null,
       variantNotes: item.giftPreferences?.variantNotes ?? null,
     },
-    status: hidden ? WishlistItemStatus.AVAILABLE : item.status,
+    status,
+    lock: toItemLock(item, viewer),
     position: item.position,
     createdAt: item.createdAt,
     sourceProductId: item.sourceProductId?.toString() ?? null,

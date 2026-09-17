@@ -2,6 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { ProductsService } from 'src/modules/products/products.service';
 import { FixtureProductProvider } from 'src/modules/products/providers/fixture-provider';
+import { ProviderGuard } from 'src/modules/products/providers/provider-guard.service';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
 const PASSWORD = 'correct-horse-battery-staple';
@@ -53,6 +54,7 @@ describe('Gift suggestions (e2e)', () => {
   let app: INestApplication;
   let fixture: FixtureProductProvider;
   let products: ProductsService;
+  let guard: ProviderGuard;
   let seq = 0;
 
   beforeAll(async () => {
@@ -60,6 +62,7 @@ describe('Gift suggestions (e2e)', () => {
     app = ctx.app;
     fixture = app.get(FixtureProductProvider);
     products = app.get(ProductsService);
+    guard = app.get(ProviderGuard);
   }, 120_000);
 
   afterAll(async () => {
@@ -69,6 +72,9 @@ describe('Gift suggestions (e2e)', () => {
   beforeEach(async () => {
     await ctx.reset();
     fixture.faults = {};
+    // A test that takes the provider down trips its breaker, which would
+    // otherwise stay open and fail every search in the tests after it.
+    guard.resetBreaker('fixture');
     jest.restoreAllMocks();
   });
 
@@ -249,6 +255,87 @@ describe('Gift suggestions (e2e)', () => {
       const res = await suggestionsFor(rohan, priyal, '?maxPriceMinor=777777').expect(503);
 
       expect((res.body as Envelope<unknown>).error?.code).toBe('PRODUCT_SEARCH_UNAVAILABLE');
+    });
+  });
+
+  describe('searching for somebody', () => {
+    interface SearchBody {
+      items: { title: string; externalId: string }[];
+      recipient: { userId: string; displayName: string | null };
+      personalised: boolean;
+      page: number;
+    }
+
+    const searchFor = (viewer: Actor, target: Actor, query: string) =>
+      request(app.getHttpServer())
+        .get(`${V1}/people/${target.userId}/gift-search${query}`)
+        .set(auth(viewer.token));
+
+    it('a stranger is refused', async () => {
+      const priyal = await someone('priyal_g1', 'Priyal');
+      const rohan = await someone('rohan_g1', 'Rohan');
+
+      await searchFor(rohan, priyal, '?category=electronics').expect(403);
+    });
+
+    it('returns the same products as the ordinary search, reordered', async () => {
+      // Nothing about the person reaches the vendor or the cache: the page is
+      // the page everybody gets, in an order that suits them.
+      const priyal = await someone('priyal_g2', 'Priyal');
+      const rohan = await someone('rohan_g2', 'Rohan');
+      await connect(rohan, priyal);
+      await setTaste(priyal, techLover);
+
+      const plain = await request(app.getHttpServer())
+        .get(`${V1}/products/search?category=electronics`)
+        .set(auth(rohan.token))
+        .expect(200);
+      const forHer = await searchFor(rohan, priyal, '?category=electronics').expect(200);
+
+      const plainIds = (plain.body as Envelope<SearchBody>).data.items.map((i) => i.externalId);
+      const body = (forHer.body as Envelope<SearchBody>).data;
+      expect([...body.items.map((i) => i.externalId)].sort()).toEqual([...plainIds].sort());
+      expect(body.items[0].title).toBe('Smart Speaker');
+      expect(body.personalised).toBe(true);
+      expect(body.recipient).toEqual({ userId: priyal.userId, displayName: 'Priyal' });
+    });
+
+    it('keeps the paging of the ordinary search', async () => {
+      const priyal = await someone('priyal_g3', 'Priyal');
+      const rohan = await someone('rohan_g3', 'Rohan');
+      await connect(rohan, priyal);
+
+      const res = await searchFor(rohan, priyal, '?page=2&pageSize=5').expect(200);
+      const body = (res.body as Envelope<SearchBody>).data;
+
+      expect(body.page).toBe(2);
+      expect(body.items).toHaveLength(5);
+    });
+
+    it('says when there was nothing to order by', async () => {
+      const priyal = await someone('priyal_g4', 'Priyal');
+      const rohan = await someone('rohan_g4', 'Rohan');
+      await connect(rohan, priyal);
+
+      const res = await searchFor(rohan, priyal, '?category=books').expect(200);
+
+      expect((res.body as Envelope<SearchBody>).data.personalised).toBe(false);
+    });
+
+    it('the suggestion shelf hands its person to Explore More', async () => {
+      const priyal = await someone('priyal_g5', 'Priyal');
+      const rohan = await someone('rohan_g5', 'Rohan');
+      await connect(rohan, priyal);
+
+      const res = await suggestionsFor(rohan, priyal).expect(200);
+      const query = (
+        res.body as Envelope<{
+          exploreQuery: { recipientUserId: string; recipientName: string };
+        }>
+      ).data.exploreQuery;
+
+      expect(query.recipientUserId).toBe(priyal.userId);
+      expect(query.recipientName).toBe('Priyal');
     });
   });
 

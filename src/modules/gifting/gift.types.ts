@@ -3,6 +3,12 @@ export enum GiftType {
   SINGLE = 'single',
   /** Many people funding one item. Sprint 7. */
   GROUP = 'group',
+  /**
+   * The owner saying "I got this myself". Not a gift to anyone — it exists so
+   * the item is locked through the same index, the same single writer and the
+   * same undo as a real one. Kept out of every gift list.
+   */
+  SELF = 'self',
 }
 
 export enum GiftMode {

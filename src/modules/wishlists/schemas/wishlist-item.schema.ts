@@ -171,6 +171,27 @@ export class WishlistItem {
   activeGiftVisibility!: string | null;
 
   /**
+   * The rest of what an item view needs about its active gift, denormalized for
+   * the same reason as [activeGiftVisibility] and by the same single writer.
+   *
+   * [activeGiftId] and [activeGiftBuyerId] let the buyer find their own gift
+   * from the item (to undo it, or to change [activeGiftShowName]).
+   * [activeGiftByOwner] marks the owner's own "I got this myself". All four
+   * clear when the gift is cancelled.
+   */
+  @Prop({ type: SchemaTypes.ObjectId, default: null })
+  activeGiftId!: Types.ObjectId | null;
+
+  @Prop({ type: SchemaTypes.ObjectId, default: null })
+  activeGiftBuyerId!: Types.ObjectId | null;
+
+  @Prop({ type: Boolean, default: false })
+  activeGiftShowName!: boolean;
+
+  @Prop({ type: Boolean, default: false })
+  activeGiftByOwner!: boolean;
+
+  /**
    * Manual sort order. Sparse spacing (see ItemsService.nextPosition) so a
    * single move usually rewrites one row instead of renumbering the list.
    */

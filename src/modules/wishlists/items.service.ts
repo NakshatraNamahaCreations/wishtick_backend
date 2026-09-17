@@ -13,7 +13,9 @@ import type { CreateItemDto, ListItemsQueryDto, UpdateItemDto } from './dto/wish
 import { WishlistItem, type WishlistItemDocument } from './schemas/wishlist-item.schema';
 import { WishlistsService } from './wishlists.service';
 import { CLAIMED_ITEM_STATUSES, MAX_ITEM_IMAGES, WishlistItemStatus } from './wishlist.types';
-import { toItemView, type ItemView } from './wishlist.views';
+import type { WishlistDocument } from './schemas/wishlist.schema';
+import { UsersService } from 'src/modules/users/users.service';
+import { namedBuyerIds, toItemView, type ItemView, type ItemViewer } from './wishlist.views';
 
 /**
  * Gap between adjacent positions.
@@ -34,7 +36,36 @@ export class ItemsService {
     private readonly access: AccessPolicyService,
     private readonly taxonomy: TaxonomyService,
     private readonly media: MediaService,
+    private readonly users: UsersService,
   ) {}
+
+  /**
+   * Who is looking, in the terms an item view needs.
+   *
+   * The recipient is the WishMate a list names when someone else made it for
+   * them, and otherwise the owner. The creator of a list for somebody else is
+   * organising, not being surprised, so they see what any guest sees.
+   */
+  private async viewerOf(
+    wishlist: WishlistDocument,
+    userId: string | undefined,
+    items: WishlistItemDocument[],
+  ): Promise<ItemViewer> {
+    const forSomeoneElse = Boolean(
+      wishlist.forUserId && !wishlist.forUserId.equals(wishlist.ownerId),
+    );
+    const recipientId = forSomeoneElse ? wishlist.forUserId! : wishlist.ownerId;
+    const isRecipient = Boolean(userId) && recipientId.toString() === userId;
+    const ids = isRecipient ? [] : namedBuyerIds(items);
+    const full = ids.length > 0 ? await this.users.displayNamesFor(ids) : new Map<string, string>();
+    return {
+      userId,
+      isRecipient,
+      buyerNames: new Map(
+        [...full].map(([id, name]) => [id, name.split(/\s+/)[0] ?? name] as const),
+      ),
+    };
+  }
 
   // ── Read ──────────────────────────────────────────────────────────────────
 
@@ -68,7 +99,8 @@ export class ItemsService {
       .limit(MAX_ITEMS_PER_WISHLIST)
       .exec();
 
-    return items.map((item) => toItemView(item, maskForOwner));
+    const viewer = await this.viewerOf(wishlist, ctx.userId, items);
+    return items.map((item) => toItemView(item, viewer));
   }
 
   async getOne(wishlistId: string, itemId: string, ctx: AccessContext): Promise<ItemView> {
@@ -81,7 +113,7 @@ export class ItemsService {
     if (maskForOwner && item.hiddenFromOwner) {
       throw new AppException(ErrorCode.WISHLIST_ITEM_NOT_FOUND, 'Item not found', 404);
     }
-    return toItemView(item, maskForOwner);
+    return toItemView(item, await this.viewerOf(wishlist, ctx.userId, [item]));
   }
 
   // ── Write ─────────────────────────────────────────────────────────────────
@@ -215,7 +247,7 @@ export class ItemsService {
     }
 
     await item.save();
-    return toItemView(item);
+    return toItemView(item, await this.viewerOf(wishlist, ctx.userId, [item]));
   }
 
   async remove(wishlistId: string, itemId: string, ctx: AccessContext): Promise<void> {

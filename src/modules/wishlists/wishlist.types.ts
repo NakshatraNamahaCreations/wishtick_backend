@@ -67,3 +67,18 @@ export const CLAIMED_ITEM_STATUSES: WishlistItemStatus[] = [
   WishlistItemStatus.GIFTED_OFFLINE,
   WishlistItemStatus.COMPLETED,
 ];
+
+/**
+ * Statuses that mean the item has actually been bought — what greys it out.
+ *
+ * A reservation is not among them: somebody meaning to buy something is not a
+ * purchase, and the item keeps its ordinary look until one happens. The
+ * reservation still blocks a second gifter, which is the server's job, not
+ * the colour's.
+ */
+export const BOUGHT_ITEM_STATUSES: WishlistItemStatus[] = [
+  WishlistItemStatus.PURCHASED,
+  WishlistItemStatus.FULFILLED,
+  WishlistItemStatus.GIFTED_OFFLINE,
+  WishlistItemStatus.COMPLETED,
+];

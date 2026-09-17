@@ -106,4 +106,26 @@ export class MediaController {
   async play(@Param('id') id: string): Promise<{ url: string; statusCode: number }> {
     return { url: await this.media.playbackUrl(id), statusCode: 302 };
   }
+
+  /**
+   * Redirects to the media as a single downloadable file.
+   *
+   * Public for the same reason as [play], and reached from the same stable
+   * `/play` link a wish stores: the app swaps the last segment. A clip is an
+   * HLS ladder when played, which no share sheet can attach.
+   */
+  @Get(':id/download')
+  @Public()
+  @Redirect()
+  @ApiOperation({
+    summary: 'Redirect to a signed, expiring single-file URL',
+    description:
+      'For saving or sharing. Transcoded video resolves to its MP4 fallback, which needs ' +
+      'MP4 fallback enabled on the video library; anything else to its stored file.',
+  })
+  @ApiResponseDoc({ status: 404, description: 'MEDIA_NOT_FOUND — including a video with no MP4' })
+  @ApiResponseDoc({ status: 409, description: 'MEDIA_NOT_UPLOADED — still encoding' })
+  async download(@Param('id') id: string): Promise<{ url: string; statusCode: number }> {
+    return { url: await this.media.downloadUrl(id), statusCode: 302 };
+  }
 }

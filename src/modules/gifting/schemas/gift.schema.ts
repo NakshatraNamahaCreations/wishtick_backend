@@ -95,6 +95,17 @@ export class Gift {
   })
   visibility!: GiftVisibility;
 
+  /**
+   * Whether the gifter lets other guests see their first name on the item
+   * they bought.
+   *
+   * Off unless they turn it on. Never shown to the person the gift is for —
+   * see ItemLockView — and meaningless on a reservation, which is not shown as
+   * bought to anyone.
+   */
+  @Prop({ type: Boolean, default: false })
+  showBuyerName!: boolean;
+
   @Prop({ type: Date, default: null })
   reservedAt!: Date | null;
 

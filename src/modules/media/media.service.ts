@@ -377,6 +377,43 @@ export class MediaService {
     return this.storage.getPublicUrl(media.storageKey);
   }
 
+  /**
+   * A freshly signed URL for the media as **one file**, for saving or sharing.
+   *
+   * [playbackUrl] hands a transcoded clip out as an HLS playlist, which plays
+   * but cannot be attached to anything. This answers the encoder's MP4 copy
+   * instead — or, for anything that never went through the encoder, the same
+   * stored file [playbackUrl] would.
+   */
+  async downloadUrl(mediaId: string): Promise<string> {
+    if (!Types.ObjectId.isValid(mediaId)) {
+      throw new AppException(ErrorCode.MEDIA_NOT_FOUND, 'Media not found', 404);
+    }
+    const found = await this.model.findById(mediaId).exec();
+    if (!found) throw new AppException(ErrorCode.MEDIA_NOT_FOUND, 'Media not found', 404);
+
+    const media = await this.syncVideo(found);
+
+    if (media.videoId && this.video.enabled) {
+      if (media.status !== MediaStatus.READY) {
+        throw new AppException(
+          ErrorCode.MEDIA_NOT_UPLOADED,
+          'This video is still being processed',
+          409,
+        );
+      }
+      const url = await this.video.downloadUrl(media.videoId);
+      if (!url) {
+        // The library has MP4 fallback switched off, and the source file was
+        // deleted once the encode finished — there is no single file to give.
+        throw new AppException(ErrorCode.MEDIA_NOT_FOUND, 'This video cannot be downloaded', 404);
+      }
+      return url;
+    }
+
+    return this.storage.getPublicUrl(media.storageKey);
+  }
+
   async findById(mediaId: string): Promise<MediaDocument | null> {
     if (!Types.ObjectId.isValid(mediaId)) return null;
     return this.model.findById(mediaId).exec();

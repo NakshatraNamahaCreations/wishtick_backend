@@ -54,7 +54,7 @@ export class GiftListService {
    */
   async listGiven(userId: string): Promise<GiftListItemView[]> {
     const gifts = await this.giftModel
-      .find({ gifterId: new Types.ObjectId(userId) })
+      .find({ gifterId: new Types.ObjectId(userId), type: { $ne: GiftType.SELF } })
       .sort({ createdAt: -1 })
       .limit(MAX_ROWS)
       .exec();
@@ -73,6 +73,7 @@ export class GiftListService {
     const gifts = await this.giftModel
       .find({
         recipientId: new Types.ObjectId(userId),
+        type: { $ne: GiftType.SELF },
         $or: [
           { visibility: GiftVisibility.VISIBLE },
           { status: { $in: [GiftStatus.FULFILLED, GiftStatus.COMPLETED] } },
@@ -97,6 +98,7 @@ export class GiftListService {
     const gifts = await this.giftModel
       .find({
         gifterId: new Types.ObjectId(userId),
+        type: { $ne: GiftType.SELF },
         status: { $in: [GiftStatus.RESERVED, GiftStatus.PURCHASED] },
       })
       .sort({ expiresAt: 1, createdAt: -1 })
