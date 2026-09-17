@@ -42,6 +42,7 @@ import { ProfileModule } from './modules/profile/profile.module';
 import { TaxonomyModule } from './modules/taxonomy/taxonomy.module';
 import { UsersModule } from './modules/users/users.module';
 import { WishlistsModule } from './modules/wishlists/wishlists.module';
+import { SuggestionsModule } from './modules/suggestions/suggestions.module';
 import { WishmatesModule } from './modules/wishmates/wishmates.module';
 
 @Module({
@@ -124,6 +125,8 @@ import { WishmatesModule } from './modules/wishmates/wishmates.module';
     OnboardingModule,
     WishlistsModule,
     WishmatesModule,
+    // Gift ideas for a WishMate, ranked by what they said they like.
+    SuggestionsModule,
     EventsModule,
     ProductsModule,
     GiftingModule,

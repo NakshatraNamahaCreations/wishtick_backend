@@ -58,6 +58,7 @@ import { TaxonomyModule } from 'src/modules/taxonomy/taxonomy.module';
 import { UsersModule } from 'src/modules/users/users.module';
 import { AffiliateSyncProcessor } from 'src/modules/products/affiliate-sync.processor';
 import { ProductsModule } from 'src/modules/products/products.module';
+import { SuggestionsModule } from 'src/modules/suggestions/suggestions.module';
 import { WishlistsModule } from 'src/modules/wishlists/wishlists.module';
 import { FakeMailer, FakePushSender, FakeSmsSender } from './fake-notifier';
 import { FakeQueue } from './fake-queue';
@@ -180,6 +181,9 @@ export async function createTestApp(
       DiscoverModule,
       AnalyticsModule,
       AdminModule,
+      // Mirrors AppModule: gift ideas for a WishMate, ranked by their taste.
+      // WishmatesModule comes in through it.
+      SuggestionsModule,
     ],
     providers: [
       { provide: APP_FILTER, useClass: AllExceptionsFilter },

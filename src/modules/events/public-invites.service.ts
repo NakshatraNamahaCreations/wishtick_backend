@@ -85,7 +85,8 @@ export class PublicInvitesService {
         ogImageUrl: event.ogImageUrl,
         status: event.status,
       },
-      host: { firstName: hostFirstName },
+      host: { firstName: hostFirstName, userId: event.hostId.toString() },
+      celebrant: PublicInvitesService.celebrantOf(event, hostFirstName),
       invitee: { name: inviteeName, rsvp: invite.rsvp, plusOnes: invite.plusOnes },
       wishlists,
       groupGifts,
@@ -223,6 +224,24 @@ export class PublicInvitesService {
 
     const user = await this.users.findById(invite.invitedUserId);
     return user?.name?.trim() || null;
+  }
+
+  /**
+   * Who a guest can send a memory to, besides the host.
+   *
+   * For the host's own event that is the host, under the same first name the
+   * invitation already shows.
+   */
+  private static celebrantOf(
+    event: EventDocument,
+    hostFirstName: string | null,
+  ): PublicInviteView['celebrant'] {
+    if (event.forSelf) {
+      return { name: hostFirstName, userId: event.hostId.toString(), isHost: true };
+    }
+    const name = event.personName?.trim() || null;
+    if (!name && !event.personUserId) return null;
+    return { name, userId: event.personUserId?.toString() ?? null, isHost: false };
   }
 
   /** First name only — the same redaction rule as the public wishlist view. */

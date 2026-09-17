@@ -25,6 +25,8 @@ export interface EventView {
   venue: string | null;
   /** Who the event is for, and how the host knows them (`257:733`). */
   personName: string | null;
+  /** The WishMate [personName] names, when there is one. */
+  personUserId: string | null;
   relation: string | null;
   /** The host is the person being celebrated. See Event.forSelf. */
   forSelf: boolean;
@@ -125,7 +127,21 @@ export interface PublicInviteView {
     ogImageUrl: string | null;
     status: EventStatus;
   };
-  host: { firstName: string | null };
+  /**
+   * The id is there so a guest can send the host a memory from the
+   * invitation — a memory is addressed to an account. It is not a secret from
+   * someone the host invited.
+   */
+  host: { firstName: string | null; userId: string };
+  /**
+   * Who the party is for, as a guest may address them.
+   *
+   * The host themself for their own event. [userId] is null when the host
+   * typed the name rather than picking a WishMate: there is no account to
+   * deliver anything to, and the invitation says so rather than offering a
+   * send that would fail. Null altogether when the event names nobody.
+   */
+  celebrant: { name: string | null; userId: string | null; isHost: boolean } | null;
   invitee: { name: string | null; rsvp: RsvpResponse; plusOnes: number };
   /**
    * The event's wishlists, each resolved through AccessPolicyService for this
@@ -169,6 +185,7 @@ export const toEventView = (
     description: event.description,
     venue: event.venue,
     personName: event.personName,
+    personUserId: event.personUserId?.toString() ?? null,
     relation: event.relation,
     forSelf: event.forSelf ?? false,
     coverUrl: event.coverUrl,

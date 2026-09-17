@@ -56,6 +56,20 @@ export class ProfilePreferences {
 
   @Prop({ type: [String], default: [] })
   occasions!: string[];
+
+  /**
+   * Whether WishMates may see the sizes above.
+   *
+   * On by default, because the whole point of collecting a size is that
+   * somebody buying for you gets it right — but it is body data, the taxonomy
+   * itself offers "Prefer not to say", and anybody who would rather keep it to
+   * themselves can turn it off without losing the rest of their taste.
+   *
+   * Absent on documents written before this shipped, which reads as `true` —
+   * the same answer as the default, so no backfill is needed.
+   */
+  @Prop({ type: Boolean, default: true })
+  shareSizes!: boolean;
 }
 
 export const ProfilePreferencesSchema = SchemaFactory.createForClass(ProfilePreferences);

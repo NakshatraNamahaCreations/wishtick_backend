@@ -74,6 +74,18 @@ export class Event {
   @Prop({ type: String, default: null, trim: true, maxlength: 120 })
   personName!: string | null;
 
+  /**
+   * The account behind [personName], when the host picked them from their
+   * WishMates rather than typing a name.
+   *
+   * What lets a guest send the celebrated person a memory from the invitation:
+   * a memory is delivered to an account, and a typed name has none. Null for a
+   * typed name, for the host's own event (see [forSelf]), and for every event
+   * made before this was stored.
+   */
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', default: null })
+  personUserId!: Types.ObjectId | null;
+
   /** A `relation` taxonomy key (`2252:423`), not free text. */
   @Prop({ type: String, default: null, trim: true, maxlength: 60 })
   relation!: string | null;

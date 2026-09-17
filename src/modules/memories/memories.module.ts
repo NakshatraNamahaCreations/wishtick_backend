@@ -2,6 +2,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { QUEUE } from 'src/infra/queue/queue.constants';
+import { EventParticipationModule } from 'src/modules/events/event-participation.module';
 import { MediaModule } from 'src/modules/media/media.module';
 import { UsersModule } from 'src/modules/users/users.module';
 import { WishmatesModule } from 'src/modules/wishmates/wishmates.module';
@@ -30,6 +31,10 @@ import { MemoryWish, MemoryWishSchema } from './schemas/memory-wish.schema';
     UsersModule,
     // For the WishMate check on create and the recipient's identity on read.
     WishmatesModule,
+    // The Event and EventInvite models, for a guest sending a memory from an
+    // invitation. The narrow module, not EventsModule, which would pull in
+    // wishlists and everything behind them.
+    EventParticipationModule,
   ],
   controllers: [MemoriesController, PublicMemoriesController],
   providers: [MemoriesService, MemoryWishesService, MemoryRepliesService, MemoryUnlockRegistrar],

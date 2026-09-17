@@ -36,6 +36,21 @@ export class CreateMemoryDto {
   @IsMongoId()
   recipientUserId!: string;
 
+  /**
+   * The event the memory is being sent from, by one of its guests.
+   *
+   * With it, the recipient may be that event's host or the person it
+   * celebrates even when they are not the caller's WishMate — being invited
+   * is the link. The caller must hold a live invitation, whatever they
+   * answered: a guest who cannot go is exactly who wants to send something.
+   */
+  @ApiPropertyOptional({
+    description: 'An event you are invited to; its host or celebrant may then be the recipient',
+  })
+  @IsOptional()
+  @IsMongoId()
+  eventId?: string;
+
   @ApiPropertyOptional({ description: 'A `relation` taxonomy key (`2252:423`)' })
   @IsOptional()
   @IsString()

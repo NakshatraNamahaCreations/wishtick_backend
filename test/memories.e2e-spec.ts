@@ -6,6 +6,10 @@ import { ErrorCode } from 'src/common/errors/error-codes';
 import { MemoriesService } from 'src/modules/memories/memories.service';
 import { MediaPurpose } from 'src/modules/media/schemas/media.schema';
 import {
+  EventInvite,
+  type EventInviteDocument,
+} from 'src/modules/events/schemas/event-invite.schema';
+import {
   MemoryCapsule,
   type MemoryCapsuleDocument,
 } from 'src/modules/memories/schemas/memory-capsule.schema';
@@ -52,6 +56,7 @@ describe('Memories (e2e)', () => {
   let ctx: TestApp;
   let app: INestApplication;
   let capsuleModel: Model<MemoryCapsuleDocument>;
+  let inviteModel: Model<EventInviteDocument>;
   let memories: MemoriesService;
   let seq = 0;
 
@@ -148,6 +153,7 @@ describe('Memories (e2e)', () => {
     app = ctx.app;
     capsuleModel = app.get<Model<MemoryCapsuleDocument>>(getModelToken(MemoryCapsule.name));
     memories = app.get(MemoriesService);
+    inviteModel = app.get<Model<EventInviteDocument>>(getModelToken(EventInvite.name));
   }, 120_000);
 
   afterAll(async () => {
@@ -764,6 +770,137 @@ describe('Memories (e2e)', () => {
         .set(auth(stranger.token))
         .send({ title: 'Mine now' })
         .expect(404);
+    });
+  });
+
+  describe('sending a memory from an invitation', () => {
+    /**
+     * A published event and a guest who is *not* the host's WishMate — the
+     * contacts-invite case — holding a live invitation with [rsvp].
+     */
+    const invitedTo = async (
+      over: Record<string, unknown> = {},
+      opts: { host?: Actor; rsvp?: string } = {},
+    ): Promise<{ host: Actor; guest: Actor; eventId: string; token: string }> => {
+      const host = opts.host ?? (await newUser());
+      const guest = await newUser();
+      const event = (
+        await request(app.getHttpServer())
+          .post(`${V1}/events`)
+          .set(auth(host.token))
+          .send({
+            title: "Jayanth's Wedding",
+            type: 'special',
+            startsAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+            timezone: 'Asia/Kolkata',
+            ...over,
+          })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      const token = `tok-${Date.now()}-${++seq}`;
+      await inviteModel.create({
+        eventId: event.data.id,
+        invitedUserId: guest.userId,
+        token,
+        rsvp: opts.rsvp ?? 'no',
+      });
+      return { host, guest, eventId: event.data.id, token };
+    };
+
+    const send = (from: Actor, body: Record<string, unknown>) =>
+      request(app.getHttpServer())
+        .post(`${V1}/memories`)
+        .set(auth(from.token))
+        .send({
+          title: "Jayanth's Wedding",
+          occasion: 'wedding',
+          unlockAt: IN_A_WEEK(),
+          timezone: 'Asia/Kolkata',
+          ...body,
+        });
+
+    it("reaches the host from a guest who can't go and isn't their WishMate", async () => {
+      const { host, guest, eventId } = await invitedTo();
+      const res = await send(guest, { recipientUserId: host.userId, eventId }).expect(201);
+      const memory = (res.body as Envelope<MemoryView>).data;
+      expect(memory.person?.userId).toBe(host.userId);
+
+      const stored = await capsuleModel.findById(memory.id).exec();
+      expect(stored?.eventId?.toString()).toBe(eventId);
+    });
+
+    it('reaches the WishMate the event celebrates, and names them on the invitation', async () => {
+      const host = await newUser();
+      const celebrant = await newUser();
+      await becomeWishmates(host, celebrant);
+      const { guest, eventId, token } = await invitedTo(
+        { personName: 'Jayanth P', personUserId: celebrant.userId },
+        { host },
+      );
+
+      const invite = (
+        await request(app.getHttpServer()).get(`${V1}/public/invites/${token}`).expect(200)
+      ).body as Envelope<{
+        host: { userId: string };
+        celebrant: { name: string; userId: string | null; isHost: boolean } | null;
+      }>;
+      expect(invite.data.host.userId).toBe(host.userId);
+      expect(invite.data.celebrant).toEqual({
+        name: 'Jayanth P',
+        userId: celebrant.userId,
+        isHost: false,
+      });
+
+      await send(guest, { recipientUserId: celebrant.userId, eventId }).expect(201);
+    });
+
+    it('refuses to link an event to someone the host does not know', async () => {
+      const host = await newUser();
+      const stranger = await newUser();
+      await request(app.getHttpServer())
+        .post(`${V1}/events`)
+        .set(auth(host.token))
+        .send({
+          title: 'X',
+          type: 'birthday',
+          startsAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+          timezone: 'Asia/Kolkata',
+          personName: 'Stranger',
+          personUserId: stranger.userId,
+        })
+        .expect(403);
+    });
+
+    it('offers no account for a celebrant whose name was typed', async () => {
+      const { token } = await invitedTo({ personName: 'Jayanth P' });
+      const invite = (
+        await request(app.getHttpServer()).get(`${V1}/public/invites/${token}`).expect(200)
+      ).body as Envelope<{ celebrant: { userId: string | null } | null }>;
+      expect(invite.data.celebrant?.userId).toBeNull();
+    });
+
+    it('names the host as the celebrant of their own event', async () => {
+      const { host, token } = await invitedTo({ forSelf: true });
+      const invite = (
+        await request(app.getHttpServer()).get(`${V1}/public/invites/${token}`).expect(200)
+      ).body as Envelope<{ celebrant: { userId: string | null; isHost: boolean } | null }>;
+      expect(invite.data.celebrant).toMatchObject({ userId: host.userId, isHost: true });
+    });
+
+    it('refuses anyone else the event does not name', async () => {
+      const { guest, eventId } = await invitedTo();
+      const bystander = await newUser();
+      const res = await send(guest, { recipientUserId: bystander.userId, eventId }).expect(403);
+      expect((res.body as Envelope<unknown>).error?.code).toBe(ErrorCode.FORBIDDEN);
+    });
+
+    it('answers 404 to somebody who was never invited, or whose invitation was revoked', async () => {
+      const { host, guest, eventId, token } = await invitedTo();
+      const outsider = await newUser();
+      await send(outsider, { recipientUserId: host.userId, eventId }).expect(404);
+
+      await inviteModel.updateOne({ token }, { revokedAt: new Date() });
+      await send(guest, { recipientUserId: host.userId, eventId }).expect(404);
     });
   });
 

@@ -16,6 +16,7 @@ import {
   type UserProfileDocument,
 } from 'src/modules/profile/schemas/user-profile.schema';
 import { User, type UserDocument } from 'src/modules/users/schemas/user.schema';
+import { TasteService } from '../taste/taste.service';
 import { PresenceService } from './presence.service';
 import { WishLink, WishLinkStatus, type WishLinkDocument } from './schemas/wish-link.schema';
 import {
@@ -60,6 +61,7 @@ export class WishmatesService {
     @InjectModel(User.name) private readonly users: Model<UserDocument>,
     private readonly presence: PresenceService,
     private readonly sharedEvents: SharedEventsService,
+    private readonly taste: TasteService,
   ) {}
 
   // ── Handles ───────────────────────────────────────────────────────────────
@@ -383,6 +385,12 @@ export class WishmatesService {
       joinedAt: user.createdAt.toISOString(),
       mutuals: await this.withPresence(mutualProfiles.map((p) => this.toView(p, 0))),
       recentActivity: await this.activityBetween(viewerId, targetId),
+      // The relationship is handed over rather than looked up again — and it
+      // is what decides whether anything comes back at all.
+      taste: await this.taste.summaryFor(targetId, {
+        relationship,
+        displayName: profile?.displayName ?? null,
+      }),
     };
   }
 
@@ -454,6 +462,21 @@ export class WishmatesService {
         // the requester must not be able to tell they were turned down.
         return WishmateRelationship.NONE;
     }
+  }
+
+  /**
+   * [relationshipWith], for a target that must exist.
+   *
+   * 404 for an id that is not a live account — the same answer
+   * [profileOf] gives, so an id cannot be probed by asking something else
+   * about it.
+   */
+  async relationshipWithExisting(
+    viewerId: string,
+    targetId: string,
+  ): Promise<WishmateRelationship> {
+    await this.assertUserExists(targetId);
+    return this.relationshipWith(viewerId, targetId);
   }
 
   /** True only for an accepted link. Gates direct messaging. */

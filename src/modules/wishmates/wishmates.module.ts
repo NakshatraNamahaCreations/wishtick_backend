@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { TasteModule } from '../taste/taste.module';
 import { EventParticipationModule } from 'src/modules/events/event-participation.module';
 import { UserProfile, UserProfileSchema } from 'src/modules/profile/schemas/user-profile.schema';
 import { User, UserSchema } from 'src/modules/users/schemas/user.schema';
@@ -30,6 +31,9 @@ import { WishmatesService } from './wishmates.service';
     // One question only: which events are these two people both going to?
     // The tiny module rather than EventsModule — see its own note on the cycle.
     EventParticipationModule,
+    // The profile screen shows what a WishMate likes. One-way: TasteModule
+    // knows nothing about the graph, and is handed the relationship instead.
+    TasteModule,
   ],
   controllers: [WishmatesController],
   providers: [

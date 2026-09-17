@@ -1,3 +1,5 @@
+import type { TasteSummaryView } from '../taste/taste.views';
+
 /**
  * How one user appears to another.
  *
@@ -111,4 +113,13 @@ export interface WishmateProfileView {
    * is why `4177:267`'s section is hidden rather than shown empty.
    */
   recentActivity: WishmateActivityView[];
+
+  /**
+   * What this person likes, when the viewer is allowed to know.
+   *
+   * Null for every relationship but WishMates and self — absent rather than
+   * empty, so a viewer cannot tell "withheld" from "they have not said". See
+   * [TasteSummaryView] for what is in it and what deliberately is not.
+   */
+  taste: TasteSummaryView | null;
 }

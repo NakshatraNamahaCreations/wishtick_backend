@@ -11,6 +11,11 @@ import { ErrorCode } from 'src/common/errors/error-codes';
 import { MEMORY_UNLOCKED, type MemoryUnlockedEvent } from 'src/common/events/domain-events';
 import type { AppConfig } from 'src/config/configuration';
 import { QUEUE } from 'src/infra/queue/queue.constants';
+import { Event, type EventDocument } from 'src/modules/events/schemas/event.schema';
+import {
+  EventInvite,
+  type EventInviteDocument,
+} from 'src/modules/events/schemas/event-invite.schema';
 import { MediaPurpose } from 'src/modules/media/schemas/media.schema';
 import { MediaService } from 'src/modules/media/media.service';
 import { UsersService } from 'src/modules/users/users.service';
@@ -43,6 +48,8 @@ export class MemoriesService {
     private readonly capsuleModel: Model<MemoryCapsuleDocument>,
     @InjectModel(MemoryWish.name)
     private readonly wishModel: Model<MemoryWishDocument>,
+    @InjectModel(Event.name) private readonly eventModel: Model<EventDocument>,
+    @InjectModel(EventInvite.name) private readonly inviteModel: Model<EventInviteDocument>,
     @InjectQueue(QUEUE.SCHEDULER) private readonly scheduler: Queue,
     private readonly media: MediaService,
     private readonly wishmates: WishmatesService,
@@ -70,12 +77,18 @@ export class MemoriesService {
       );
     }
 
-    const recipient = await this.assertWishmate(userId, dto.recipientUserId);
+    const eventId = dto.eventId
+      ? await this.assertEventRecipient(userId, dto.eventId, dto.recipientUserId)
+      : null;
+    const recipient = await this.assertWishmate(userId, dto.recipientUserId, {
+      linkedByEvent: eventId !== null,
+    });
 
     const capsule = await this.capsuleModel.create({
       hostId: new Types.ObjectId(userId),
       title: dto.title,
       recipientUserId: new Types.ObjectId(dto.recipientUserId),
+      eventId,
       // Snapshotted, not resolved on read — see the note on the schema field.
       personName: recipient.displayName ?? recipient.username ?? 'A WishMate',
       relation: dto.relation ?? null,
@@ -354,14 +367,24 @@ export class MemoriesService {
    * the server may accept Y — and a memory names a real person and collects
    * what other people say about them.
    */
-  private async assertWishmate(hostId: string, recipientUserId: string): Promise<PublicIdentity> {
+  private async assertWishmate(
+    hostId: string,
+    recipientUserId: string,
+    opts: { linkedByEvent?: boolean } = {},
+  ): Promise<PublicIdentity> {
     if (hostId === recipientUserId) {
       throw new AppException(ErrorCode.VALIDATION_FAILED, 'A memory is made for someone else', 400);
     }
 
-    const relationship = await this.wishmates.relationshipWith(hostId, recipientUserId);
-    if (relationship !== WishmateRelationship.WISHMATES) {
-      throw new AppException(ErrorCode.FORBIDDEN, 'You can only make a memory for a WishMate', 403);
+    if (!opts.linkedByEvent) {
+      const relationship = await this.wishmates.relationshipWith(hostId, recipientUserId);
+      if (relationship !== WishmateRelationship.WISHMATES) {
+        throw new AppException(
+          ErrorCode.FORBIDDEN,
+          'You can only make a memory for a WishMate',
+          403,
+        );
+      }
     }
 
     const [identity] = await this.wishmates.identitiesOf([recipientUserId]);
@@ -380,6 +403,45 @@ export class MemoriesService {
       online: identity?.online ?? false,
       lastSeenAt: identity?.lastSeenAt ?? null,
     };
+  }
+
+  /**
+   * Lets a guest address an event's host or celebrant without being their
+   * WishMate.
+   *
+   * The invitation is the link: the host chose to invite this person, and the
+   * celebrant is whoever the host named for the party. Any live invitation
+   * counts, whatever the RSVP — someone who cannot make it is the guest most
+   * likely to want to send something instead. A revoked invitation does not.
+   *
+   * 404 for an event the caller is not invited to, so it learns nothing about
+   * what exists; 403 for a recipient the event does not name.
+   */
+  private async assertEventRecipient(
+    userId: string,
+    eventId: string,
+    recipientUserId: string,
+  ): Promise<Types.ObjectId> {
+    const id = new Types.ObjectId(eventId);
+    const invited = await this.inviteModel
+      .exists({ eventId: id, invitedUserId: new Types.ObjectId(userId), revokedAt: null })
+      .exec();
+    const event = invited ? await this.eventModel.findById(id).exec() : null;
+    if (!event) {
+      throw new AppException(ErrorCode.EVENT_NOT_FOUND, 'Event not found', 404);
+    }
+
+    const allowed = [event.hostId, event.forSelf ? null : event.personUserId]
+      .filter((u): u is Types.ObjectId => u !== null)
+      .map((u) => u.toString());
+    if (!allowed.includes(recipientUserId)) {
+      throw new AppException(
+        ErrorCode.FORBIDDEN,
+        "From an invitation you can send a memory to its host or the person it's for",
+        403,
+      );
+    }
+    return id;
   }
 
   private async resolveCover(userId: string, mediaId: string): Promise<string | null> {

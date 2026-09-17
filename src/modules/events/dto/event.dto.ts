@@ -122,6 +122,15 @@ export class CreateEventDto {
   @Transform(trim)
   personName?: string | null;
 
+  @ApiPropertyOptional({
+    description:
+      'The WishMate [personName] names, when the host picked them rather than typing. ' +
+      'Lets guests send them a memory from the invitation. Null to unlink.',
+  })
+  @IsOptional()
+  @IsMongoId()
+  personUserId?: string | null;
+
   @ApiPropertyOptional({ description: 'A `relation` taxonomy key (`2252:423`)' })
   @IsOptional()
   @IsString()
@@ -217,6 +226,15 @@ export class UpdateEventDto {
   @MaxLength(120)
   @Transform(trim)
   personName?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'The WishMate [personName] names, when the host picked them rather than typing. ' +
+      'Lets guests send them a memory from the invitation. Null to unlink.',
+  })
+  @IsOptional()
+  @IsMongoId()
+  personUserId?: string | null;
 
   @ApiPropertyOptional({ description: 'A `relation` taxonomy key (`2252:423`)' })
   @IsOptional()

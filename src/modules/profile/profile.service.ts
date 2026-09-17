@@ -50,6 +50,8 @@ export interface MeView {
       giftCategories: string[];
       lifestyle: string[];
       occasions: string[];
+      /** Whether WishMates may see the sizes above. */
+      shareSizes: boolean;
     };
     onboarding: {
       completed: boolean;
@@ -132,6 +134,7 @@ export class ProfileService {
           giftCategories: profile.preferences?.giftCategories ?? [],
           lifestyle: profile.preferences?.lifestyle ?? [],
           occasions: profile.preferences?.occasions ?? [],
+          shareSizes: profile.preferences?.shareSizes ?? true,
         },
         onboarding: {
           completed: profile.onboardingCompletedAt !== null,
@@ -246,6 +249,9 @@ export class ProfileService {
       giftCategories: dto.giftCategories ?? current.giftCategories ?? [],
       lifestyle: dto.lifestyle ?? current.lifestyle ?? [],
       occasions: dto.occasions ?? current.occasions ?? [],
+      // Absent on anything written before the switch existed, which reads as
+      // shared — the same answer as the default.
+      shareSizes: dto.shareSizes ?? current.shareSizes ?? true,
     };
 
     await profile.save();

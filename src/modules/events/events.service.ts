@@ -8,6 +8,8 @@ import { ErrorCode } from 'src/common/errors/error-codes';
 import type { AppConfig } from 'src/config/configuration';
 import { MediaService } from 'src/modules/media/media.service';
 import { MediaPurpose } from 'src/modules/media/schemas/media.schema';
+import { WishmatesService } from 'src/modules/wishmates/wishmates.service';
+import { WishmateRelationship } from 'src/modules/wishmates/wishmates.views';
 import { Wishlist, type WishlistDocument } from 'src/modules/wishlists/schemas/wishlist.schema';
 import type { CreateEventDto, UpdateEventDto } from './dto/event.dto';
 import { EventRemindersService } from './event-reminders.service';
@@ -42,6 +44,7 @@ export class EventsService {
     private readonly wishlistSubmissions: Model<EventWishlistSubmissionDocument>,
     private readonly reminders: EventRemindersService,
     private readonly media: MediaService,
+    private readonly wishmates: WishmatesService,
     private readonly config: ConfigService<AppConfig, true>,
   ) {}
 
@@ -105,6 +108,8 @@ export class EventsService {
       description: dto.description ?? null,
       venue: dto.venue ?? null,
       personName: dto.personName ?? null,
+      // Never for the host's own event: the person celebrated is the host.
+      personUserId: dto.forSelf ? null : await this.resolvePersonUser(userId, dto.personUserId),
       relation: dto.relation ?? null,
       forSelf: dto.forSelf ?? false,
       visibility: dto.visibility ?? EventVisibility.PRIVATE,
@@ -161,9 +166,7 @@ export class EventsService {
    * list is capped at [MAX_ACTIVE_EVENTS], and a hundred round trips to draw
    * one screen is how a list gets slow.
    */
-  private async pendingWishlistCounts(
-    eventIds: Types.ObjectId[],
-  ): Promise<Map<string, number>> {
+  private async pendingWishlistCounts(eventIds: Types.ObjectId[]): Promise<Map<string, number>> {
     const counts = new Map<string, number>();
     if (eventIds.length === 0) return counts;
 
@@ -209,6 +212,10 @@ export class EventsService {
     if (dto.personName !== undefined) event.personName = dto.personName;
     if (dto.relation !== undefined) event.relation = dto.relation;
     if (dto.forSelf !== undefined) event.forSelf = dto.forSelf;
+    if (dto.personUserId !== undefined) {
+      event.personUserId = await this.resolvePersonUser(userId, dto.personUserId);
+    }
+    if (event.forSelf) event.personUserId = null;
     if (dto.timezone !== undefined) event.timezone = dto.timezone;
     if (dto.visibility !== undefined) event.visibility = dto.visibility;
 
@@ -483,6 +490,29 @@ export class EventsService {
     }
 
     return objectIds;
+  }
+
+  /**
+   * The celebrated person's account, checked to be one of the host's WishMates.
+   *
+   * The same rule a memory's recipient is held to, and for the same reason:
+   * guests can send this account a memory from the invitation, so naming an
+   * account here has to mean the host actually knows them.
+   */
+  private async resolvePersonUser(
+    hostId: string,
+    personUserId: string | null | undefined,
+  ): Promise<Types.ObjectId | null> {
+    if (!personUserId) return null;
+    const relationship = await this.wishmates.relationshipWith(hostId, personUserId);
+    if (relationship !== WishmateRelationship.WISHMATES) {
+      throw new AppException(
+        ErrorCode.FORBIDDEN,
+        'The person an event is for has to be one of your WishMates',
+        403,
+      );
+    }
+    return new Types.ObjectId(personUserId);
   }
 
   private async resolveCover(userId: string, mediaId: string): Promise<string | null> {

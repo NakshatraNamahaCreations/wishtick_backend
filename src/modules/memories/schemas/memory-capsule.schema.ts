@@ -71,6 +71,14 @@ export class MemoryCapsule {
   @Prop({ type: String, required: true, trim: true, maxlength: 120 })
   personName!: string;
 
+  /**
+   * The event a guest sent this from, when they did. It is what let a
+   * recipient who is not the sender's WishMate through — kept so that
+   * permission can be traced back to the invitation that granted it.
+   */
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'Event', default: null })
+  eventId!: Types.ObjectId | null;
+
   /** A `relation` taxonomy key (`2252:423`), not free text. */
   @Prop({ type: String, default: null, trim: true, maxlength: 60 })
   relation!: string | null;

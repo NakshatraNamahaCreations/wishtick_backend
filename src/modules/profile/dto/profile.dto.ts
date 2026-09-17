@@ -1,6 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   ArrayMaxSize,
   IsArray,
   IsDateString,
@@ -64,6 +65,18 @@ export class UpdatePreferencesDto {
   @IsString({ each: true })
   @ArrayMaxSize(100)
   favouriteColors?: string[];
+
+  /**
+   * Whether WishMates may see the sizes below.
+   *
+   * On by default — a size exists so that somebody buying for you gets it
+   * right — but it is body data, and anybody who would rather keep it to
+   * themselves can turn it off without hiding the rest of their taste.
+   */
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  shareSizes?: boolean;
 
   @ApiPropertyOptional({ example: 'm' })
   @IsOptional()
