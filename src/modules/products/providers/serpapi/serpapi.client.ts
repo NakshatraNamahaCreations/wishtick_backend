@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AppConfig } from 'src/config/configuration';
-import type { SerpImmersiveProductResponse, SerpShoppingResponse } from './serpapi.types';
+import type {
+  SerpAmazonProductResponse,
+  SerpImmersiveProductResponse,
+  SerpShoppingResponse,
+} from './serpapi.types';
 
 /** An upstream HTTP failure, carrying the status ProviderGuard retries on. */
 export class SerpApiHttpError extends Error {
@@ -76,6 +80,25 @@ export class SerpApiClient {
       gl: this.cfg.serpApiCountry,
       hl: this.cfg.serpApiLanguage,
     });
+  }
+
+  /**
+   * One Amazon product by ASIN. Charged as a search.
+   *
+   * The only way to read an Amazon product from a server: Amazon answers our
+   * own requests for its pages with a 5xx. See `amazon-link.ts`.
+   */
+  async amazonProduct(asin: string, domain: string): Promise<SerpAmazonProductResponse> {
+    return this.get<SerpAmazonProductResponse>({
+      engine: 'amazon_product',
+      asin,
+      amazon_domain: domain,
+    });
+  }
+
+  /** Whether there is a key to call SerpApi with at all. */
+  get configured(): boolean {
+    return this.cfg.serpApiKey !== '';
   }
 
   private async get<T>(params: Record<string, string>): Promise<T> {

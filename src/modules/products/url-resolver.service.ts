@@ -6,8 +6,19 @@ import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { SsrfGuard } from 'src/common/net/ssrf-guard';
 import type { AppConfig } from 'src/config/configuration';
+import { amazonProductFromUrl, isAmazonShortLink, type AmazonProductRef } from './amazon-link';
+import { AmazonLookupService } from './amazon-lookup.service';
 import type { NormalizedProduct } from './product.types';
 import { PRODUCT_PROVIDER, type IProductProvider } from './providers/product-provider.port';
+
+/**
+ * What a person is told when a link cannot be read, whatever the reason.
+ *
+ * One message, because there is one thing they can do about any of them. The
+ * app puts the cursor in the name field beside it.
+ */
+export const ASK_FOR_A_NAME =
+  'We couldn’t get the product name from that link. Type a name and we’ll still save the link.';
 
 export interface ResolvedUrlProduct {
   /** 'provider' when a network recognized the URL; 'scrape' when we read tags. */
@@ -23,6 +34,7 @@ export class UrlResolverService {
     @Inject(PRODUCT_PROVIDER) private readonly provider: IProductProvider,
     private readonly ssrf: SsrfGuard,
     private readonly config: ConfigService<AppConfig, true>,
+    private readonly amazon: AmazonLookupService,
   ) {}
 
   /**
@@ -41,16 +53,53 @@ export class UrlResolverService {
     });
     if (known) return { source: 'provider', product: known };
 
+    // Amazon is never scraped. It answers a server reading its pages with a
+    // 5xx, which reached people as "That link returned 500" on a link that
+    // opened fine in their own browser.
+    const amazon = await this.amazonProductBehind(rawUrl);
+    if (amazon) {
+      const product = await this.amazon.lookup(amazon);
+      if (product) return { source: 'provider', product };
+      // Scraping is not a fallback here — it is the thing that fails.
+      throw new AppException(ErrorCode.PRODUCT_URL_UNSUPPORTED, ASK_FOR_A_NAME, 422);
+    }
+
     const html = await this.fetchHtml(rawUrl);
     const parsed = UrlResolverService.parseOpenGraph(html, rawUrl);
     if (!parsed.title) {
-      throw new AppException(
-        ErrorCode.PRODUCT_URL_UNSUPPORTED,
-        'We could not read a product from that link. You can add the item manually.',
-        422,
-      );
+      throw new AppException(ErrorCode.PRODUCT_URL_UNSUPPORTED, ASK_FOR_A_NAME, 422);
     }
     return { source: 'scrape', product: parsed as ResolvedUrlProduct['product'] };
+  }
+
+  /**
+   * The Amazon product a link leads to, found without requesting Amazon.
+   *
+   * A storefront URL is read directly. A short link is followed hop by hop —
+   * those hosts only redirect, and are not blocked — but the walk stops the
+   * moment a hop *names* a product, before the product page itself is
+   * requested. Anything else is not Amazon's, and returns null.
+   *
+   * Null too when there is no way to look the product up, so the link falls
+   * through to the ordinary scrape rather than to a guaranteed refusal.
+   */
+  private async amazonProductBehind(rawUrl: string): Promise<AmazonProductRef | null> {
+    if (!this.amazon.enabled) return null;
+
+    const cfg = this.config.get('products', { infer: true });
+    let current = rawUrl;
+    for (let hop = 0; hop <= cfg.urlMaxRedirects; hop++) {
+      const named = amazonProductFromUrl(current);
+      if (named) return named;
+      if (!isAmazonShortLink(current)) return null;
+
+      // Every hop through the SSRF guard, exactly as the scrape does.
+      const target = await this.ssrf.assertUrlIsSafe(current);
+      const response = await this.request(target.url, target.address, cfg);
+      if (!response.redirectTo) return null;
+      current = new URL(response.redirectTo, current).toString();
+    }
+    return amazonProductFromUrl(current);
   }
 
   /**
@@ -125,13 +174,11 @@ export class UrlResolverService {
 
           if (status >= 400) {
             res.resume();
-            reject(
-              new AppException(
-                ErrorCode.PRODUCT_URL_UNREACHABLE,
-                `That link returned ${status}`,
-                422,
-              ),
-            );
+            // The status is for us, not for the person: "That link returned
+            // 500" told them nothing they could do, and the fix is always the
+            // same one — type the name.
+            this.logger.debug(`${url.host} answered ${status} to a product read`);
+            reject(new AppException(ErrorCode.PRODUCT_URL_UNREACHABLE, ASK_FOR_A_NAME, 422));
             return;
           }
 

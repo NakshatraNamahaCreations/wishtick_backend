@@ -33,6 +33,7 @@ import {
 } from './schemas/conversion.schema';
 import { Product, ProductSchema } from './schemas/product.schema';
 import { UrlResolverService } from './url-resolver.service';
+import { AmazonLookupService } from './amazon-lookup.service';
 
 const logger = new Logger('ProductsModule');
 
@@ -64,6 +65,7 @@ const logger = new Logger('ProductsModule');
     AffiliateSyncProcessor,
     ClickTrackingService,
     UrlResolverService,
+    AmazonLookupService,
     ProviderGuard,
     SsrfGuard,
     FixtureProductProvider,

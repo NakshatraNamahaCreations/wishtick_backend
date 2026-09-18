@@ -109,6 +109,27 @@ export interface SerpImmersiveProductResponse {
  * binary floating point, and truncating would quietly lose a paisa on a
  * fraction of every price.
  */
+/**
+ * `engine=amazon_product` — one product, by ASIN.
+ *
+ * Field names from SerpApi's documentation (`product_results.title`,
+ * `extracted_price`, `thumbnails`, `rating`). Everything is optional: a
+ * delisted ASIN answers with `error` set and no results.
+ */
+export interface SerpAmazonProductResponse {
+  product_results?: {
+    title?: string;
+    brand?: string;
+    price?: string;
+    extracted_price?: number;
+    thumbnail?: string;
+    thumbnails?: string[];
+    rating?: number;
+    reviews?: number;
+  };
+  error?: string;
+}
+
 export const toMinorUnits = (major: number | undefined): number | null =>
   typeof major === 'number' && Number.isFinite(major) ? Math.round(major * 100) : null;
 
