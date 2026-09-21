@@ -313,6 +313,12 @@ export class ReorderItemsDto {
   itemIds!: string[];
 }
 
+export class MoveItemDto {
+  @ApiProperty({ description: 'Another wishlist of yours, to move the item onto.' })
+  @IsMongoId()
+  targetWishlistId!: string;
+}
+
 export class ListItemsQueryDto {
   @ApiPropertyOptional()
   @IsOptional()

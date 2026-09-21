@@ -3,7 +3,7 @@ import type { INestApplication } from '@nestjs/common';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { WishlistItemStatus, WishlistVisibility } from 'src/modules/wishlists/wishlist.types';
 import { getModelToken } from '@nestjs/mongoose';
-import type { Model } from 'mongoose';
+import { Types, type Model } from 'mongoose';
 import {
   WishlistItem,
   type WishlistItemDocument,
@@ -478,6 +478,92 @@ describe('Wishlists (e2e)', () => {
   });
 
   // ── Reorder ───────────────────────────────────────────────────────────────
+
+  describe('moving an item to another of your lists', () => {
+    const move = (actor: Actor, from: string, itemId: string, to: string) =>
+      request(app.getHttpServer())
+        .post(`${V1}/wishlists/${from}/items/${itemId}/move`)
+        .set(auth(actor.token))
+        .send({ targetWishlistId: to });
+
+    const itemsOf = async (actor: Actor, wishlistId: string) =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/wishlists/${wishlistId}/items`)
+            .set(auth(actor.token))
+            .expect(200)
+        ).body as Envelope<ItemView[]>
+      ).data;
+
+    it('moves the item itself, and both counts follow', async () => {
+      const owner = await newUser();
+      const from = await createWishlist(owner, { title: 'Birthday' });
+      const to = await createWishlist(owner, { title: 'Housewarming' });
+      const item = await addItem(owner, from.id, 'Kettle');
+      await addItem(owner, to.id, 'Rug');
+
+      const moved = (await move(owner, from.id, item.id, to.id).expect(200))
+        .body as Envelope<ItemView>;
+
+      // The same item, not a copy made of it: anything pointing at its id
+      // still finds it.
+      expect(moved.data.id).toBe(item.id);
+      expect(await itemsOf(owner, from.id)).toHaveLength(0);
+      const landed = await itemsOf(owner, to.id);
+      // At the end, as a newly added item would be.
+      expect(landed.map((i) => i.title)).toEqual(['Rug', 'Kettle']);
+
+      const counts = (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/wishlists`)
+            .set(auth(owner.token))
+            .expect(200)
+        ).body as Envelope<{ id: string; stats: { itemCount: number } }[]>
+      ).data;
+      expect(counts.find((w) => w.id === from.id)?.stats.itemCount).toBe(0);
+      expect(counts.find((w) => w.id === to.id)?.stats.itemCount).toBe(2);
+    });
+
+    it('only between lists you created', async () => {
+      const owner = await newUser();
+      const stranger = await newUser();
+      const mine = await createWishlist(owner);
+      const theirs = await createWishlist(stranger);
+      const item = await addItem(owner, mine.id, 'Kettle');
+
+      // Onto somebody else's list: the same 404 as a list that does not exist.
+      await move(owner, mine.id, item.id, theirs.id).expect(404);
+      // And nobody else may move yours — nor learn it exists by trying.
+      await move(stranger, mine.id, item.id, theirs.id).expect(404);
+      expect(await itemsOf(owner, mine.id)).toHaveLength(1);
+    });
+
+    it('leaves a claimed item where it is', async () => {
+      const owner = await newUser();
+      const from = await createWishlist(owner);
+      const to = await createWishlist(owner);
+      const item = await addItem(owner, from.id, 'Kettle');
+      // The gift, its holder and any order all name the list it was claimed
+      // on; moving it would strand them.
+      await itemModel.updateOne(
+        { _id: new Types.ObjectId(item.id) },
+        { $set: { status: 'reserved' } },
+      );
+
+      const res = await move(owner, from.id, item.id, to.id).expect(409);
+      expect((res.body as Envelope<never>).error?.code).toBe(ErrorCode.WISHLIST_ITEM_LOCKED);
+    });
+
+    it('refuses the list it is already on', async () => {
+      const owner = await newUser();
+      const list = await createWishlist(owner);
+      const item = await addItem(owner, list.id, 'Kettle');
+
+      await move(owner, list.id, item.id, list.id).expect(400);
+    });
+  });
 
   describe('reorder', () => {
     it('applies a new order atomically', async () => {

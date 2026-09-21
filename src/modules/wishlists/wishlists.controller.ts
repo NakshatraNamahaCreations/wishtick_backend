@@ -24,6 +24,7 @@ import {
   CreateItemDto,
   CreateWishlistDto,
   ListItemsQueryDto,
+  MoveItemDto,
   ReorderItemsDto,
   SetWishlistAddressDto,
   ShareWishlistDto,
@@ -210,6 +211,25 @@ export class WishlistsController {
     @Body() dto: UpdateItemDto,
   ): Promise<ItemView> {
     return this.items.update(id, itemId, { userId }, dto);
+  }
+
+  @Post(':id/items/:itemId/move')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Move an item to another of your wishlists',
+    description:
+      'The item itself moves, keeping its id, photos and links. Only between wishlists you ' +
+      'created, and only while nobody has claimed it.',
+  })
+  @ApiResponseDoc({ status: 404, description: 'The item, or a target wishlist that is not yours' })
+  @ApiResponseDoc({ status: 409, description: 'WISHLIST_ITEM_LOCKED / WISHLIST_LIMIT_REACHED' })
+  moveItem(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Param('itemId') itemId: string,
+    @Body() dto: MoveItemDto,
+  ): Promise<ItemView> {
+    return this.items.move(id, itemId, { userId }, dto.targetWishlistId);
   }
 
   @Delete(':id/items/:itemId')

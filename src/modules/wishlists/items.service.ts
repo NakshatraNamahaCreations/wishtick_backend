@@ -273,6 +273,79 @@ export class ItemsService {
   }
 
   /**
+   * Moves an item to another of the caller's own wishlists.
+   *
+   * The item itself moves — its id, photos, product link and catalogue link
+   * go with it — rather than being recreated on the other list and deleted
+   * here. A recreated copy lost the link back to the catalogue, and anything
+   * pointing at the old id pointed at nothing.
+   *
+   * Only between lists the caller created: both ends are managed, and only an
+   * owner manages. An item somebody has already claimed stays where it is,
+   * for the reason it cannot be removed — the gift, its holder and its order
+   * all name the list it was claimed on, and moving it would strand them.
+   */
+  async move(
+    wishlistId: string,
+    itemId: string,
+    ctx: AccessContext,
+    targetWishlistId: string,
+  ): Promise<ItemView> {
+    const source = await this.wishlists.findOrFail(wishlistId);
+    await this.access.assertCanManage(source, ctx);
+
+    if (source._id.toString() === targetWishlistId) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        'The item is already on that wishlist',
+        400,
+      );
+    }
+
+    // Not found, archived, or somebody else's: the same 404, so moving an
+    // item cannot be used to learn which wishlist ids exist.
+    const target = await this.wishlists.findOrFail(targetWishlistId);
+    if (target.archivedAt || target.ownerId.toString() !== ctx.userId) {
+      throw new AppException(ErrorCode.WISHLIST_NOT_FOUND, 'Wishlist not found', 404);
+    }
+
+    const item = await this.findItemOrFail(source._id, itemId);
+    // A host's surprise addition is not the owner's to see, let alone move.
+    if (item.hiddenFromOwner) {
+      throw new AppException(ErrorCode.WISHLIST_ITEM_NOT_FOUND, 'Item not found', 404);
+    }
+    if (CLAIMED_ITEM_STATUSES.includes(item.status)) {
+      throw new AppException(
+        ErrorCode.WISHLIST_ITEM_LOCKED,
+        'Someone has already claimed this item, so it cannot be moved',
+        409,
+        { status: item.status },
+      );
+    }
+
+    const count = await this.model
+      .countDocuments({ wishlistId: target._id, archivedAt: null })
+      .exec();
+    if (count >= MAX_ITEMS_PER_WISHLIST) {
+      throw new AppException(
+        ErrorCode.WISHLIST_LIMIT_REACHED,
+        `A wishlist can hold at most ${MAX_ITEMS_PER_WISHLIST} items`,
+        409,
+      );
+    }
+
+    item.wishlistId = target._id;
+    // At the end of the list it joins, as a newly added item would be.
+    item.position = await this.nextPosition(target._id);
+    await item.save();
+
+    // Two counts moved, not one.
+    await this.wishlists.recount(source._id);
+    await this.wishlists.recount(target._id);
+    return toItemView(item, await this.viewerOf(target, ctx.userId, [item]));
+  }
+
+  /**
    * Applies a new manual order.
    *
    * Runs in a transaction: a reorder is one user-visible action, and a partial
