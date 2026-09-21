@@ -45,7 +45,9 @@ export class UpdatePreferencesDto {
   @ArrayMaxSize(10)
   @Transform(({ value }: { value: unknown }) =>
     Array.isArray(value)
-      ? value.map((v) => (typeof v === 'string' ? v.trim() : v)).filter((v) => v !== '')
+      ? (value as unknown[])
+          .map((v) => (typeof v === 'string' ? v.trim() : v))
+          .filter((v) => v !== '')
       : value,
   )
   customInterests?: string[];
@@ -77,6 +79,28 @@ export class UpdatePreferencesDto {
   @IsOptional()
   @IsBoolean()
   shareSizes?: boolean;
+
+  /**
+   * Whether WishMates may see your interests — and whether gift ideas they
+   * ask for you are shaped by them. Off hides both: a reason like "Likes
+   * Photography" under a suggestion would otherwise say what the card hides.
+   */
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  shareInterests?: boolean;
+
+  /** The same, for the free-text interests. */
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  shareCustomInterests?: boolean;
+
+  /** The same, for favourite colours. */
+  @ApiPropertyOptional({ example: true })
+  @IsOptional()
+  @IsBoolean()
+  shareColours?: boolean;
 
   @ApiPropertyOptional({ example: 'm' })
   @IsOptional()

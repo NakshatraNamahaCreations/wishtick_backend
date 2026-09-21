@@ -6,6 +6,7 @@ import { AuthModule } from 'src/modules/auth/auth.module';
 import { MediaModule } from 'src/modules/media/media.module';
 import { TaxonomyModule } from 'src/modules/taxonomy/taxonomy.module';
 import { UsersModule } from 'src/modules/users/users.module';
+import { WishmateLinkModule } from 'src/modules/wishmates/wishmate-link.module';
 import { AccountLifecycleRegistrar } from './account-lifecycle.processor';
 import { AccountLifecycleService } from './account-lifecycle.service';
 import { AccountRestoreController } from './account-restore.controller';
@@ -32,6 +33,10 @@ import { UserProfile, UserProfileSchema } from './schemas/user-profile.schema';
     BullModule.registerQueue({ name: QUEUE.SCHEDULER }),
     UsersModule,
     TaxonomyModule,
+    // "Are these two still WishMates?" — asked of every saved date that names
+    // an account. The tiny module, not WishmatesModule, which reads profiles
+    // and would import this one back.
+    WishmateLinkModule,
     MediaModule,
     // For TokenService (revoke every session on deletion) and PasswordService
     // (verify credentials on restore). AuthModule does not import this module,

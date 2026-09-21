@@ -1,8 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectModel } from '@nestjs/mongoose';
 import { customAlphabet } from 'nanoid';
 import { Model, Types } from 'mongoose';
+import {
+  EVENT_CALLED_OFF,
+  EVENT_DETAILS_CHANGED,
+  type EventCalledOffEvent,
+  type EventDetailChange,
+  type EventDetailsChangedEvent,
+  type EventGuestRecipient,
+} from 'src/common/events/domain-events';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import type { AppConfig } from 'src/config/configuration';
@@ -46,6 +55,7 @@ export class EventsService {
     private readonly media: MediaService,
     private readonly wishmates: WishmatesService,
     private readonly config: ConfigService<AppConfig, true>,
+    private readonly emitter: EventEmitter2,
   ) {}
 
   private get shareBaseUrl(): string {
@@ -208,6 +218,10 @@ export class EventsService {
     if (dto.title !== undefined) event.title = dto.title;
     if (dto.type !== undefined) event.type = dto.type;
     if (dto.description !== undefined) event.description = dto.description;
+    // Read before it is overwritten. Trimmed on both sides, so re-saving the
+    // form with the same address is not announced to every guest as a move.
+    const venueChanged =
+      dto.venue !== undefined && (dto.venue ?? '').trim() !== (event.venue ?? '').trim();
     if (dto.venue !== undefined) event.venue = dto.venue;
     if (dto.personName !== undefined) event.personName = dto.personName;
     if (dto.relation !== undefined) event.relation = dto.relation;
@@ -273,6 +287,29 @@ export class EventsService {
       this.logger.log(`Event ${eventId} moved; reminders rescheduled`);
     }
 
+    // Guests only hear about what changes their plans: when and where. A new
+    // cover or a reworded description is not worth a buzz on their phone.
+    const changes: EventDetailChange[] = [
+      ...(dateMoved ? (['time'] as const) : []),
+      ...(venueChanged ? (['venue'] as const) : []),
+    ];
+    if (changes.length > 0 && event.status === EventStatus.PUBLISHED) {
+      const recipients = await this.guestsToTell(event);
+      if (recipients.length > 0) {
+        this.emitter.emit(EVENT_DETAILS_CHANGED, {
+          eventId: event._id.toString(),
+          hostId: event.hostId.toString(),
+          eventTitle: event.title,
+          changes,
+          startsAt: event.startsAt,
+          timezone: event.timezone,
+          venue: event.venue ?? null,
+          changedAt: new Date(),
+          recipients,
+        } satisfies EventDetailsChangedEvent);
+      }
+    }
+
     return toEventView(event, {
       isHost: true,
       shareBaseUrl: this.shareBaseUrl,
@@ -331,6 +368,7 @@ export class EventsService {
       throw new AppException(ErrorCode.EVENT_CANCELLED, 'This event is already cancelled', 409);
     }
 
+    const wasPublished = event.status === EventStatus.PUBLISHED;
     event.status = EventStatus.CANCELLED;
     event.cancelledAt = new Date();
     await event.save();
@@ -338,6 +376,23 @@ export class EventsService {
     // Reminding people about a cancelled party is worse than not reminding them
     // about a real one.
     await this.reminders.cancel(eventId);
+
+    // And not telling them is worse still: dropping the reminders used to be
+    // all that happened, so a guest found out by turning up. A draft was
+    // never sent to anyone, so there is nobody to tell.
+    if (wasPublished) {
+      const recipients = await this.guestsToTell(event);
+      if (recipients.length > 0) {
+        this.emitter.emit(EVENT_CALLED_OFF, {
+          eventId: event._id.toString(),
+          hostId: event.hostId.toString(),
+          eventTitle: event.title,
+          startsAt: event.startsAt,
+          timezone: event.timezone,
+          recipients,
+        } satisfies EventCalledOffEvent);
+      }
+    }
 
     return toEventView(event, { isHost: true, shareBaseUrl: this.shareBaseUrl });
   }
@@ -399,6 +454,30 @@ export class EventsService {
    * `attending` folds in plus-ones, because "how many people are coming" is the
    * question a host actually has, and it is not the number of yes replies.
    */
+  /**
+   * Guests whose plans a change to this event touches.
+   *
+   * Everyone still invited who has an account to tell — except those who
+   * already said no, who have nothing to rearrange. The same rule the
+   * reminders use, so a guest hears about the party from both or from
+   * neither.
+   */
+  private async guestsToTell(event: EventDocument): Promise<EventGuestRecipient[]> {
+    const invites = await this.invites
+      .find({
+        eventId: event._id,
+        revokedAt: null,
+        invitedUserId: { $ne: null },
+        rsvp: { $ne: RsvpResponse.NO },
+      })
+      .select('invitedUserId token')
+      .exec();
+    return invites.map((i) => ({
+      userId: i.invitedUserId!.toString(),
+      inviteToken: i.token,
+    }));
+  }
+
   async rsvpCounts(eventId: Types.ObjectId): Promise<RsvpCounts> {
     const rows = await this.invites
       .aggregate<{ _id: RsvpResponse; count: number; plusOnes: number }>([

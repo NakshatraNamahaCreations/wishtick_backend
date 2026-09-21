@@ -1,6 +1,13 @@
 import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsDateString, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsDateString,
+  IsMongoId,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 export class CreateImportantDateDto {
   @ApiProperty({ example: 'Ananya' })
@@ -40,6 +47,20 @@ export class CreateImportantDateDto {
   @MaxLength(60)
   @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
   customOccasion?: string;
+}
+
+/**
+ * Saying that a saved date is one of your WishMates.
+ *
+ * Its own endpoint rather than a field on the update: a link is a claim about
+ * the connection graph, refused for anyone who is not an accepted WishMate,
+ * and a PATCH whose other fields succeed while this one 403s would be a
+ * confusing half-write.
+ */
+export class LinkImportantDateDto {
+  @ApiProperty({ example: '665f2e1c9b1e4a0012ab34cd', description: 'A WishMate’s user id' })
+  @IsMongoId()
+  userId!: string;
 }
 
 /**

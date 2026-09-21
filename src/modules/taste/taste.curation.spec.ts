@@ -5,6 +5,7 @@ import {
   DEFAULT_SHELVES,
   LIFESTYLE_BUDGET,
   RELATION_SHELVES,
+  shelfForOccasionAndRelation,
   shelvesForRelation,
 } from './taste.curation';
 
@@ -74,5 +75,27 @@ describe('a relation typed as free text', () => {
     expect(shelvesForRelation('Neighbour from 4B')).toEqual([]);
     expect(shelvesForRelation('')).toEqual([]);
     expect(shelvesForRelation(null)).toEqual([]);
+  });
+});
+
+describe('an occasion, for somebody with no account', () => {
+  it("lets who they are pick between the occasion's own choices", () => {
+    // Birthday alone says electronics; for Mum, beauty is on both lists.
+    expect(shelfForOccasionAndRelation('birthday', 'Mom')).toBe('beauty');
+    expect(shelfForOccasionAndRelation('birthday', 'Dad')).toBe('electronics');
+  });
+
+  it("keeps the occasion's first choice when the two do not agree", () => {
+    expect(shelfForOccasionAndRelation('anniversary', 'Sister')).toBe('jewellery');
+  });
+
+  it('is what it always was without a relation', () => {
+    expect(shelfForOccasionAndRelation('birthday', '')).toBe('electronics');
+    expect(shelfForOccasionAndRelation('birthday', null)).toBe('electronics');
+  });
+
+  it('falls back to the relation when there is no occasion', () => {
+    expect(shelfForOccasionAndRelation(null, 'Teacher')).toBe('books');
+    expect(shelfForOccasionAndRelation(null, null)).toBeNull();
   });
 });

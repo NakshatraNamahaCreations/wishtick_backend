@@ -112,21 +112,36 @@ export interface SerpImmersiveProductResponse {
 /**
  * `engine=amazon_product` — one product, by ASIN.
  *
- * Field names from SerpApi's documentation (`product_results.title`,
- * `extracted_price`, `thumbnails`, `rating`). Everything is optional: a
- * delisted ASIN answers with `error` set and no results.
+ * Field names as a live call returned them (amazon.in, 2026-09-21), not as
+ * the documentation lists them. Everything is optional: a delisted ASIN
+ * answers with `error` set and no results.
  */
 export interface SerpAmazonProductResponse {
   product_results?: {
     title?: string;
+    /**
+     * Amazon's byline, verbatim — "Visit the Samsung Store" as often as
+     * "Samsung". See `amazonBrand` for reading a name out of it.
+     */
     brand?: string;
     price?: string;
     extracted_price?: number;
+    /** The MRP, when the page shows one struck through. */
+    extracted_old_price?: number;
+    /** A 300px preview. [thumbnails] holds the full-size gallery. */
     thumbnail?: string;
     thumbnails?: string[];
     rating?: number;
     reviews?: number;
+    /** "In stock", "Currently unavailable.", "Only 2 left in stock." */
+    stock?: string;
   };
+  /** "About this item" — the bullet points, as plain lines. */
+  about_item?: string[];
+  /** The short spec table beside the gallery: `{ operating_system: 'Wear OS 7.0' }`. */
+  item_specifications?: Record<string, string>;
+  /** The long table further down the page. Same shape; `brand_name` lives here. */
+  product_details?: Record<string, string>;
   error?: string;
 }
 

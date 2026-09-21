@@ -5,7 +5,12 @@ import { randomBytes } from 'node:crypto';
 import { Model, Types } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
-import { EVENT_INVITED, type EventInvitedEvent } from 'src/common/events/domain-events';
+import {
+  EVENT_INVITED,
+  EVENT_RSVP_CHANGED,
+  type EventInvitedEvent,
+  type EventRsvpChangedEvent,
+} from 'src/common/events/domain-events';
 import type { BulkInviteDto } from './dto/event.dto';
 import { EventStatus, EventVisibility, RsvpResponse } from './event.types';
 import type { EventDocument } from './schemas/event.schema';
@@ -520,6 +525,7 @@ export class InvitesService {
     response: RsvpResponse,
     opts: { plusOnes?: number; message?: string },
   ): Promise<EventInviteDocument> {
+    const previous = invite.rsvp;
     invite.rsvp = response;
     invite.respondedAt = new Date();
 
@@ -530,6 +536,23 @@ export class InvitesService {
     if (opts.message !== undefined) invite.message = opts.message;
 
     await invite.save();
+
+    // Only a changed answer is news. The same button tapped again — an
+    // invite link gets reopened constantly — would otherwise buzz the host
+    // every time.
+    if (response !== previous && response !== RsvpResponse.PENDING) {
+      const event = await this.events.findOrFail(invite.eventId.toString());
+      this.emitter.emit(EVENT_RSVP_CHANGED, {
+        eventId: event._id.toString(),
+        inviteId: invite._id.toString(),
+        hostId: event.hostId.toString(),
+        guestUserId: invite.invitedUserId?.toString() ?? null,
+        eventTitle: event.title,
+        response,
+        plusOnes: invite.plusOnes ?? 0,
+        respondedAt: invite.respondedAt ?? new Date(),
+      } satisfies EventRsvpChangedEvent);
+    }
     return invite;
   }
 

@@ -4,6 +4,28 @@ import type { MemoryCapsuleDocument } from './schemas/memory-capsule.schema';
 import type { MemoryReplyDocument } from './schemas/memory-reply.schema';
 import type { MemoryWishDocument } from './schemas/memory-wish.schema';
 
+/**
+ * A sealed memory, as the person it is for may know it: that it is coming,
+ * what for, and when it opens.
+ *
+ * Deliberately nothing else. Not who made it, not who wrote in it, not its
+ * title or cover — the surprise is *what* is inside and *who* is behind it,
+ * and none of that is in this shape. The capsule id is here only so a client
+ * can tell two apart; it opens nothing while the capsule is sealed.
+ */
+export interface IncomingMemoryView {
+  id: string;
+  /** An `occasion` taxonomy key, or the words the host typed. */
+  occasion: string;
+  unlockAt: Date;
+}
+
+export const toIncomingMemoryView = (capsule: MemoryCapsuleDocument): IncomingMemoryView => ({
+  id: capsule._id.toString(),
+  occasion: capsule.occasion,
+  unlockAt: capsule.unlockAt,
+});
+
 /** A wish, projected — ONLY ever built for an unlocked capsule. */
 export interface MemoryWishView {
   id: string;

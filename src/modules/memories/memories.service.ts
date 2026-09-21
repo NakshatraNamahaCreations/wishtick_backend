@@ -25,8 +25,10 @@ import type { CreateMemoryDto, UpdateMemoryDto } from './dto/memory.dto';
 import { MEMORY_UNLOCK_JOB, unlockJobId, type MemoryUnlockJobData } from './memory.jobs';
 import { MEMORY_MAX_UNLOCK_YEARS, MEMORY_TRANSITIONS, MemoryStatus } from './memory.types';
 import {
+  toIncomingMemoryView,
   toMemoryCapsuleView,
   toPublicMemoryView,
+  type IncomingMemoryView,
   type MemoryCapsuleView,
   type PublicMemoryView,
 } from './memory.views';
@@ -202,6 +204,28 @@ export class MemoriesService {
       .limit(MAX_OPEN_CAPSULES)
       .exec();
     return Promise.all(capsules.map((c) => this.assemble(c, userId)));
+  }
+
+  /**
+   * Capsules somebody made for the caller that have not opened yet — what the
+   * Home countdown is drawn from.
+   *
+   * [listForMe] stays unlocked-only; this is the narrow exception to it. It
+   * tells the recipient a memory is coming and when, which is the whole point
+   * of a countdown, and nothing a sealed capsule is keeping from them: no
+   * host, no contributors, no title, no content. Soonest first, since the
+   * banner counts down to the next one.
+   */
+  async listIncoming(userId: string): Promise<IncomingMemoryView[]> {
+    const capsules = await this.capsuleModel
+      .find({
+        recipientUserId: new Types.ObjectId(userId),
+        status: { $ne: MemoryStatus.UNLOCKED },
+      })
+      .sort({ unlockAt: 1 })
+      .limit(MAX_OPEN_CAPSULES)
+      .exec();
+    return capsules.map(toIncomingMemoryView);
   }
 
   /**

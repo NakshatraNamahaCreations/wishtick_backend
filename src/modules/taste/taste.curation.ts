@@ -7,6 +7,8 @@
  * choices, written down.
  */
 
+import { categoriesForOccasion } from '../discover/discover.curation';
+
 /**
  * Which shopping shelf an interest category belongs on.
  *
@@ -86,21 +88,76 @@ export const DEFAULT_MAX_MINOR = 200_000;
 export const MAX_SHELVES = 3;
 
 /**
+ * The best shelf for a recipient with no account: an occasion, and who they
+ * are to the shopper.
+ *
+ * The occasion alone has always answered this, and it answers it the same way
+ * for everybody: "birthday" means `electronics`, whether the birthday is your
+ * father's or your daughter's. So where the relation and the occasion agree on
+ * a category, that agreement wins — Mum's birthday becomes `beauty` rather
+ * than `electronics`, because `beauty` is on both lists. It is the occasion
+ * table's own second and third choices doing the work; nothing new is invented
+ * for a person the app has never met.
+ *
+ * Falls back to the occasion's first choice, which is what this was before.
+ */
+export function shelfForOccasionAndRelation(
+  occasionKey: string | null | undefined,
+  relation: string | null | undefined,
+): string | null {
+  const occasion = occasionKey ? categoriesForOccasion(occasionKey) : [];
+  const fromRelation = shelvesForRelation(relation);
+  const agreed = occasion.find((category) => fromRelation.includes(category));
+  return agreed ?? occasion[0] ?? fromRelation[0] ?? null;
+}
+
+/**
  * Shelves for a free-text relation.
  *
  * Word-by-word rather than whole-string: "Best Friend" and "My best friend"
  * both have to find `friend`, and nobody types the same thing twice.
  */
 export function shelvesForRelation(relation: string | null | undefined): readonly string[] {
-  if (!relation) return [];
+  const word = relationWord(relation);
+  return word ? RELATION_SHELVES[word] : [];
+}
+
+/**
+ * The [RELATION_SHELVES] key a free-text relation matched — "My best friend"
+ * is `friend` — or null when nothing did.
+ *
+ * The key rather than the text is what goes into a search: there are a couple
+ * of dozen of them, so the searches built on them stay few enough to cache,
+ * where whatever-was-typed would make every shopper's shelf a fresh paid call.
+ */
+export function relationWord(relation: string | null | undefined): string | null {
+  if (!relation) return null;
   const words = relation
     .toLowerCase()
     .replace(/[^a-z ]+/g, ' ')
     .split(' ')
     .filter(Boolean);
-  for (const word of words) {
-    const shelves = RELATION_SHELVES[word];
-    if (shelves) return shelves;
-  }
-  return [];
+  return words.find((word) => word in RELATION_SHELVES) ?? null;
+}
+
+/**
+ * The shelves to try, in order, when the best one — [shelfForOccasionAndRelation]
+ * — has nothing left to show that an earlier shelf on the feed did not.
+ *
+ * The ones the occasion and the relation agree on first, then the rest of the
+ * occasion's own list, then the relation's. Never the shelf already chosen.
+ */
+export function fallbackShelves(
+  occasionKey: string | null | undefined,
+  relation: string | null | undefined,
+): string[] {
+  const occasion = occasionKey ? categoriesForOccasion(occasionKey) : [];
+  const fromRelation = shelvesForRelation(relation);
+  const chosen = shelfForOccasionAndRelation(occasionKey, relation);
+  const ordered = [
+    ...occasion.filter((category) => fromRelation.includes(category)),
+    ...occasion,
+    ...fromRelation,
+  ];
+  return [...new Set(ordered)].filter((category) => category !== chosen);
 }

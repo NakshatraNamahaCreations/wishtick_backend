@@ -1,4 +1,4 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -6,6 +6,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
+import { OccasionShelfQueryDto } from './dto/occasion-shelf.dto';
 import { DiscoverService } from './discover.service';
 import type { DiscoverFeed, DiscoverSection } from './discover.types';
 
@@ -23,8 +24,9 @@ export class DiscoverController {
   @ApiOperation({
     summary: 'The Discover feed, in display order',
     description:
-      'Sections are curated by occasion, not by the recipient — Wishtick knows when a ' +
-      'friend’s birthday is, never what they like. Each section carries an exploreQuery ' +
+      'A saved date is curated by its occasion and by who the person is to you; one linked ' +
+      'to an accepted WishMate is ranked by what they said they like instead ' +
+      '(`wishmate_taste`, its exploreQuery carrying recipientUserId). Each section carries an exploreQuery ' +
       'that /products/search accepts verbatim for the "Explore More" grid. Sections whose ' +
       'search failed are omitted rather than returned empty.',
   })
@@ -41,7 +43,10 @@ export class DiscoverController {
       '/onboarding/options.',
   })
   @ApiResponseDoc({ status: 400, description: 'TAXONOMY_VALUE_INVALID — unknown occasion' })
-  occasionShelf(@Param('occasionKey') occasionKey: string): Promise<DiscoverSection> {
-    return this.discover.occasionShelf(occasionKey);
+  occasionShelf(
+    @Param('occasionKey') occasionKey: string,
+    @Query() query: OccasionShelfQueryDto,
+  ): Promise<DiscoverSection> {
+    return this.discover.occasionShelf(occasionKey, query.relation);
   }
 }

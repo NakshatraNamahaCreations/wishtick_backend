@@ -27,6 +27,7 @@ import { MemoriesService } from './memories.service';
 import { MemoryRepliesService } from './memory-replies.service';
 import { MemoryWishesService } from './memory-wishes.service';
 import type {
+  IncomingMemoryView,
   MemoryCapsuleView,
   MemoryReplyView,
   MemoryWishView,
@@ -66,6 +67,18 @@ export class MemoriesController {
   })
   listForMe(@CurrentUser('id') userId: string): Promise<MemoryCapsuleView[]> {
     return this.memories.listForMe(userId);
+  }
+
+  /** Declared before `:id`, for the same reason as `reply-audience` below. */
+  @Get('incoming')
+  @ApiOperation({
+    summary: 'Sealed memories made for the caller: occasion and unlock time only',
+    description:
+      'For the Home countdown. Never carries who made it, who contributed, a title or ' +
+      'content — only that something is coming, and when.',
+  })
+  listIncoming(@CurrentUser('id') userId: string): Promise<IncomingMemoryView[]> {
+    return this.memories.listIncoming(userId);
   }
 
   /**

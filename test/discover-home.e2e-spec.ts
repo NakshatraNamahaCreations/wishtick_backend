@@ -53,6 +53,7 @@ interface DiscoverSection {
   items: { externalId: string; amountMinor: number | null; listPriceMinor: number | null }[];
   exploreQuery: {
     category: string | null;
+    keywords?: string | null;
     minPriceMinor: number | null;
     maxPriceMinor: number | null;
   };
@@ -487,6 +488,49 @@ describe('Sprint 4: Home & Discover (e2e)', () => {
       expect(person?.subtitle).toBe('Best Friend');
       expect(person?.person?.daysAway).toBe(7);
       expect(person?.items.length).toBeGreaterThan(0);
+    });
+
+    it('never shows a product on two shelves', async () => {
+      const token = await newUser();
+      // Two birthdays with no relation: the same "electronics" shelf twice,
+      // which is what used to come back — the same products under two names.
+      await addDate(token, 5, { personName: 'Dashu', relation: '' }).expect(201);
+      await addDate(token, 8, { personName: 'Yogi', relation: '' }).expect(201);
+
+      const feed = await getFeed(token);
+      const ids = feed.sections.flatMap((s) => s.items.map((i) => i.externalId));
+      expect(new Set(ids).size).toBe(ids.length);
+
+      const [first, second] = feed.sections.filter((s) => s.kind === 'person_occasion');
+      expect(first.exploreQuery.category).toBe('electronics');
+      // The second moved on to the occasion's next shelf, and "Explore More"
+      // follows it there.
+      expect(second.items.length).toBeGreaterThan(0);
+      expect(second.exploreQuery.category).not.toBe('electronics');
+    });
+
+    it('does not say the occasion twice when the name already has it', async () => {
+      const token = await newUser();
+      await addDate(token, 5, { personName: 'Dashu Birthday' }).expect(201);
+
+      const feed = await getFeed(token);
+      const person = feed.sections.find((s) => s.kind === 'person_occasion');
+      expect(person?.title).toBe("Gift suggestions for Dashu's Birthday");
+      // The card still shows the name as it was saved.
+      expect(person?.person?.name).toBe('Dashu Birthday');
+    });
+
+    it('falls back to the plain shelf when the narrowed search finds nothing', async () => {
+      const token = await newUser();
+      // "birthday for friend" matches no fixture title, so the shelf has to
+      // come from the category alone rather than vanish.
+      await addDate(token, 5).expect(201);
+
+      const feed = await getFeed(token);
+      const person = feed.sections.find((s) => s.kind === 'person_occasion');
+      expect(person?.items.length).toBeGreaterThan(0);
+      expect(person?.exploreQuery.category).toBe('experiences');
+      expect(person?.exploreQuery.keywords).toBeNull();
     });
 
     it('keeps every shelf within its own price bounds', async () => {

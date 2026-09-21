@@ -89,6 +89,16 @@ export class OrdersService {
     const order = await this.model.findById(orderId).exec();
     if (!order) return null;
 
+    // A withdrawn order stops moving. Couriers match on the reference alone and
+    // keep reporting for days, and "Delivered" on a gift the gifter cancelled
+    // would be a delivery that never happened.
+    if (order.cancelledAt) {
+      this.logger.debug(
+        `Order ${order.reference} ignoring ${input.stage}: cancelled ${order.cancelledAt.toISOString()}`,
+      );
+      return order;
+    }
+
     if (!canAdvanceTo(order.stage, input.stage)) {
       this.logger.debug(`Order ${order.reference} ignoring ${input.stage} while at ${order.stage}`);
       return order;
@@ -125,6 +135,30 @@ export class OrdersService {
     const order = await this.model.findOne({ giftId: new Types.ObjectId(giftId) }).exec();
     if (!order) return null;
     return this.advance(order._id, input);
+  }
+
+  /**
+   * Marks the order behind a withdrawn gift cancelled.
+   *
+   * Null when the gift never had one — an offline gift, or one withdrawn while
+   * it was still only reserved. Already-cancelled orders are left as they are,
+   * so a replayed event does not move the date. A delivered order is left
+   * alone too: it arrived, and the gift state machine refuses to cancel a
+   * fulfilled gift anyway.
+   */
+  async cancelByGift(giftId: string, note?: string | null): Promise<OrderDocument | null> {
+    const order = await this.model.findOne({ giftId: new Types.ObjectId(giftId) }).exec();
+    if (!order || order.cancelledAt) return order;
+    if (order.stage === OrderStage.DELIVERED) {
+      this.logger.warn(`Order ${order.reference} is delivered; not cancelling it`);
+      return order;
+    }
+
+    order.cancelledAt = new Date();
+    order.cancelledNote = note ?? null;
+    await order.save();
+    this.logger.log(`Order ${order.reference} cancelled with the gift behind it`);
+    return order;
   }
 
   async listMine(userId: string): Promise<OrderView[]> {

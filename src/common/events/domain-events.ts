@@ -190,6 +190,19 @@ export const GIFT_PURCHASED = 'gift.purchased';
 export const GIFT_FULFILLED = 'gift.fulfilled';
 
 /**
+ * The gifter withdrew a gift: "I didn't buy it after all".
+ *
+ * Emitted only from the gifter's own cancel, which is the one path that can
+ * withdraw a gift that was already bought and therefore the only one with an
+ * order behind it. Releasing a reservation and letting a hold lapse both end
+ * a gift too, but neither ever had an order to close.
+ *
+ * Nobody is notified: the gifter is the one who did it, and telling the person
+ * the gift was for would spoil a surprise they were never told about.
+ */
+export const GIFT_CANCELLED = 'gift.cancelled';
+
+/**
  * A time-locked reel finished compiling and is now released to its recipient.
  * Emitted after the collection flips to `released`; Sprint 9 notifications email
  * and in-app the recipient, closing the birthday loop.
@@ -374,4 +387,81 @@ export interface EventWishlistAnsweredEvent {
   eventTitle: string;
   wishlistTitle: string;
   approved: boolean;
+}
+
+/**
+ * A guest answered — or changed their answer to — an invitation.
+ *
+ * The host used to find out only by opening the guest list: nothing told them
+ * a reply had come in, which is the one thing a host planning food and seats
+ * is waiting to hear. Emitted only when the answer actually changes, so a
+ * guest reopening their invite link and tapping the same button again does
+ * not buzz the host a second time.
+ */
+export const EVENT_RSVP_CHANGED = 'event.rsvp_changed';
+
+export interface EventRsvpChangedEvent {
+  eventId: string;
+  inviteId: string;
+  hostId: string;
+  /** Null for a guest who answered from a link without an account. */
+  guestUserId: string | null;
+  eventTitle: string;
+  response: 'yes' | 'no' | 'maybe';
+  plusOnes: number;
+  /** When they answered — part of the dedupe key, so a changed mind is news. */
+  respondedAt: Date;
+}
+
+/** Someone the host's event news should reach: an account, and its own invite. */
+export interface EventGuestRecipient {
+  userId: string;
+  /** The guest's own invitation token — what their app opens the event by. */
+  inviteToken: string;
+}
+
+/**
+ * The host called the event off.
+ *
+ * Cancelling used to quietly drop the pending reminders and say nothing, so a
+ * guest learned the party was off by turning up to it. Recipients are the
+ * guests who might have come — anyone who had already declined has no plans
+ * to undo.
+ */
+export const EVENT_CALLED_OFF = 'event.called_off';
+
+export interface EventCalledOffEvent {
+  eventId: string;
+  hostId: string;
+  eventTitle: string;
+  /** When it would have been, so the message names which party is off. */
+  startsAt: Date;
+  timezone: string;
+  recipients: EventGuestRecipient[];
+}
+
+/**
+ * The host moved a published event, or changed where it is.
+ *
+ * Moving it used to reschedule the reminders and nothing else: the first a
+ * guest heard of a new date was a reminder counting down to it, and a new
+ * venue was never announced at all.
+ */
+export const EVENT_DETAILS_CHANGED = 'event.details_changed';
+
+export type EventDetailChange = 'time' | 'venue';
+
+export interface EventDetailsChangedEvent {
+  eventId: string;
+  hostId: string;
+  eventTitle: string;
+  /** What moved, in the order a guest would want to hear it. */
+  changes: EventDetailChange[];
+  /** The new start, and the new venue — the values after the change. */
+  startsAt: Date;
+  timezone: string;
+  venue: string | null;
+  /** When the change was saved: two edits in one evening are two notices. */
+  changedAt: Date;
+  recipients: EventGuestRecipient[];
 }

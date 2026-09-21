@@ -1,6 +1,5 @@
 import type { DiscoverExploreQuery } from '../discover/discover.types';
-import type { NormalizedProduct } from '../products/product.types';
-import { ResultFreshness } from '../products/product.types';
+import { ResultFreshness, type NormalizedProduct } from '../products/product.types';
 import type { SearchResponse } from '../products/products.service';
 
 export interface GiftSuggestionView {
@@ -66,6 +65,22 @@ export interface GiftSuggestionsView {
 export interface RecipientSearchView extends SearchResponse {
   recipient: { userId: string; displayName: string | null };
   personalised: boolean;
+}
+
+/**
+ * Gift ideas for somebody holding an invitation, and nothing else.
+ *
+ * The one unauthenticated surface, so it is shaped by what it must *not*
+ * carry: no user id here or in [exploreQuery], no match scores, no reasons —
+ * every one of those would be a statement about a person the reader has not
+ * been admitted to. What is left is a shelf and a heading.
+ */
+export interface InviteSuggestionsView {
+  title: string;
+  items: NormalizedProduct[];
+  /** Always false: a guest is shown the occasion's shelf, never anyone's taste. */
+  personalised: boolean;
+  exploreQuery: { category: string | null; minPriceMinor: null; maxPriceMinor: null };
 }
 
 const RANK: Record<ResultFreshness, number> = {

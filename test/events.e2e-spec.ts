@@ -2709,6 +2709,183 @@ describe('Events & invites (e2e)', () => {
       expect(mine.data[0].status).toBe('pending');
     });
   });
+
+  // ── Telling the host about replies, and guests about changes ──────────────
+
+  describe('event news', () => {
+    interface Row {
+      type: string;
+      refId: string;
+      title: string;
+      body: string;
+    }
+
+    /** Let the fire-and-forget listener enqueue, then run the queued jobs. */
+    const settle = async (): Promise<void> => {
+      await new Promise((r) => setTimeout(r, 150));
+      await ctx.drainNotifications();
+    };
+
+    const rowsFor = async (actor: Actor, type: string): Promise<Row[]> => {
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/notifications`)
+        .set(auth(actor.token))
+        .expect(200);
+      return (res.body as Envelope<Row[]>).data.filter((n) => n.type === type);
+    };
+
+    const invite = (host: Actor, eventId: string, guest: Actor) =>
+      request(app.getHttpServer())
+        .post(`${V1}/events/${eventId}/invites`)
+        .set(auth(host.token))
+        .send({ recipients: [{ userId: guest.userId }] })
+        .expect(200);
+
+    /** Every guest's own token on an event, in the order the host lists them. */
+    const tokensOf = async (host: Actor, eventId: string): Promise<string[]> => {
+      const list = (
+        await request(app.getHttpServer())
+          .get(`${V1}/events/${eventId}/invites`)
+          .set(auth(host.token))
+          .expect(200)
+      ).body as Envelope<{ id: string }[]>;
+      return Promise.all(
+        list.data.map((i) => InviteTokenHelper.forInvite(app, host.token, eventId, i.id)),
+      );
+    };
+
+    /** A published event with one guest on it; returns the guest's token. */
+    const partyWith = async (host: Actor, guest: Actor, over: Record<string, unknown> = {}) => {
+      const event = await createEvent(host, { title: 'Diwali Night', ...over });
+      await publish(host, event.id);
+      await invite(host, event.id, guest);
+      const token = await InviteTokenHelper.only(app, host.token, event.id);
+      await settle(); // the invite notification, out of the way
+      return { event, token };
+    };
+
+    const rsvp = (token: string, response: string, plusOnes = 0) =>
+      request(app.getHttpServer())
+        .post(`${V1}/public/invites/${token}/rsvp`)
+        .send({ response, plusOnes })
+        .expect(200);
+
+    it('tells the host when a guest replies, and again when they change it', async () => {
+      const host = await newUser('Rohan Mehta');
+      const guest = await newUser('Priya Nair');
+      const { event, token } = await partyWith(host, guest);
+
+      await rsvp(token, 'yes', 2);
+      await settle();
+      let rows = await rowsFor(host, 'event_rsvp');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toBe('Priya Nair is coming to Diwali Night (+2)');
+      // Leads with the event: that is what the host's app opens.
+      expect(rows[0].refId.startsWith(`${event.id}:`)).toBe(true);
+
+      // The same answer again — a reopened link — is not news.
+      await rsvp(token, 'yes', 2);
+      await settle();
+      expect(await rowsFor(host, 'event_rsvp')).toHaveLength(1);
+
+      // A changed mind is.
+      await rsvp(token, 'no');
+      await settle();
+      rows = await rowsFor(host, 'event_rsvp');
+      expect(rows).toHaveLength(2);
+      expect(rows.map((r) => r.title)).toContain("Priya Nair can't make it to Diwali Night");
+
+      // And the guest is never told about their own reply.
+      expect(await rowsFor(guest, 'event_rsvp')).toHaveLength(0);
+    });
+
+    it('tells guests a party is off, but not the ones who had declined', async () => {
+      const host = await newUser('Rohan Mehta');
+      const coming = await newUser('Priya Nair');
+      const declined = await newUser('Kabir Rao');
+      const { event, token } = await partyWith(host, coming);
+      await invite(host, event.id, declined);
+      const declinedToken = (await tokensOf(host, event.id)).find((t) => t !== token)!;
+      await rsvp(declinedToken, 'no');
+      await settle();
+
+      await request(app.getHttpServer())
+        .delete(`${V1}/events/${event.id}`)
+        .set(auth(host.token))
+        .expect(200);
+      await settle();
+
+      const told = await rowsFor(coming, 'event_cancelled');
+      expect(told).toHaveLength(1);
+      expect(told[0].title).toBe('Diwali Night has been cancelled');
+      expect(told[0].body).toContain('Rohan Mehta cancelled Diwali Night, planned for');
+      // Keyed by their own invitation, which is where "cancelled" shows.
+      expect(told[0].refId).toBe(`${token}:cancelled`);
+
+      expect(await rowsFor(declined, 'event_cancelled')).toHaveLength(0);
+      expect(await rowsFor(host, 'event_cancelled')).toHaveLength(0);
+    });
+
+    it('tells guests when the date or the venue moves, and not for anything else', async () => {
+      const host = await newUser('Rohan Mehta');
+      const guest = await newUser('Priya Nair');
+      const { event, token } = await partyWith(host, guest, { venue: 'Home' });
+
+      // A reworded description, or the same venue re-saved, is not worth a buzz.
+      await request(app.getHttpServer())
+        .patch(`${V1}/events/${event.id}`)
+        .set(auth(host.token))
+        .send({ description: 'Bring sparklers', venue: '  Home ' })
+        .expect(200);
+      await settle();
+      expect(await rowsFor(guest, 'event_updated')).toHaveLength(0);
+
+      // 13:30 UTC is 7:00 PM in Kolkata, the event's own zone.
+      const moved = new Date(Date.now() + 40 * 24 * 60 * 60 * 1_000);
+      moved.setUTCHours(13, 30, 0, 0);
+      await request(app.getHttpServer())
+        .patch(`${V1}/events/${event.id}`)
+        .set(auth(host.token))
+        .send({ startsAt: moved.toISOString(), venue: 'The Leela, Bengaluru' })
+        .expect(200);
+      await settle();
+
+      const rows = await rowsFor(guest, 'event_updated');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toBe('Diwali Night has a new time and place');
+      expect(rows[0].body).toContain('7:00 PM');
+      expect(rows[0].body).toContain('New venue: The Leela, Bengaluru.');
+      expect(rows[0].refId.startsWith(`${token}:`)).toBe(true);
+
+      // A second move is a second notice, not a repeat of the first.
+      await request(app.getHttpServer())
+        .patch(`${V1}/events/${event.id}`)
+        .set(auth(host.token))
+        .send({ venue: 'Rooftop, Indiranagar' })
+        .expect(200);
+      await settle();
+      const again = await rowsFor(guest, 'event_updated');
+      expect(again).toHaveLength(2);
+      expect(again.map((r) => r.title)).toContain('Diwali Night has a new venue');
+
+      // The host made the change, and is not told about it.
+      expect(await rowsFor(host, 'event_updated')).toHaveLength(0);
+    });
+
+    it('says nothing about a draft nobody was sent', async () => {
+      const host = await newUser('Rohan Mehta');
+      const event = await createEvent(host, { title: 'Draft Party' });
+
+      await request(app.getHttpServer())
+        .patch(`${V1}/events/${event.id}`)
+        .set(auth(host.token))
+        .send({ venue: 'Somewhere else' })
+        .expect(200);
+      await settle();
+
+      expect(await rowsFor(host, 'event_updated')).toHaveLength(0);
+    });
+  });
 });
 
 /**

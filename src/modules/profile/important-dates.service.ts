@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { TaxonomyService } from 'src/modules/taxonomy/taxonomy.service';
+import { WISHMATE_LINK, type IWishmateLink } from 'src/modules/wishlists/access/wishmate-link.port';
 import { TaxonomyKind } from 'src/modules/taxonomy/taxonomy.types';
 import type { CreateImportantDateDto, UpdateImportantDateDto } from './dto/important-date.dto';
 import { ImportantDate, type ImportantDateDocument } from './schemas/important-date.schema';
@@ -17,6 +18,15 @@ export interface ImportantDateView {
   customOccasion: string | null;
   /** Date-only ISO (`1999-07-17`); the year may be meaningful (age) or not. */
   date: string;
+  /**
+   * The account this person is, when the owner linked one *and* the two are
+   * still WishMates.
+   *
+   * Null the moment either stops being true, because it is resolved on every
+   * read rather than trusted from the row. A stale id here would mean gift
+   * ideas drawn from the taste of somebody who has since disconnected.
+   */
+  linkedUserId: string | null;
 }
 
 /**
@@ -57,6 +67,7 @@ export class ImportantDatesService {
   constructor(
     @InjectModel(ImportantDate.name) private readonly model: Model<ImportantDateDocument>,
     private readonly taxonomy: TaxonomyService,
+    @Inject(WISHMATE_LINK) private readonly links: IWishmateLink,
   ) {}
 
   async list(userId: string): Promise<ImportantDateView[]> {
@@ -65,7 +76,82 @@ export class ImportantDatesService {
       .sort({ date: 1, createdAt: 1 })
       .lean()
       .exec();
-    return docs.map(ImportantDatesService.toView);
+    return this.toViews(userId, docs);
+  }
+
+  /**
+   * Says that a saved date is a WishMate — the one thing that lets Discover
+   * and Home stop guessing from the occasion.
+   *
+   * Only an accepted WishMate may be named. Anyone else is refused rather than
+   * stored and quietly ignored later: a link that is written but never honoured
+   * reads, from the app, exactly like one that works.
+   */
+  async link(userId: string, id: string, targetUserId: string): Promise<ImportantDateView> {
+    const doc = await this.own(userId, id);
+
+    if (targetUserId === userId) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        'A saved date cannot be linked to your own account.',
+        400,
+      );
+    }
+    const accepted = await this.links.acceptedAmong(new Types.ObjectId(userId), [targetUserId]);
+    if (!accepted.has(targetUserId)) {
+      throw new AppException(
+        ErrorCode.NOT_WISHMATES,
+        'You can only link a saved date to one of your WishMates.',
+        403,
+      );
+    }
+
+    doc.linkedUserId = new Types.ObjectId(targetUserId);
+    await doc.save();
+    return { ...ImportantDatesService.toView(doc.toObject()), linkedUserId: targetUserId };
+  }
+
+  /** Forgets the account, keeping the date. Already unlinked is not an error. */
+  async unlink(userId: string, id: string): Promise<ImportantDateView> {
+    const doc = await this.own(userId, id);
+    doc.linkedUserId = null;
+    await doc.save();
+    return { ...ImportantDatesService.toView(doc.toObject()), linkedUserId: null };
+  }
+
+  /** The caller's own row, or 404 — ids stay unguessable. */
+  private async own(userId: string, id: string): Promise<ImportantDateDocument> {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new AppException(ErrorCode.NOT_FOUND, 'Date not found', 404);
+    }
+    const doc = await this.model
+      .findOne({ _id: new Types.ObjectId(id), userId: new Types.ObjectId(userId) })
+      .exec();
+    if (!doc) {
+      throw new AppException(ErrorCode.NOT_FOUND, 'Date not found', 404);
+    }
+    return doc;
+  }
+
+  /**
+   * Rows as the app reads them, with every account link re-checked.
+   *
+   * One query for the whole list, and the answer decides what the caller is
+   * told: a link to somebody who is no longer a WishMate comes back as no link
+   * at all. Doing it here rather than at each call site is what makes
+   * "immediately" true of every surface — the feed, the rail, the picker.
+   */
+  private async toViews(userId: string, docs: ImportantDate[]): Promise<ImportantDateView[]> {
+    const views = docs.map((doc) => ImportantDatesService.toView(doc));
+    const linked = views.map((view) => view.linkedUserId).filter((id): id is string => id !== null);
+    if (linked.length === 0) return views;
+
+    const accepted = await this.links.acceptedAmong(new Types.ObjectId(userId), linked);
+    return views.map((view) =>
+      view.linkedUserId && !accepted.has(view.linkedUserId)
+        ? { ...view, linkedUserId: null }
+        : view,
+    );
   }
 
   async create(userId: string, dto: CreateImportantDateDto): Promise<ImportantDateView> {
@@ -92,6 +178,9 @@ export class ImportantDatesService {
 
     const doc = await this.model.create({
       userId: _userId,
+      // Linked afterwards, never on the way in: the person typing a name has
+      // not been asked who it is yet, and a link is a claim about the graph.
+      linkedUserId: null,
       personName: dto.personName,
       relation: dto.relation ?? '',
       occasionKey: dto.occasionKey,
@@ -115,17 +204,9 @@ export class ImportantDatesService {
     id: string,
     dto: UpdateImportantDateDto,
   ): Promise<ImportantDateView> {
-    if (!Types.ObjectId.isValid(id)) {
-      throw new AppException(ErrorCode.NOT_FOUND, 'Date not found', 404);
-    }
     // Scoped to the caller, like `remove` — someone else's id is not found
     // rather than forbidden, so ids stay unguessable.
-    const doc = await this.model
-      .findOne({ _id: new Types.ObjectId(id), userId: new Types.ObjectId(userId) })
-      .exec();
-    if (!doc) {
-      throw new AppException(ErrorCode.NOT_FOUND, 'Date not found', 404);
-    }
+    const doc = await this.own(userId, id);
 
     if (dto.occasionKey !== undefined) {
       await this.taxonomy.assertValidOne(TaxonomyKind.OCCASION, dto.occasionKey, 'occasionKey');
@@ -153,7 +234,8 @@ export class ImportantDatesService {
     }
 
     await doc.save();
-    return ImportantDatesService.toView(doc.toObject());
+    const [view] = await this.toViews(userId, [doc.toObject()]);
+    return view;
   }
 
   async remove(userId: string, id: string): Promise<void> {
@@ -237,6 +319,9 @@ export class ImportantDatesService {
       // existed have no such key at all.
       customOccasion: doc.customOccasion ?? null,
       date: doc.date.toISOString().slice(0, 10),
+      // Rows saved before this field existed have no such key at all; never
+      // trusted on its own — [toViews] is what decides whether it survives.
+      linkedUserId: doc.linkedUserId?.toString() ?? null,
     };
   }
 }

@@ -192,6 +192,81 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     ],
     cta: { label: 'View the event', url: s(p, 'url') },
   }),
+  /**
+   * "Priya is coming to Diwali Night (+2)" — the answer first, since that is
+   * the whole of what the host wants from it.
+   */
+  [NotificationType.EVENT_RSVP]: (p) => {
+    const guest = who(p, 'guestName');
+    const event = s(p, 'eventTitle', 'your event');
+    const extra = Number(p.plusOnes);
+    const plus = Number.isFinite(extra) && extra > 0 ? ` (+${extra})` : '';
+    // Each answer named outright, and anything else left neutral: a missing
+    // response reading as "can't make it" would tell a host a guest declined.
+    const headline =
+      p.response === 'yes'
+        ? `${guest} is coming to ${event}${plus}`
+        : p.response === 'maybe'
+          ? `${guest} might come to ${event}${plus}`
+          : p.response === 'no'
+            ? `${guest} can't make it to ${event}`
+            : `${guest} replied to ${event}`;
+    return {
+      subject: headline,
+      title: headline,
+      lines: [`${headline}.`],
+      cta: { label: 'See the guest list', url: s(p, 'url') },
+    };
+  },
+  [NotificationType.EVENT_CANCELLED]: (p) => {
+    const event = s(p, 'eventTitle', 'The event');
+    const when = s(p, 'whenText');
+    return {
+      subject: `${event} has been cancelled`,
+      title: `${event} has been cancelled`,
+      lines: [
+        when
+          ? `${who(p, 'hostName')} cancelled ${event}, planned for ${when}.`
+          : `${who(p, 'hostName')} cancelled ${event}.`,
+      ],
+      cta: { label: 'View the invitation', url: s(p, 'url') },
+    };
+  },
+  /**
+   * What moved, with its new value — "It's now on Sat, 19 Sep · 7:00 PM" —
+   * so the notice is enough on its own and nobody has to open the invitation
+   * to find out what "changed" meant.
+   */
+  [NotificationType.EVENT_UPDATED]: (p) => {
+    const event = s(p, 'eventTitle', 'Your event');
+    const changes = Array.isArray(p.changes) ? (p.changes as string[]) : [];
+    const moved = changes.includes('time');
+    const venueMoved = changes.includes('venue');
+    const venue = s(p, 'venue');
+    const title =
+      moved && venueMoved
+        ? `${event} has a new time and place`
+        : moved
+          ? `${event} has moved`
+          : venueMoved
+            ? `${event} has a new venue`
+            : `${event} has been updated`;
+    // One line, not one per change: a push and a notification-centre row
+    // both show only the first, and a new time with the venue cut off below
+    // it is half the news.
+    const said = [
+      ...(moved ? [`It's now on ${s(p, 'whenText', 'a new date')}.`] : []),
+      ...(venueMoved
+        ? [venue ? `New venue: ${venue}.` : 'The venue has been taken off the invitation.']
+        : []),
+    ].join(' ');
+    return {
+      subject: title,
+      title,
+      lines: [said || `${who(p, 'hostName')} updated ${event}.`],
+      cta: { label: 'View the invitation', url: s(p, 'url') },
+    };
+  },
   [NotificationType.ITEM_PRICE_DROP]: (p) => ({
     subject: `Price drop: ${s(p, 'itemTitle', 'a wishlist item')}`,
     title: 'A wishlist item dropped in price',

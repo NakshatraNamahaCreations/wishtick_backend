@@ -38,4 +38,32 @@ export class MongoWishmateLink implements IWishmateLink {
       .exec();
     return count > 0;
   }
+
+  async acceptedAmong(ownerId: Types.ObjectId, candidateIds: string[]): Promise<Set<string>> {
+    const ids = candidateIds
+      .filter((id) => Types.ObjectId.isValid(id))
+      .map((id) => new Types.ObjectId(id));
+    if (ids.length === 0) return new Set();
+
+    const links = await this.links
+      .find({
+        status: WishLinkStatus.ACCEPTED,
+        $or: [
+          { requesterId: ownerId, addresseeId: { $in: ids } },
+          { requesterId: { $in: ids }, addresseeId: ownerId },
+        ],
+      })
+      .select({ requesterId: 1, addresseeId: 1 })
+      .lean()
+      .exec();
+
+    // The other end of each row, whichever way round it was written.
+    return new Set(
+      links.map((link) =>
+        link.requesterId.equals(ownerId)
+          ? link.addresseeId.toString()
+          : link.requesterId.toString(),
+      ),
+    );
+  }
 }

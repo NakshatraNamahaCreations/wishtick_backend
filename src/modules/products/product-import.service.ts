@@ -105,7 +105,7 @@ export class ProductImportService {
       wishlistId: wishlist._id,
       ownerId: wishlist.ownerId,
       // Every field below is a COPY taken at this instant, deliberately.
-      title: snapshot.title.slice(0, 200),
+      title: (dto.title?.trim() || snapshot.title).slice(0, 200),
       notes: dto.notes ?? null,
       // Set only by the "Gift Now" path, which saves to the buyer's own list
       // on someone else's behalf. A plain "Add to Wishlist" leaves both null.

@@ -594,6 +594,63 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       expect(count).toBeGreaterThanOrEqual(2);
     });
 
+    it('measures gift shelves, and keeps nothing about who they were for', async () => {
+      const user = await newUser();
+      const shelf = (kind: string, personalised: boolean) => ({
+        surface: 'discover',
+        kind,
+        personalised,
+      });
+      const res = await request(server())
+        .post(`${V1}/events/track`)
+        .set(auth(user.token))
+        .send({
+          events: [
+            {
+              name: 'shelf_viewed',
+              props: { ...shelf('wishmate_taste', true), recipientUserId: 'u_x' },
+            },
+            { name: 'shelf_viewed', props: shelf('wishmate_taste', true) },
+            {
+              name: 'shelf_product_opened',
+              props: { ...shelf('wishmate_taste', true), position: 0 },
+            },
+            { name: 'shelf_viewed', props: shelf('person_occasion', false) },
+            // Not a shelf anybody draws: dropped, not stored.
+            {
+              name: 'shelf_viewed',
+              props: { surface: 'discover', kind: 'mystery', personalised: true },
+            },
+          ],
+        })
+        .expect(202);
+      expect((res.body as Envelope<{ accepted: number }>).data.accepted).toBe(4);
+
+      const stored = await eventModel
+        .find({ userId: new Types.ObjectId(user.userId), name: /^shelf_/ })
+        .lean();
+      expect(JSON.stringify(stored)).not.toContain('u_x');
+
+      const bucket = new Date().toISOString().slice(0, 10);
+      await analytics.rollupDay(bucket);
+      const rows = (
+        await request(server())
+          .get(`${V1}/admin/analytics/shelves`)
+          .query({ from: bucket, to: bucket })
+          .set(auth(await adminToken()))
+          .expect(200)
+      ).body as Envelope<{ kind: string; views: number; opens: number; openRate: number | null }[]>;
+
+      const taste = rows.data.find((r) => r.kind === 'wishmate_taste');
+      expect(taste).toMatchObject({ personalised: true, views: 2, opens: 1, openRate: 0.5 });
+      expect(rows.data.find((r) => r.kind === 'person_occasion')).toMatchObject({
+        personalised: false,
+        views: 1,
+        opens: 0,
+        openRate: 0,
+      });
+    });
+
     it('captures the acquisition source at signup, visible to admin + analytics', async () => {
       const token = await adminToken();
       const user = await newUser({ source: 'tiktok', ref: 'campaign-42' });

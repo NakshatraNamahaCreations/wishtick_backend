@@ -120,3 +120,35 @@ export function zonedNow(timeZone: string, at: Date): ZonedNow {
 /** Whether `year` has a 29 February. */
 export const isLeapYear = (year: number): boolean =>
   (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+
+/**
+ * An instant as the people going to it would say it — "Sat, 19 Sep · 12:00 PM"
+ * — on the wall clock of the zone the event is in.
+ *
+ * The event's zone, not the reader's: a notice that a party moved is read as
+ * "when do I need to be there", and the host set the time in theirs. A zone
+ * Intl does not know falls back to UTC rather than throwing out of a
+ * notification.
+ */
+export function formatEventMoment(at: Date, timeZone: string): string {
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    }).formatToParts(at);
+  } catch {
+    return formatEventMoment(at, 'UTC');
+  }
+  const get = (t: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((p) => p.type === t)?.value ?? '';
+  return (
+    `${get('weekday')}, ${get('day')} ${get('month')} · ` +
+    `${get('hour')}:${get('minute')} ${get('dayPeriod').toUpperCase()}`
+  );
+}

@@ -1,4 +1,4 @@
-import { ConfigService } from '@nestjs/config';
+import type { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
 import type { AppConfig } from 'src/config/configuration';
 import { AffiliateSyncProcessor } from './affiliate-sync.processor';

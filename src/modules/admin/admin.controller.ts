@@ -239,6 +239,18 @@ export class AdminController {
     return this.analytics.engagement(query.from ?? daysAgoBucket(30), query.to ?? todayBucket());
   }
 
+  @Get('analytics/shelves')
+  @RequirePermission(AdminPermission.ANALYTICS_VIEW)
+  @ApiOperation({
+    summary: 'Gift shelf views, opens and open rate, by surface, kind and personalisation',
+    description:
+      "Compares shelves ranked by a WishMate's taste with plain occasion shelves. Counts " +
+      'only — shelf events carry no user or recipient, so nothing here says who shopped for whom.',
+  })
+  shelves(@Query() query: AnalyticsRangeDto): Promise<unknown> {
+    return this.analytics.shelves(query.from ?? daysAgoBucket(30), query.to ?? todayBucket());
+  }
+
   // ── Audit ─────────────────────────────────────────────────────────────────────
 
   @Get('audit')

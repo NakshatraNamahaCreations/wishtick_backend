@@ -24,6 +24,16 @@ export interface IWishmateLink {
    * no link at all, which is the wishmates module's own rule.
    */
   areLinked(ownerId: Types.ObjectId, viewerId: string): Promise<boolean>;
+
+  /**
+   * Which of [candidateIds] are accepted WishMates of [ownerId], as a set.
+   *
+   * The same question as [areLinked], asked about a handful of people at once
+   * — a saved date that names an account is checked *every time it is read*,
+   * so that somebody removed as a WishMate stops matching immediately rather
+   * than at the next write. One query for a list, rather than one per row.
+   */
+  acceptedAmong(ownerId: Types.ObjectId, candidateIds: string[]): Promise<Set<string>>;
 }
 
 /**
@@ -38,5 +48,9 @@ export interface IWishmateLink {
 export class NullWishmateLink implements IWishmateLink {
   areLinked(): Promise<boolean> {
     return Promise.resolve(false);
+  }
+
+  acceptedAmong(): Promise<Set<string>> {
+    return Promise.resolve(new Set());
   }
 }

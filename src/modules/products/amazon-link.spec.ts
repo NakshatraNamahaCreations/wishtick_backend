@@ -5,6 +5,7 @@ import {
   isAmazonShortLink,
 } from './amazon-link';
 import { AmazonLookupService } from './amazon-lookup.service';
+import { toAmazonProduct } from './amazon-product.mapper';
 import type { ProviderGuard } from './providers/provider-guard.service';
 import { ProviderUnavailableError } from './providers/provider-guard.service';
 import type { SerpApiClient } from './providers/serpapi/serpapi.client';
@@ -148,12 +149,19 @@ describe('UrlResolverService with an Amazon link', () => {
    * redirects. Any request for an address not in the map fails the test — so
    * a request for Amazon's product page is caught, not merely unanswered.
    */
+  /** What a lookup answers, filled out to a full catalogue row. */
+  const found = (title: string, asin = 'B0GT53PY8H') =>
+    toAmazonProduct({ product_results: { title } }, { asin, domain: 'amazon.in' });
+
   const build = (opts: {
     hops: Record<string, string>;
     lookup: Awaited<ReturnType<AmazonLookupService['lookup']>>;
+    /** A row saved earlier, and how long ago. */
+    saved?: { title: string; ageMs: number };
   }) => {
     const requested: string[] = [];
     const looked: string[] = [];
+    const upserted: string[] = [];
     const provider = { resolveUrl: () => Promise.resolve(null) };
     const ssrf = {
       assertUrlIsSafe: (url: string) => Promise.resolve({ url: new URL(url), address: '1.2.3.4' }),
@@ -166,11 +174,29 @@ describe('UrlResolverService with an Amazon link', () => {
         return Promise.resolve(opts.lookup);
       },
     };
+    const products = {
+      upsertMany: (rows: { externalId: string }[]) => {
+        upserted.push(...rows.map((r) => r.externalId));
+        return Promise.resolve();
+      },
+      findSnapshot: () =>
+        Promise.resolve(
+          opts.saved
+            ? {
+                ...found(opts.saved.title),
+                lastSyncedAt: new Date(Date.now() - opts.saved.ageMs),
+              }
+            : null,
+        ),
+    };
+    const matcher = { find: () => Promise.resolve(null) };
     const service = new UrlResolverService(
       provider as never,
       ssrf as never,
       config as never,
       amazon as never,
+      products as never,
+      matcher as never,
     );
     jest
       .spyOn(service as unknown as { request: (u: URL) => unknown }, 'request')
@@ -181,7 +207,7 @@ describe('UrlResolverService with an Amazon link', () => {
         if (!next) throw new Error(`Requested a page it should not have: ${href}`);
         return Promise.resolve({ body: '', redirectTo: next });
       });
-    return { service, requested, looked };
+    return { service, requested, looked, upserted };
   };
 
   it('follows the short link to the product, and never requests Amazon’s page', async () => {
@@ -191,7 +217,7 @@ describe('UrlResolverService with an Amazon link', () => {
         'https://amzlinks.in/B09xZU434':
           'https://www.amazon.in/dp/B0GT53PY8H/ref=cm_sw_r?tag=jayanth21-21',
       },
-      lookup: { title: 'Blackout Curtains', productUrl: 'https://www.amazon.in/dp/B0GT53PY8H' },
+      lookup: found('Blackout Curtains'),
     });
 
     const resolved = await service.resolve('https://link.amazon/B09xZU434');
@@ -205,12 +231,54 @@ describe('UrlResolverService with an Amazon link', () => {
   it('reads a pasted storefront link without a single request', async () => {
     const { service, requested } = build({
       hops: {},
-      lookup: { title: 'Echo Show 8', productUrl: 'https://www.amazon.in/dp/B0000AAAAA' },
+      lookup: found('Echo Show 8', 'B0000AAAAA'),
     });
 
     await service.resolve('https://www.amazon.in/Echo-Show/dp/B0000AAAAA?th=1');
 
     expect(requested).toEqual([]);
+  });
+
+  // The app imports the gift by this, so the item gets what a searched
+  // product gets — which only works if the row it names really exists.
+  it('saves what it looked up, and says where', async () => {
+    const { service, upserted } = build({ hops: {}, lookup: found('Galaxy Watch9') });
+
+    const resolved = await service.resolve('https://www.amazon.in/dp/B0GT53PY8H');
+
+    expect(resolved.source).toBe('provider');
+    expect(resolved.catalogueRef).toEqual({
+      provider: 'serpapi',
+      externalId: 'amzn:amazon.in:B0GT53PY8H',
+    });
+    expect(upserted).toEqual(['amzn:amazon.in:B0GT53PY8H']);
+  });
+
+  it('reuses a recent lookup instead of paying for it again', async () => {
+    const { service, looked, upserted } = build({
+      hops: {},
+      lookup: found('Should not be asked'),
+      saved: { title: 'Saved an hour ago', ageMs: 60 * 60 * 1_000 },
+    });
+
+    const resolved = await service.resolve('https://www.amazon.in/dp/B0GT53PY8H');
+
+    expect(resolved.product.title).toBe('Saved an hour ago');
+    expect(looked).toEqual([]);
+    expect(upserted).toEqual([]);
+  });
+
+  it('looks again once the saved row is old', async () => {
+    const { service, looked } = build({
+      hops: {},
+      lookup: found('Fresh'),
+      saved: { title: 'Stale', ageMs: 2 * 24 * 60 * 60 * 1_000 },
+    });
+
+    expect((await service.resolve('https://www.amazon.in/dp/B0GT53PY8H')).product.title).toBe(
+      'Fresh',
+    );
+    expect(looked).toEqual(['B0GT53PY8H']);
   });
 
   // Scraping is not a fallback for Amazon: it is the thing that fails.

@@ -49,6 +49,21 @@ export class ImportantDate {
   @Prop({ type: String, default: null, trim: true, maxlength: 60 })
   customOccasion!: string | null;
 
+  /**
+   * The Wishtick account this person *is*, when the owner has said so.
+   *
+   * Null for almost every row: most saved dates are people with no account —
+   * that is the whole reason the name is typed rather than picked. When it is
+   * set, and only while the two are still WishMates, the app can stop guessing
+   * from the occasion and use what that person actually said they like.
+   *
+   * Set only by [ImportantDatesService.link], which refuses anyone who is not
+   * an accepted WishMate, and checked again on every read: being removed as a
+   * WishMate has to stop this mattering at once, not at the next write.
+   */
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', default: null })
+  linkedUserId!: Types.ObjectId | null;
+
   /** Date-only, stored UTC-midnight like `UserProfile.dateOfBirth`. */
   @Prop({ type: Date, required: true })
   date!: Date;

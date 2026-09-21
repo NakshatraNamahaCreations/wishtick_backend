@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import {
@@ -18,7 +19,11 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
-import { CreateImportantDateDto, UpdateImportantDateDto } from './dto/important-date.dto';
+import {
+  CreateImportantDateDto,
+  LinkImportantDateDto,
+  UpdateImportantDateDto,
+} from './dto/important-date.dto';
 import { UpcomingOccasionsQueryDto } from './dto/upcoming-occasions.dto';
 import {
   ImportantDatesService,
@@ -82,6 +87,37 @@ export class ImportantDatesController {
     @Body() dto: UpdateImportantDateDto,
   ): Promise<ImportantDateView> {
     return this.dates.update(userId, id, dto);
+  }
+
+  /**
+   * Links a saved date to the account that person actually has.
+   *
+   * Only for an accepted WishMate — and the link stops counting the moment
+   * that stops being true, because every read re-checks it.
+   */
+  @Put(':id/link')
+  @ApiOperation({
+    summary: 'Say that a saved date is one of your WishMates',
+    description:
+      'Lets gift ideas for this person come from what they said they like, instead of ' +
+      'from the occasion alone. Re-checked on every read, so removing them as a WishMate ' +
+      'takes effect at once.',
+  })
+  @ApiResponseDoc({ status: 404, description: 'NOT_FOUND — unknown or not yours' })
+  @ApiResponseDoc({ status: 403, description: 'NOT_WISHMATES — they are not an accepted WishMate' })
+  link(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Body() dto: LinkImportantDateDto,
+  ): Promise<ImportantDateView> {
+    return this.dates.link(userId, id, dto.userId);
+  }
+
+  @Delete(':id/link')
+  @ApiOperation({ summary: 'Forget the account behind a saved date, keeping the date' })
+  @ApiResponseDoc({ status: 404, description: 'NOT_FOUND — unknown or not yours' })
+  unlink(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<ImportantDateView> {
+    return this.dates.unlink(userId, id);
   }
 
   @Delete(':id')

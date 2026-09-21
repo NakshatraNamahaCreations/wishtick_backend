@@ -904,6 +904,61 @@ describe('Memories (e2e)', () => {
     });
   });
 
+  describe("the countdown on the recipient's Home", () => {
+    const incoming = async (actor: Actor): Promise<Record<string, unknown>[]> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/memories/incoming`)
+            .set(auth(actor.token))
+            .expect(200)
+        ).body as Envelope<Record<string, unknown>[]>
+      ).data;
+
+    it('tells the recipient one is coming and when — and nothing else', async () => {
+      const { host, recipient } = await hostAndRecipient();
+      const memory = await createMemory(host, {}, recipient);
+
+      const rows = await incoming(recipient);
+
+      expect(rows).toHaveLength(1);
+      expect(Object.keys(rows[0]).sort()).toEqual(['id', 'occasion', 'unlockAt']);
+      expect(rows[0]).toMatchObject({ id: memory.id, occasion: 'birthday' });
+      // Who made it is the surprise, and it is nowhere in the payload.
+      expect(JSON.stringify(rows)).not.toContain(host.userId);
+      expect(JSON.stringify(rows)).not.toContain("Ananya's Birthday");
+    });
+
+    it('lists the soonest first', async () => {
+      const { host, recipient } = await hostAndRecipient();
+      const later = await createMemory(
+        host,
+        { unlockAt: new Date(Date.now() + 9 * 86_400_000).toISOString() },
+        recipient,
+      );
+      const sooner = await createMemory(
+        host,
+        { unlockAt: new Date(Date.now() + 2 * 86_400_000).toISOString() },
+        recipient,
+      );
+
+      expect((await incoming(recipient)).map((r) => r.id)).toEqual([sooner.id, later.id]);
+    });
+
+    it('drops it once it opens, and never shows it to anyone else', async () => {
+      const { host, recipient } = await hostAndRecipient();
+      const memory = await createMemory(host, {}, recipient);
+
+      expect(await incoming(host)).toHaveLength(0);
+
+      await request(app.getHttpServer())
+        .post(`${V1}/memories/${memory.id}/unlock`)
+        .set(auth(host.token))
+        .expect(200);
+      expect(await incoming(recipient)).toHaveLength(0);
+    });
+  });
+
   // The whole point of the feature. If any of these leak, the surprise is gone.
   describe('the time-lock', () => {
     it('withholds wish content until the capsule opens, but not the count', async () => {

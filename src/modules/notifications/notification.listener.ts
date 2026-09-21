@@ -5,7 +5,10 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import {
   CHAT_MESSAGE_POSTED,
+  EVENT_CALLED_OFF,
+  EVENT_DETAILS_CHANGED,
   EVENT_INVITED,
+  EVENT_RSVP_CHANGED,
   EVENT_WISHLIST_ANSWERED,
   EVENT_WISHLIST_OFFERED,
   GIFT_FULFILLED,
@@ -24,7 +27,10 @@ import {
   WISHMATE_ACCEPTED,
   WISHMATE_REQUESTED,
   type ChatMessagePostedEvent,
+  type EventCalledOffEvent,
+  type EventDetailsChangedEvent,
   type EventInvitedEvent,
+  type EventRsvpChangedEvent,
   type EventWishlistAnsweredEvent,
   type EventWishlistOfferedEvent,
   type GiftLifecycleEvent,
@@ -41,6 +47,7 @@ import {
   type WishmateAcceptedEvent,
   type WishmateRequestedEvent,
 } from 'src/common/events/domain-events';
+import { formatEventMoment } from 'src/common/time/zoned';
 import type { AppConfig } from 'src/config/configuration';
 import {
   EVENT_REMINDER_DUE,
@@ -356,6 +363,93 @@ export class NotificationListener {
           url: `${this.web}/events/${e.eventId}`,
         },
       });
+    });
+  }
+
+  /**
+   * A guest answered, to the host.
+   *
+   * The refId leads with the event, because that is what the host's app
+   * opens — the guest list lives on the event — and ends with when they
+   * answered: dedupe is permanent per (user, type, ref), so keyed on the
+   * invite alone a guest who changed their mind would never be heard again.
+   */
+  @OnEvent(EVENT_RSVP_CHANGED)
+  async onEventRsvp(e: EventRsvpChangedEvent): Promise<void> {
+    await this.guard('event-rsvp', async () => {
+      await this.notifications.enqueue({
+        userId: e.hostId,
+        type: NotificationType.EVENT_RSVP,
+        refId: `${e.eventId}:${e.inviteId}:${e.respondedAt.getTime()}`,
+        payload: {
+          // A guest who answered from a link without an account has no name
+          // to give; "A guest" is honest, "Someone" reads like a stranger.
+          guestName: e.guestUserId
+            ? await this.users.displayNameFor(e.guestUserId, 'A guest')
+            : 'A guest',
+          eventTitle: e.eventTitle,
+          response: e.response,
+          plusOnes: e.plusOnes,
+          url: `${this.web}/events/${e.eventId}`,
+        },
+      });
+    });
+  }
+
+  /**
+   * The event is off, to every guest who might have come.
+   *
+   * Keyed by the guest's own invitation token, which is what their app opens
+   * the event by — the invitation is where "cancelled" is shown. An event is
+   * cancelled once, so nothing else is needed to keep it unique.
+   */
+  @OnEvent(EVENT_CALLED_OFF)
+  async onEventCalledOff(e: EventCalledOffEvent): Promise<void> {
+    await this.guard('event-called-off', async () => {
+      const hostName = await this.userName(e.hostId);
+      const whenText = formatEventMoment(e.startsAt, e.timezone);
+      for (const r of e.recipients) {
+        await this.notifications.enqueue({
+          userId: r.userId,
+          type: NotificationType.EVENT_CANCELLED,
+          refId: `${r.inviteToken}:cancelled`,
+          payload: {
+            hostName,
+            eventTitle: e.eventTitle,
+            whenText,
+            url: `${this.web}/i/${r.inviteToken}`,
+          },
+        });
+      }
+    });
+  }
+
+  /**
+   * The date, time or venue moved, to every guest who might come.
+   *
+   * The refId carries when it changed, so a second move is a second notice
+   * rather than being swallowed as a repeat of the first.
+   */
+  @OnEvent(EVENT_DETAILS_CHANGED)
+  async onEventDetailsChanged(e: EventDetailsChangedEvent): Promise<void> {
+    await this.guard('event-details-changed', async () => {
+      const hostName = await this.userName(e.hostId);
+      const whenText = formatEventMoment(e.startsAt, e.timezone);
+      for (const r of e.recipients) {
+        await this.notifications.enqueue({
+          userId: r.userId,
+          type: NotificationType.EVENT_UPDATED,
+          refId: `${r.inviteToken}:${e.changedAt.getTime()}`,
+          payload: {
+            hostName,
+            eventTitle: e.eventTitle,
+            changes: e.changes,
+            whenText,
+            venue: e.venue,
+            url: `${this.web}/i/${r.inviteToken}`,
+          },
+        });
+      }
     });
   }
 

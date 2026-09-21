@@ -54,6 +54,9 @@ export enum NotificationType {
   EVENT_INVITE = 'event_invite',
   EVENT_WISHLIST_OFFERED = 'event_wishlist_offered',
   EVENT_WISHLIST_ANSWERED = 'event_wishlist_answered',
+  EVENT_RSVP = 'event_rsvp',
+  EVENT_CANCELLED = 'event_cancelled',
+  EVENT_UPDATED = 'event_updated',
   ITEM_PRICE_DROP = 'item_price_drop',
   ITEM_OUT_OF_STOCK = 'item_out_of_stock',
   THANK_YOU = 'thank_you',
@@ -225,6 +228,31 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.EVENTS,
     template: 'event-wishlist-answered',
+  },
+  [NotificationType.EVENT_RSVP]: {
+    // To the host. A reply is what they are planning food and seats around,
+    // and the guest list was the only place it ever showed up.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.EVENTS,
+    template: 'event-rsvp',
+  },
+  [NotificationType.EVENT_CANCELLED]: {
+    // To the guests. Not CRITICAL: quiet hours still hold it until morning,
+    // which is soon enough for a party that is off — and the alternative is
+    // waking somebody to tell them they can stay in bed.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.EVENTS,
+    template: 'event-cancelled',
+  },
+  [NotificationType.EVENT_UPDATED]: {
+    // To the guests, when the date, time or venue moves. The first a guest
+    // used to hear of a new date was a reminder counting down to it.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.EVENTS,
+    template: 'event-updated',
   },
   [NotificationType.ITEM_PRICE_DROP]: {
     channels: [NotificationChannel.IN_APP],

@@ -7,8 +7,7 @@ import { User, UserSchema } from 'src/modules/users/schemas/user.schema';
 import { WishLink, WishLinkSchema } from './schemas/wish-link.schema';
 import { PresenceService } from './presence.service';
 import { WishmatesController } from './wishmates.controller';
-import { WISHMATE_LINK } from 'src/modules/wishlists/access/wishmate-link.port';
-import { MongoWishmateLink } from './wishmate-link.service';
+import { WishmateLinkModule } from './wishmate-link.module';
 import { WishmatesService } from './wishmates.service';
 
 /**
@@ -34,17 +33,14 @@ import { WishmatesService } from './wishmates.service';
     // The profile screen shows what a WishMate likes. One-way: TasteModule
     // knows nothing about the graph, and is handed the relationship instead.
     TasteModule,
+    // The one boolean, in the module that owns it — see its own note.
+    WishmateLinkModule,
   ],
   controllers: [WishmatesController],
-  providers: [
-    WishmatesService,
-    PresenceService,
-    // The one boolean the wishlist access policy wants out of this module:
-    // are these two connected? Supplied as a port so `wishlists/access` keeps
-    // depending on an interface rather than on this module's service — the
-    // same shape EVENT_PARTICIPATION uses.
-    { provide: WISHMATE_LINK, useClass: MongoWishmateLink },
-  ],
-  exports: [WishmatesService, PresenceService, WISHMATE_LINK],
+  providers: [WishmatesService, PresenceService],
+  // Re-exported as the module rather than the token: this module no longer
+  // provides WISHMATE_LINK itself, and Nest refuses to export a provider a
+  // module does not own. Anything importing WishmatesModule still gets it.
+  exports: [WishmatesService, PresenceService, WishmateLinkModule],
 })
 export class WishmatesModule {}

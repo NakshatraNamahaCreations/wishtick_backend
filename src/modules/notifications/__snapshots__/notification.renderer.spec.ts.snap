@@ -40,6 +40,17 @@ It did not meet our community guidelines.",
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_cancelled 1`] = `
+{
+  "sms": "Aarav's Birthday has been cancelled — https://app.wishtick.test/x",
+  "subject": "Aarav's Birthday has been cancelled",
+  "text": "Someone cancelled Aarav's Birthday, planned for in 2 days.
+
+View the invitation: https://app.wishtick.test/x",
+  "title": "Aarav's Birthday has been cancelled",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_invite 1`] = `
 {
   "sms": "You're invited to Aarav's Birthday — https://app.wishtick.test/x",
@@ -61,6 +72,28 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 
 View the event: https://app.wishtick.test/x",
   "title": "Aarav's Birthday is in 2 days",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_rsvp 1`] = `
+{
+  "sms": "Someone replied to Aarav's Birthday — https://app.wishtick.test/x",
+  "subject": "Someone replied to Aarav's Birthday",
+  "text": "Someone replied to Aarav's Birthday.
+
+See the guest list: https://app.wishtick.test/x",
+  "title": "Someone replied to Aarav's Birthday",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_updated 1`] = `
+{
+  "sms": "Aarav's Birthday has been updated — https://app.wishtick.test/x",
+  "subject": "Aarav's Birthday has been updated",
+  "text": "Someone updated Aarav's Birthday.
+
+View the invitation: https://app.wishtick.test/x",
+  "title": "Aarav's Birthday has been updated",
 }
 `;
 

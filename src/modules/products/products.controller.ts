@@ -82,7 +82,7 @@ export class ProductsController {
   @ApiOperation({
     summary: 'One product, by catalogue id',
     description:
-      "Resolves the id to its provider reference and answers exactly as the provider route does — " +
+      'Resolves the id to its provider reference and answers exactly as the provider route does — ' +
       'so a saved wishlist item can show the seller, rating and specifications its snapshot never carried.',
   })
   @ApiResponseDoc({ status: 404, description: 'PRODUCT_NOT_FOUND' })

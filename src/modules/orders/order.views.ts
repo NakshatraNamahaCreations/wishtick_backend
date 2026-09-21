@@ -41,6 +41,13 @@ export interface OrderView {
   estimatedDeliveryFrom: Date | null;
   estimatedDeliveryTo: Date | null;
   deliveredAt: Date | null;
+
+  /**
+   * Set once the gifter withdrew the gift. The timeline keeps whatever it had
+   * reached; nothing more will be added to it.
+   */
+  cancelledAt: Date | null;
+  cancelledNote: string | null;
   createdAt: Date;
 }
 
@@ -76,6 +83,8 @@ export const toOrderView = (order: OrderDocument): OrderView => {
     estimatedDeliveryFrom: order.estimatedDeliveryFrom,
     estimatedDeliveryTo: order.estimatedDeliveryTo,
     deliveredAt: order.deliveredAt,
+    cancelledAt: order.cancelledAt,
+    cancelledNote: order.cancelledNote,
     createdAt: order.createdAt,
   };
 };

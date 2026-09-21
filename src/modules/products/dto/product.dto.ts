@@ -69,6 +69,19 @@ export class ImportProductDto {
   @MaxLength(200)
   externalId!: string;
 
+  /**
+   * The gift's name, when the person changed the product's own.
+   *
+   * The add-gift sheet fills its name field from the link and leaves it
+   * editable; without this, what they typed would be quietly replaced by the
+   * catalogue's title the moment they saved.
+   */
+  @ApiPropertyOptional({ example: 'Galaxy Watch for Dad' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  title?: string;
+
   @ApiPropertyOptional({ description: 'A note for whoever gifts this' })
   @IsOptional()
   @IsString()

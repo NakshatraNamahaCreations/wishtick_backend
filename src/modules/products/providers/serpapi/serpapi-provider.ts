@@ -6,6 +6,9 @@ import type {
   ProductSearchResult,
   ProviderCategory,
 } from '../../product.types';
+import type { AmazonProductRef } from '../../amazon-link';
+import { toAmazonProduct } from '../../amazon-product.mapper';
+import type { LinkMeta } from '../../shop-link-matcher.service';
 import type { IProductProvider } from '../product-provider.port';
 import { SerpApiClient } from './serpapi.client';
 import {
@@ -153,6 +156,55 @@ export class SerpApiProductProvider implements IProductProvider {
    * price sync call; ordinary search never touches it.
    */
   async getDetailsByRef(
+    externalId: string,
+    ref: Record<string, unknown>,
+  ): Promise<NormalizedProduct | null> {
+    // A product saved from an Amazon link: re-read by its ASIN, which is
+    // exact, rather than through Google, which never had it.
+    const amazon = ref.amazon as AmazonProductRef | undefined;
+    if (amazon?.asin && amazon.domain) {
+      return toAmazonProduct(await this.client.amazonProduct(amazon.asin, amazon.domain), amazon);
+    }
+
+    const fresh = await this.immersiveDetails(externalId, ref);
+    const link = ref.link as LinkMeta | undefined;
+    return fresh && link?.url ? SerpApiProductProvider.pinnedToLink(fresh, link) : fresh;
+  }
+
+  /**
+   * A product saved from a shop link, kept to that shop.
+   *
+   * Google answers with every seller and names the cheapest as the product's
+   * page. This one was saved from a particular shop's page, for a particular
+   * variant, and that is where the gift stays pointed; its price is that
+   * shop's — or the last one read, when Google no longer lists the shop —
+   * never another shop's reported as a change in this one's.
+   */
+  private static pinnedToLink(fresh: NormalizedProduct, link: LinkMeta): NormalizedProduct {
+    const key = link.shopKey;
+    const own = fresh.offers.find((o) =>
+      (o.merchant ?? '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '')
+        .includes(key),
+    );
+    const amountMinor = own?.amountMinor ?? link.amountMinor ?? fresh.amountMinor;
+    const serpapi = (fresh.affiliateMeta.serpapi ?? {}) as SerpApiMeta;
+    return {
+      ...fresh,
+      productUrl: link.url,
+      merchant: link.shop,
+      amountMinor,
+      listPriceMinor: null,
+      affiliateMeta: {
+        ...fresh.affiliateMeta,
+        link: { ...link, amountMinor },
+        serpapi: { ...serpapi, merchantLinkResolved: true },
+      },
+    };
+  }
+
+  private async immersiveDetails(
     externalId: string,
     ref: Record<string, unknown>,
   ): Promise<NormalizedProduct | null> {

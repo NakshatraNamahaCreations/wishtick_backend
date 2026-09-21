@@ -3,6 +3,15 @@ import type { NormalizedProduct } from 'src/modules/products/product.types';
 export enum DiscoverSectionKind {
   /** Curated for one saved person's approaching occasion. */
   PERSON_OCCASION = 'person_occasion',
+  /**
+   * Ranked by what a saved person actually said they like.
+   *
+   * Only for a saved date linked to a WishMate's account — the difference
+   * between guessing from the occasion and knowing. [DiscoverSection.person]
+   * carries the same fields as a PERSON_OCCASION shelf, so a client that does
+   * not know this kind still renders it as a person's shelf.
+   */
+  WISHMATE_TASTE = 'wishmate_taste',
   /** Everything under a price ceiling — "Gifts Under ₹2000". */
   PRICE_BAND = 'price_band',
   /** The top of the catalogue by price. */
@@ -46,6 +55,11 @@ export interface DiscoverSection {
 
 export interface DiscoverExploreQuery {
   category: string | null;
+  /**
+   * Search words the shelf was narrowed by — "birthday for dad" — sent as
+   * `q` alongside the category. Absent or null for a plain category shelf.
+   */
+  keywords?: string | null;
   minPriceMinor: number | null;
   maxPriceMinor: number | null;
   /**

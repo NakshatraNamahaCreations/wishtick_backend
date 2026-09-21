@@ -4,12 +4,13 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
   AFFILIATE_SALE_MATCHED,
+  GIFT_CANCELLED,
   GIFT_FULFILLED,
   GIFT_PURCHASED,
   type AffiliateSaleMatchedEvent,
   type GiftLifecycleEvent,
 } from 'src/common/events/domain-events';
-import { GiftMode } from 'src/modules/gifting/gift.types';
+import { GiftMode, GiftStatus } from 'src/modules/gifting/gift.types';
 import { Gift, type GiftDocument } from 'src/modules/gifting/schemas/gift.schema';
 import { OrderStage, OrderStageSource } from './order.types';
 import { OrdersService } from './orders.service';
@@ -42,6 +43,9 @@ export class OrderListener {
     await this.guard('gift-purchased', async () => {
       const gift = await this.gifts.findById(new Types.ObjectId(e.giftId)).exec();
       if (!gift || gift.mode === GiftMode.OFFLINE) return;
+      // `emit` does not wait for its handlers, so a gift cancelled in the
+      // meantime would otherwise be given an order after the fact.
+      if (gift.status === GiftStatus.CANCELLED) return;
 
       await this.orders.createForGift({
         giftId: e.giftId,
@@ -50,6 +54,19 @@ export class OrderListener {
         amountMinor: gift.amountMinor,
         currency: gift.currency,
       });
+    });
+  }
+
+  /**
+   * The gifter withdrew the gift, so its order is called off with it.
+   *
+   * The order is kept rather than deleted — see Order.cancelledAt — and from
+   * here on it ignores anything a courier or the affiliate network reports.
+   */
+  @OnEvent(GIFT_CANCELLED)
+  async onCancelled(e: GiftLifecycleEvent): Promise<void> {
+    await this.guard('gift-cancelled', async () => {
+      await this.orders.cancelByGift(e.giftId, 'The gifter withdrew this gift');
     });
   }
 
@@ -69,6 +86,9 @@ export class OrderListener {
     await this.guard('affiliate-sale-matched', async () => {
       const gift = await this.gifts.findById(new Types.ObjectId(e.giftId)).exec();
       if (!gift || gift.mode === GiftMode.OFFLINE) return;
+      // A sale reported after the gifter withdrew the gift confirms a purchase
+      // that is no longer ours to track.
+      if (gift.status === GiftStatus.CANCELLED) return;
 
       // The purchase this sale confirms may have been minted moments ago by
       // the same reconciliation, on a listener that has not finished running:

@@ -21,6 +21,17 @@ export interface SharedEvent {
 }
 
 /**
+ * The little an unauthenticated guest's invite token is allowed to say about
+ * what to buy: the kind of celebration, who it is for, and what they are to
+ * the host. No ids of any sort — see [SharedEventsService.giftContextForInvite].
+ */
+export interface InviteGiftContext {
+  type: string;
+  personName: string | null;
+  relation: string | null;
+}
+
+/**
  * Upcoming events two people are both going to.
  *
  * This is the whole of what a profile screen is allowed to learn about someone
@@ -45,6 +56,35 @@ export class SharedEventsService {
     @InjectModel(EventInvite.name) private readonly invites: Model<EventInviteDocument>,
     @InjectModel(Event.name) private readonly events: Model<EventDocument>,
   ) {}
+
+  /**
+   * What a guest holding [token] may be shown gift ideas from.
+   *
+   * Deliberately four fields and no ids. A guest is not a WishMate of anybody
+   * here — not the host's, not the celebrant's — so nothing that could be used
+   * to ask a second question about a person leaves this method: no user id, no
+   * event id, no guest list. What is left is what is already printed on the
+   * invitation they are holding.
+   *
+   * Null for a token that is unknown, revoked, or whose event has gone.
+   */
+  async giftContextForInvite(token: string): Promise<InviteGiftContext | null> {
+    const invite = await this.invites.findOne({ token, revokedAt: null }).lean().exec();
+    if (!invite) return null;
+
+    const event = await this.events.findById(invite.eventId).lean().exec();
+    if (!event || event.status === EventStatus.CANCELLED) return null;
+
+    return {
+      type: event.type,
+      // The celebrant's own name when the host named one, else nobody's —
+      // the host's name belongs to the invitation, not to a gift shelf.
+      personName: event.forSelf ? null : event.personName?.trim() || null,
+      // The *host's* word for them ("Mum"), which is the only relation an
+      // invitation carries. Coarse curation, never a claim about the guest.
+      relation: event.relation?.trim() || null,
+    };
+  }
 
   async between(
     viewerId: string,

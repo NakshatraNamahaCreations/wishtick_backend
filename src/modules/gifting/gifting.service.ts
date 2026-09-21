@@ -8,6 +8,7 @@ import { Connection, Model, Types } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import {
+  GIFT_CANCELLED,
   GIFT_FULFILLED,
   GIFT_PURCHASED,
   GIFT_RESERVED,
@@ -309,6 +310,18 @@ export class GiftingService {
     }
     if (item.status !== WishlistItemStatus.AVAILABLE) return null;
 
+    // Never against the gifter's own word. Somebody who withdrew this gift
+    // has told us they did not buy it; a sale the network reports afterwards
+    // must not put the item back in their name behind their back.
+    const withdrawn = await this.giftModel
+      .exists({
+        itemId: item._id,
+        gifterId: new Types.ObjectId(userId),
+        status: GiftStatus.CANCELLED,
+      })
+      .exec();
+    if (withdrawn) return null;
+
     let held: GiftDocument;
     try {
       held = await this.locks.withBestEffortLock(
@@ -431,6 +444,8 @@ export class GiftingService {
     });
     await this.cancelExpiry(giftId);
     await this.wishlists.recount(gift.wishlistId);
+    // Closes the order behind it, if the gift had got as far as having one.
+    this.emitter.emit(GIFT_CANCELLED, GiftingService.lifecyclePayload(gift));
     return toGifterView(gift);
   }
 

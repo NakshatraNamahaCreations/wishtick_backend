@@ -70,6 +70,27 @@ export class ProfilePreferences {
    */
   @Prop({ type: Boolean, default: true })
   shareSizes!: boolean;
+
+  /**
+   * Whether WishMates may see — and have gift ideas shaped by — the interests,
+   * interest categories and gift categories above.
+   *
+   * Hidden means hidden everywhere a WishMate could learn it, not only on the
+   * profile card: suggestion reasons read "Likes Photography", so a hidden
+   * interest that still ranked the shelf would give itself away in the reason
+   * under the first product. Same default and same no-backfill reasoning as
+   * [shareSizes].
+   */
+  @Prop({ type: Boolean, default: true })
+  shareInterests!: boolean;
+
+  /** The same, for the free-text "anything else you love" entries. */
+  @Prop({ type: Boolean, default: true })
+  shareCustomInterests!: boolean;
+
+  /** The same, for favourite colours. */
+  @Prop({ type: Boolean, default: true })
+  shareColours!: boolean;
 }
 
 export const ProfilePreferencesSchema = SchemaFactory.createForClass(ProfilePreferences);

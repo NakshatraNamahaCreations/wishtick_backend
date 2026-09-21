@@ -6,6 +6,14 @@ import type { AppConfig } from 'src/config/configuration';
 import { CacheService } from 'src/infra/redis/cache.service';
 import { AnalyticsEvent, type AnalyticsEventDocument } from './schemas/analytics-event.schema';
 import { MetricDaily, type MetricDailyDocument } from './schemas/metric-daily.schema';
+import {
+  isShelfEvent,
+  SHELF_PRODUCT_OPENED,
+  SHELF_VIEWED,
+  shelfPerformance,
+  shelfPropsOf,
+  type ShelfPerformanceRow,
+} from './shelf-metrics';
 
 export interface TrackInput {
   name: string;
@@ -41,14 +49,27 @@ export class AnalyticsService {
   /** Append raw events. `userId` is the authenticated user (null for anonymous). */
   async track(userId: string | null, batch: TrackInput[]): Promise<{ accepted: number }> {
     if (batch.length === 0) return { accepted: 0 };
-    const docs = batch.map((e) => ({
-      userId: userId ? new Types.ObjectId(userId) : null,
-      anonymousId: userId ? null : (e.anonymousId ?? null),
-      name: e.name,
-      props: e.props ?? {},
-      source: e.source ?? null,
-      ts: e.ts ? new Date(e.ts) : new Date(),
-    }));
+    const docs = batch.flatMap((e) => {
+      // Shelf events keep only the fields the comparison needs, and are
+      // dropped outright if those do not check out — see shelf-metrics.ts.
+      let props: Record<string, unknown> = e.props ?? {};
+      if (isShelfEvent(e.name)) {
+        const clean = shelfPropsOf(e.name, e.props);
+        if (!clean) return [];
+        props = { ...clean };
+      }
+      return [
+        {
+          userId: userId ? new Types.ObjectId(userId) : null,
+          anonymousId: userId ? null : (e.anonymousId ?? null),
+          name: e.name,
+          props,
+          source: e.source ?? null,
+          ts: e.ts ? new Date(e.ts) : new Date(),
+        },
+      ];
+    });
+    if (docs.length === 0) return { accepted: 0 };
     await this.events.insertMany(docs, { ordered: false });
     return { accepted: docs.length };
   }
@@ -113,6 +134,44 @@ export class AnalyticsService {
       .exec();
     for (const row of bySource) {
       await this.upsert('signups', bucket, { source: row._id ?? 'organic' }, row.n);
+    }
+
+    // Shelf views and opens, per (surface, kind, personalised) — the two
+    // counts a click-through comparison needs, and nothing about anybody.
+    for (const [name, metric] of [
+      [SHELF_VIEWED, 'shelf_views'],
+      [SHELF_PRODUCT_OPENED, 'shelf_opens'],
+    ] as const) {
+      const byShelf = await this.events
+        .aggregate<{
+          _id: { surface: string; kind: string; personalised: boolean };
+          n: number;
+        }>([
+          { $match: { name, ts: { $gte: dayStart, $lt: dayEnd } } },
+          {
+            $group: {
+              _id: {
+                surface: '$props.surface',
+                kind: '$props.kind',
+                personalised: '$props.personalised',
+              },
+              n: { $sum: 1 },
+            },
+          },
+        ])
+        .exec();
+      for (const row of byShelf) {
+        await this.upsert(
+          metric,
+          bucket,
+          {
+            surface: String(row._id.surface),
+            kind: String(row._id.kind),
+            personalised: String(row._id.personalised === true),
+          },
+          row.n,
+        );
+      }
     }
   }
 
@@ -200,6 +259,40 @@ export class AnalyticsService {
         reelsCreated: reels,
         reelsReleased,
       };
+    });
+  }
+
+  /**
+   * How each kind of gift shelf performs: views, product opens, and the rate
+   * between them, over a range. What tells a taste-ranked shelf apart from a
+   * plain occasion shelf — the reason the shelves are measured at all.
+   */
+  async shelves(from: string, to: string): Promise<ShelfPerformanceRow[]> {
+    return this.cache.wrap(`analytics:shelves:${from}:${to}`, this.cacheTtl, async () => {
+      const read = (metric: string) =>
+        this.metrics
+          .aggregate<{
+            _id: { surface: string; kind: string; personalised: string };
+            n: number;
+          }>([
+            { $match: { metric, bucket: { $gte: from, $lte: to } } },
+            {
+              $group: {
+                _id: {
+                  surface: '$dims.surface',
+                  kind: '$dims.kind',
+                  personalised: '$dims.personalised',
+                },
+                n: { $sum: '$value' },
+              },
+            },
+          ])
+          .exec();
+      const [views, opens] = await Promise.all([read('shelf_views'), read('shelf_opens')]);
+      return shelfPerformance(
+        views.map((v) => ({ ...v._id, n: v.n })),
+        opens.map((o) => ({ ...o._id, n: o.n })),
+      );
     });
   }
 

@@ -60,6 +60,26 @@ export class ProductsService {
    * price is a much smaller problem than a search page that does not load — and
    * the price is re-checked at import anyway.
    */
+  /**
+   * The cached answer to [query], however stale — or null if there is none.
+   *
+   * Never calls the provider and never writes. For a caller that has decided
+   * it may not spend another vendor search but would still rather show
+   * yesterday's shelf than an empty one; the freshness it returns says which
+   * it is, so nothing downstream has to pretend the result is live.
+   */
+  async cachedSearch(query: ProductSearchQuery): Promise<SearchResponse | null> {
+    const cached = await this.cache.get<CacheEnvelope<ProductSearchResult>>(
+      ProductsService.searchKey(query),
+    );
+    if (!cached) return null;
+    const fresh = Date.now() - cached.cachedAt < this.cfg.cacheTtlSeconds * 1_000;
+    return {
+      ...cached.data,
+      freshness: fresh ? ResultFreshness.CACHED : ResultFreshness.STALE,
+    };
+  }
+
   async search(
     query: ProductSearchQuery,
     opts: { refresh?: boolean } = {},
@@ -310,6 +330,15 @@ export class ProductsService {
    * still works during an outage.
    */
   async resolveForImport(providerName: string, externalId: string): Promise<ProductDocument> {
+    // A product saved from a pasted link moments ago is already complete — the
+    // link lookup read everything the detail lookup would — so importing it
+    // must not pay SerpApi a second time for the same answer.
+    const fresh = await this.findSnapshot(providerName, externalId);
+    const fromLink = Boolean(fresh?.affiliateMeta?.amazon ?? fresh?.affiliateMeta?.link);
+    if (fresh && fromLink && Date.now() - fresh.lastSyncedAt.getTime() < 60 * 60 * 1_000) {
+      return fresh;
+    }
+
     try {
       await this.getDetails(providerName, externalId);
     } catch (err) {

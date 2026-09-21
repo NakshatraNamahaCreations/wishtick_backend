@@ -39,6 +39,75 @@ describe('NotificationRenderer', () => {
     }
   });
 
+  /** A reply, to the host: the answer is the headline. */
+  describe('an RSVP', () => {
+    const rsvp = (over: Record<string, unknown>) =>
+      renderer.content(NotificationType.EVENT_RSVP, {
+        guestName: 'Priya',
+        eventTitle: 'Diwali Night',
+        ...over,
+      }).title;
+
+    it('says who is coming, and how many they bring', () => {
+      expect(rsvp({ response: 'yes', plusOnes: 2 })).toBe('Priya is coming to Diwali Night (+2)');
+      expect(rsvp({ response: 'yes', plusOnes: 0 })).toBe('Priya is coming to Diwali Night');
+    });
+
+    it('says maybe as maybe, and no as no', () => {
+      expect(rsvp({ response: 'maybe' })).toBe('Priya might come to Diwali Night');
+      expect(rsvp({ response: 'no', plusOnes: 3 })).toBe("Priya can't make it to Diwali Night");
+    });
+  });
+
+  /** A change, to the guests: what moved, with its new value. */
+  describe('an event update', () => {
+    const update = (changes: string[], venue: string | null = 'The Leela, Bengaluru') =>
+      renderer.content(NotificationType.EVENT_UPDATED, {
+        eventTitle: 'Diwali Night',
+        hostName: 'Rohan',
+        whenText: 'Sat, 24 Oct · 7:00 PM',
+        venue,
+        changes,
+        url: 'https://app.wishtick.test/i/t',
+      });
+
+    it('a new time names it', () => {
+      const c = update(['time']);
+      expect(c.title).toBe('Diwali Night has moved');
+      expect(c.text).toContain("It's now on Sat, 24 Oct · 7:00 PM.");
+      expect(c.text).not.toContain('venue');
+    });
+
+    it('a new venue names it', () => {
+      const c = update(['venue']);
+      expect(c.title).toBe('Diwali Night has a new venue');
+      expect(c.text).toContain('New venue: The Leela, Bengaluru.');
+    });
+
+    it('both at once say both', () => {
+      const c = update(['time', 'venue']);
+      expect(c.title).toBe('Diwali Night has a new time and place');
+      expect(c.text).toContain("It's now on");
+      expect(c.text).toContain('New venue:');
+    });
+
+    it('a venue taken away is said as that, not as a blank', () => {
+      expect(update(['venue'], null).text).toContain(
+        'The venue has been taken off the invitation.',
+      );
+    });
+  });
+
+  it('a cancellation names the party that is off', () => {
+    const c = renderer.content(NotificationType.EVENT_CANCELLED, {
+      eventTitle: 'Diwali Night',
+      hostName: 'Rohan',
+      whenText: 'Sat, 24 Oct · 7:00 PM',
+    });
+    expect(c.title).toBe('Diwali Night has been cancelled');
+    expect(c.text).toContain('Rohan cancelled Diwali Night, planned for Sat, 24 Oct · 7:00 PM.');
+  });
+
   /**
    * The age is the thing worth knowing — it is what a card would say — but a
    * saved date need not carry a real year, and "turns NaN" is not a sentence.

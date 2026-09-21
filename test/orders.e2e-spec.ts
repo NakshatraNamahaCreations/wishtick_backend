@@ -1,6 +1,15 @@
 import { randomUUID, createHmac } from 'node:crypto';
 import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
+import { getModelToken } from '@nestjs/mongoose';
+import { Types, type Model } from 'mongoose';
+import { ConversionReconcileService } from 'src/modules/gifting/conversion-reconcile.service';
+import { OrderStage, OrderStageSource } from 'src/modules/orders/order.types';
+import { OrdersService } from 'src/modules/orders/orders.service';
+import {
+  Conversion,
+  type ConversionDocument,
+} from 'src/modules/products/schemas/conversion.schema';
 import { WishlistVisibility } from 'src/modules/wishlists/wishlist.types';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
@@ -39,6 +48,8 @@ interface OrderView {
   estimatedDeliveryFrom: string | null;
   estimatedDeliveryTo: string | null;
   deliveredAt: string | null;
+  cancelledAt: string | null;
+  cancelledNote: string | null;
 }
 
 const PASSWORD = 'Str0ng!Passw0rd';
@@ -292,6 +303,175 @@ describe('Orders (e2e)', () => {
 
     it('requires a bearer token', async () => {
       await request(app.getHttpServer()).get(`${V1}/orders/mine`).expect(401);
+    });
+  });
+
+  // ── Withdrawing a gift takes its order with it ────────────────────────────
+
+  describe('a gift the gifter withdrew', () => {
+    const cancel = (gifter: Actor, giftId: string): request.Test =>
+      request(app.getHttpServer())
+        .post(`${V1}/gifts/${giftId}/cancel`)
+        .set(auth(gifter.token))
+        .send({});
+
+    it('closes the order, keeping the reference the shop knows it by', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const itemId = await wishlistWithItem(owner);
+      const { giftId } = await purchasedGift(gifter, itemId);
+      const before = await orderForGift(gifter, giftId);
+
+      await cancel(gifter, giftId).expect(200);
+
+      const after = await orderForGift(gifter, giftId);
+      expect(after.cancelledAt).not.toBeNull();
+      expect(after.cancelledNote).toBe('The gifter withdrew this gift');
+      // Kept, not deleted: it is what the gifter quotes to the shop.
+      expect(after.reference).toBe(before.reference);
+      // And the timeline stands where it stopped.
+      expect(after.stage).toBe('order_confirmed');
+      expect(after.deliveredAt).toBeNull();
+    });
+
+    it('is not cancelled while it is still on its way', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const itemId = await wishlistWithItem(owner);
+      const { giftId } = await purchasedGift(gifter, itemId);
+
+      expect((await orderForGift(gifter, giftId)).cancelledAt).toBeNull();
+    });
+
+    it('stops taking courier updates, so nothing is delivered after the fact', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const itemId = await wishlistWithItem(owner);
+      const { giftId } = await purchasedGift(gifter, itemId);
+      await cancel(gifter, giftId).expect(200);
+
+      // The courier matches on the order reference alone and keeps reporting
+      // for days. Driven through the service, because no courier secret is
+      // configured in test and the webhook 404s before it reads a payload.
+      const orders = app.get(OrdersService);
+      await orders.advanceByGift(giftId, {
+        stage: OrderStage.DELIVERED,
+        source: OrderStageSource.COURIER_WEBHOOK,
+      });
+
+      const after = await orderForGift(gifter, giftId);
+      expect(after.stage).toBe('order_confirmed');
+      expect(after.deliveredAt).toBeNull();
+    });
+
+    it('is left off the gifts list as delivered, whatever the courier said', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const itemId = await wishlistWithItem(owner);
+      const { giftId } = await purchasedGift(gifter, itemId);
+      const orders = app.get(OrdersService);
+      await orders.advanceByGift(giftId, {
+        stage: OrderStage.DELIVERED,
+        source: OrderStageSource.COURIER_WEBHOOK,
+      });
+      await cancel(gifter, giftId).expect(200);
+
+      const given = (
+        await request(app.getHttpServer())
+          .get(`${V1}/gifts/given`)
+          .set(auth(gifter.token))
+          .expect(200)
+      ).body as Envelope<{ status: string; deliveredAt: string | null }[]>;
+      const row = given.data.find((g) => g.status === 'cancelled');
+      expect(row).toBeDefined();
+      expect(row!.deliveredAt).toBeNull();
+    });
+
+    it('never comes back on a sale the network reports afterwards', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const itemId = await wishlistWithItem(owner);
+      const { giftId } = await purchasedGift(gifter, itemId);
+      await cancel(gifter, giftId).expect(200);
+
+      await app.get<Model<ConversionDocument>>(getModelToken(Conversion.name)).create({
+        network: 'cuelinks',
+        externalId: `txn-${randomUUID()}`,
+        currency: 'INR',
+        status: 'pending',
+        transactionAt: new Date(),
+        itemId: new Types.ObjectId(itemId),
+        userId: new Types.ObjectId(gifter.userId),
+      });
+
+      const report = await app.get(ConversionReconcileService).reconcile();
+
+      // The gifter said they did not buy it. A sale seen later does not put
+      // the item back in their name behind their back.
+      expect(report.purchased).toBe(0);
+      expect(report.unmatched).toBe(1);
+      // Still free, which is what the owner's list shows: another gifter can
+      // take it.
+      const other = await newUser();
+      await request(app.getHttpServer())
+        .post(`${V1}/items/${itemId}/reserve`)
+        .set(auth(other.token))
+        .set(idem())
+        .send({})
+        .expect(201);
+    });
+
+    it('frees the item, and the next gifter gets an order of their own', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const second = await newUser();
+      const itemId = await wishlistWithItem(owner);
+      const first = await purchasedGift(gifter, itemId);
+      await cancel(gifter, first.giftId).expect(200);
+
+      const next = await purchasedGift(second, itemId);
+      const theirs = await orderForGift(second, next.giftId);
+      expect(theirs.cancelledAt).toBeNull();
+      // The withdrawn one is untouched by the new purchase.
+      expect((await orderForGift(gifter, first.giftId)).cancelledAt).not.toBeNull();
+    });
+
+    it('has nothing to close when it was bought elsewhere', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const itemId = await wishlistWithItem(owner);
+      const gift = (
+        await request(app.getHttpServer())
+          .post(`${V1}/items/${itemId}/gift-offline`)
+          .set(auth(gifter.token))
+          .set(idem())
+          .send({})
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+
+      // An offline gift never had an order; withdrawing it is still fine.
+      await cancel(gifter, gift.data.id).expect(200);
+      await request(app.getHttpServer())
+        .get(`${V1}/gifts/${gift.data.id}/order`)
+        .set(auth(gifter.token))
+        .expect(404);
+    });
+
+    it('cannot be withdrawn once the gifter says it arrived', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const itemId = await wishlistWithItem(owner);
+      const { giftId } = await purchasedGift(gifter, itemId);
+      await request(app.getHttpServer())
+        .post(`${V1}/gifts/${giftId}/fulfill`)
+        .set(auth(gifter.token))
+        .send({})
+        .expect(200);
+
+      await cancel(gifter, giftId).expect(409);
+      const after = await orderForGift(gifter, giftId);
+      expect(after.cancelledAt).toBeNull();
+      expect(after.stage).toBe('delivered');
     });
   });
 

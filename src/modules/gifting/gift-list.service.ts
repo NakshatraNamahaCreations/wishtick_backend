@@ -158,7 +158,10 @@ export class GiftListService {
           currency: gift.currency || item?.price?.currency || 'INR',
         },
         counterpartyName: names.get(counterpartyId) ?? null,
-        deliveredAt: order?.deliveredAt ?? null,
+        // Never on a withdrawn gift: a late courier event could have marked
+        // its order delivered, and the card would then read "Delivered on …"
+        // for something the gifter had called off.
+        deliveredAt: gift.status === GiftStatus.CANCELLED ? null : (order?.deliveredAt ?? null),
         expiresAt: gift.expiresAt,
         thankYouSent: thankedGifts.has(gift._id.toString()),
         createdAt: gift.createdAt,

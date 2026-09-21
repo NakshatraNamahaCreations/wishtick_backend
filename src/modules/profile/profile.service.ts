@@ -52,6 +52,12 @@ export interface MeView {
       occasions: string[];
       /** Whether WishMates may see the sizes above. */
       shareSizes: boolean;
+      /** Whether WishMates may see, and shop by, the interests above. */
+      shareInterests: boolean;
+      /** The same, for the free-text interests. */
+      shareCustomInterests: boolean;
+      /** The same, for favourite colours. */
+      shareColours: boolean;
     };
     onboarding: {
       completed: boolean;
@@ -135,6 +141,9 @@ export class ProfileService {
           lifestyle: profile.preferences?.lifestyle ?? [],
           occasions: profile.preferences?.occasions ?? [],
           shareSizes: profile.preferences?.shareSizes ?? true,
+          shareInterests: profile.preferences?.shareInterests ?? true,
+          shareCustomInterests: profile.preferences?.shareCustomInterests ?? true,
+          shareColours: profile.preferences?.shareColours ?? true,
         },
         onboarding: {
           completed: profile.onboardingCompletedAt !== null,
@@ -252,6 +261,10 @@ export class ProfileService {
       // Absent on anything written before the switch existed, which reads as
       // shared — the same answer as the default.
       shareSizes: dto.shareSizes ?? current.shareSizes ?? true,
+      // The same rule for each: absent on older documents reads as shared.
+      shareInterests: dto.shareInterests ?? current.shareInterests ?? true,
+      shareCustomInterests: dto.shareCustomInterests ?? current.shareCustomInterests ?? true,
+      shareColours: dto.shareColours ?? current.shareColours ?? true,
     };
 
     await profile.save();

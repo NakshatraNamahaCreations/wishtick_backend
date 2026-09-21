@@ -8,8 +8,12 @@ import { SsrfGuard } from 'src/common/net/ssrf-guard';
 import type { AppConfig } from 'src/config/configuration';
 import { amazonProductFromUrl, isAmazonShortLink, type AmazonProductRef } from './amazon-link';
 import { AmazonLookupService } from './amazon-lookup.service';
+import { amazonExternalId } from './amazon-product.mapper';
 import type { NormalizedProduct } from './product.types';
+import { ProductsService } from './products.service';
 import { PRODUCT_PROVIDER, type IProductProvider } from './providers/product-provider.port';
+import { linkExternalId, nameFromWords, readShopLink, type ShopLink } from './shop-link';
+import { ShopLinkMatcher } from './shop-link-matcher.service';
 
 /**
  * What a person is told when a link cannot be read, whatever the reason.
@@ -20,10 +24,27 @@ import { PRODUCT_PROVIDER, type IProductProvider } from './providers/product-pro
 export const ASK_FOR_A_NAME =
   'We couldn’t get the product name from that link. Type a name and we’ll still save the link.';
 
+/**
+ * How long a product saved from a link is reused before it is looked up
+ * again. Two people pasting the same Amazon link in one afternoon is one
+ * SerpApi call, not two; the nightly sync keeps the saved row honest after.
+ */
+const REUSE_WITHIN_MS = 6 * 60 * 60 * 1_000;
+
 export interface ResolvedUrlProduct {
-  /** 'provider' when a network recognized the URL; 'scrape' when we read tags. */
-  source: 'provider' | 'scrape';
+  /**
+   * - `provider`: looked up — Amazon by ASIN, another shop on Google Shopping.
+   * - `scrape`: read from the page's own tags.
+   * - `link`: named from the words in the link, because neither could answer.
+   */
+  source: 'provider' | 'scrape' | 'link';
   product: Partial<NormalizedProduct> & { productUrl: string; title: string };
+  /**
+   * The catalogue row this product was saved as, when it was looked up. The
+   * app imports the gift by it, so the item gets everything a searched
+   * product gets: the details, price tracking, and a link that earns.
+   */
+  catalogueRef: { provider: string; externalId: string } | null;
 }
 
 @Injectable()
@@ -35,15 +56,18 @@ export class UrlResolverService {
     private readonly ssrf: SsrfGuard,
     private readonly config: ConfigService<AppConfig, true>,
     private readonly amazon: AmazonLookupService,
+    private readonly products: ProductsService,
+    private readonly matcher: ShopLinkMatcher,
   ) {}
 
   /**
    * Turns a pasted product URL into something importable.
    *
-   * Asks the provider first, and only scrapes when it does not recognize the
-   * URL: a provider answer needs no outbound request at all, which is both
-   * faster and strictly safer than fetching a stranger's link from inside our
-   * network.
+   * Cheapest route first. The provider recognising the URL costs nothing. An
+   * Amazon link is looked up by its ASIN — exact, one SerpApi call — and never
+   * scraped. Any other shop's page is read for free; only when the shop
+   * blocks that is Google Shopping asked (one call), and only a confident
+   * match is used. Failing all of those, the link's own words name the gift.
    */
   async resolve(rawUrl: string): Promise<ResolvedUrlProduct> {
     const known = await this.provider.resolveUrl(rawUrl).catch((err: Error) => {
@@ -51,25 +75,114 @@ export class UrlResolverService {
       this.logger.warn(`Provider could not resolve URL: ${err.message}`);
       return null;
     });
-    if (known) return { source: 'provider', product: known };
+    if (known) {
+      return {
+        source: 'provider',
+        product: known,
+        catalogueRef: { provider: known.provider, externalId: known.externalId },
+      };
+    }
 
     // Amazon is never scraped. It answers a server reading its pages with a
     // 5xx, which reached people as "That link returned 500" on a link that
     // opened fine in their own browser.
     const amazon = await this.amazonProductBehind(rawUrl);
     if (amazon) {
-      const product = await this.amazon.lookup(amazon);
-      if (product) return { source: 'provider', product };
+      const product =
+        (await this.recentlySaved(amazonExternalId(amazon))) ??
+        (await this.saved(await this.amazon.lookup(amazon)));
+      if (product) return UrlResolverService.lookedUp(product);
       // Scraping is not a fallback here — it is the thing that fails.
       throw new AppException(ErrorCode.PRODUCT_URL_UNSUPPORTED, ASK_FOR_A_NAME, 422);
     }
 
-    const html = await this.fetchHtml(rawUrl);
-    const parsed = UrlResolverService.parseOpenGraph(html, rawUrl);
-    if (!parsed.title) {
+    let scrapeFailure: Error | null = null;
+    try {
+      const html = await this.fetchHtml(rawUrl);
+      const parsed = UrlResolverService.parseOpenGraph(html, rawUrl);
+      if (parsed.title) {
+        return {
+          source: 'scrape',
+          product: parsed as ResolvedUrlProduct['product'],
+          catalogueRef: null,
+        };
+      }
+    } catch (err) {
+      scrapeFailure = err instanceof Error ? err : new Error(String(err));
+    }
+
+    // The page would not say. The link might.
+    const link = readShopLink(rawUrl) ?? (await this.shopLinkBehind(rawUrl));
+    if (!link) {
+      if (scrapeFailure) throw scrapeFailure;
       throw new AppException(ErrorCode.PRODUCT_URL_UNSUPPORTED, ASK_FOR_A_NAME, 422);
     }
-    return { source: 'scrape', product: parsed as ResolvedUrlProduct['product'] };
+
+    const matched =
+      (await this.recentlySaved(linkExternalId(link.url))) ??
+      (await this.saved(await this.matcher.find(link)));
+    if (matched) return UrlResolverService.lookedUp(matched);
+
+    return {
+      source: 'link',
+      product: {
+        title: nameFromWords(link.words),
+        productUrl: link.url,
+        merchant: link.shop,
+        imageUrls: [],
+      },
+      catalogueRef: null,
+    };
+  }
+
+  private static lookedUp(product: NormalizedProduct): ResolvedUrlProduct {
+    return {
+      source: 'provider',
+      product,
+      catalogueRef: { provider: product.provider, externalId: product.externalId },
+    };
+  }
+
+  /** A row this resolver saved within [REUSE_WITHIN_MS], so it is not paid for twice. */
+  private async recentlySaved(externalId: string): Promise<NormalizedProduct | null> {
+    const row = await this.products.findSnapshot('serpapi', externalId);
+    if (!row?.lastSyncedAt || Date.now() - row.lastSyncedAt.getTime() > REUSE_WITHIN_MS) {
+      return null;
+    }
+    return ProductsService.toNormalized(row);
+  }
+
+  /**
+   * Saves a looked-up product to the catalogue, where an import can find it.
+   * Before answering, so the reference the app is handed always resolves.
+   */
+  private async saved(product: NormalizedProduct | null): Promise<NormalizedProduct | null> {
+    if (!product) return null;
+    await this.products.upsertMany([product]);
+    return product;
+  }
+
+  /**
+   * A shop link hidden behind a short one — Flipkart's `dl.flipkart.com/s/…`,
+   * Myntra's `myntr.it/…` — found by following the redirects until an address
+   * names a product. Null when none does, or when a hop is refused.
+   */
+  private async shopLinkBehind(rawUrl: string): Promise<ShopLink | null> {
+    const cfg = this.config.get('products', { infer: true });
+    let current = rawUrl;
+    try {
+      for (let hop = 0; hop <= cfg.urlMaxRedirects; hop++) {
+        const named = readShopLink(current);
+        if (named) return named;
+        const target = await this.ssrf.assertUrlIsSafe(current);
+        const response = await this.request(target.url, target.address, cfg);
+        if (!response.redirectTo) return null;
+        current = new URL(response.redirectTo, current).toString();
+      }
+    } catch {
+      return null;
+    }
+    return readShopLink(current);
   }
 
   /**

@@ -106,6 +106,25 @@ export class Order {
   @Prop({ type: Date, default: null })
   deliveredAt!: Date | null;
 
+  /**
+   * When the gifter withdrew the gift behind this order.
+   *
+   * A date beside the timeline rather than a seventh stage: the six stages are
+   * a delivery's progress, in order, and "cancelled" is not a later stage of
+   * anything — it is the whole order being called off. Keeping it separate
+   * leaves the Track Order timeline and the forward-only rule untouched.
+   *
+   * The order itself is kept. It holds the merchant reference the gifter needs
+   * if they have to sort the purchase out with the shop, and deleting it would
+   * take that away at exactly the wrong moment.
+   */
+  @Prop({ type: Date, default: null })
+  cancelledAt!: Date | null;
+
+  /** Why, in the words recorded on the gift. Display only. */
+  @Prop({ type: String, default: null, maxlength: 500 })
+  cancelledNote!: string | null;
+
   createdAt!: Date;
   updatedAt!: Date;
 }

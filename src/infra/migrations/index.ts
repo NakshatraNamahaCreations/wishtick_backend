@@ -33,6 +33,7 @@ import { migration031 } from './scripts/031-address-contact-trim';
 import { migration032 } from './scripts/032-conversion-reconcile-index';
 import { migration033 } from './scripts/033-important-date-month-day';
 import { migration034 } from './scripts/034-item-active-gift-mirror';
+import { migration035 } from './scripts/035-cancelled-orders';
 
 /** Every migration must be registered here to run. Order comes from the id. */
 export const MIGRATIONS: Migration[] = [
@@ -70,6 +71,7 @@ export const MIGRATIONS: Migration[] = [
   migration032,
   migration033,
   migration034,
+  migration035,
 ];
 
 export { MigrationRunner } from './migration.runner';

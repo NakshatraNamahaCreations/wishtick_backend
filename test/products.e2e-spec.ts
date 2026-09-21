@@ -6,6 +6,8 @@ import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { AffiliateSyncService } from 'src/modules/products/affiliate-sync.service';
+import { AMAZON_PRODUCT_FIXTURE } from 'src/modules/products/amazon-product.fixture-spec';
+import { SerpApiClient } from 'src/modules/products/providers/serpapi/serpapi.client';
 import { FixtureProductProvider } from 'src/modules/products/providers/fixture-provider';
 import { ProviderGuard } from 'src/modules/products/providers/provider-guard.service';
 import { ResultFreshness } from 'src/modules/products/product.types';
@@ -38,6 +40,9 @@ interface ItemView {
   id: string;
   title: string;
   price: { amountMinor: number | null; currency: string };
+  imageUrls: string[];
+  productLink: string | null;
+  sourceProductId: string | null;
 }
 
 describe('Products & affiliate (e2e)', () => {
@@ -540,6 +545,135 @@ describe('Products & affiliate (e2e)', () => {
         .set(auth(token))
         .send({ url: `${originUrl}/missing` })
         .expect(422);
+    });
+
+    describe('a link looked up through SerpApi', () => {
+      let client: SerpApiClient;
+      let amazonCalls: string[];
+      let shoppingCalls: number;
+
+      beforeEach(async () => {
+        // A row saved by an earlier test would be reused, and that reuse is
+        // exactly what one of these checks.
+        await productModel.deleteMany({ provider: 'serpapi' });
+        client = app.get(SerpApiClient);
+        amazonCalls = [];
+        // The suite runs without a SerpApi key. These stand in for the two
+        // engines a pasted link can reach, answering with a real recorded
+        // response — nothing leaves the machine.
+        jest.spyOn(client, 'configured', 'get').mockReturnValue(true);
+        jest.spyOn(client, 'amazonProduct').mockImplementation((asin: string) => {
+          amazonCalls.push(asin);
+          return Promise.resolve(AMAZON_PRODUCT_FIXTURE);
+        });
+        shoppingCalls = 0;
+        jest.spyOn(client, 'shopping').mockImplementation(() => {
+          shoppingCalls++;
+          return Promise.resolve({ error: "Google hasn't returned any results for this query." });
+        });
+      });
+
+      afterEach(() => jest.restoreAllMocks());
+
+      it('turns an Amazon link into a catalogue product, imported with everything', async () => {
+        const { token } = await newUser();
+        const wishlistId = await createWishlist(token);
+
+        const resolved = (
+          await request(app.getHttpServer())
+            .post(`${V1}/products/resolve-url`)
+            .set(auth(token))
+            .send({
+              url: 'https://www.amazon.in/Samsung-Galaxy-Watch9/dp/B0H82V826Z?tag=someone-21',
+            })
+            .expect(200)
+        ).body as Envelope<{
+          source: string;
+          product: { title: string; imageUrls: string[]; description: string };
+          catalogueRef: { provider: string; externalId: string };
+        }>;
+
+        expect(resolved.data.source).toBe('provider');
+        expect(resolved.data.product.imageUrls).toHaveLength(8);
+        expect(resolved.data.product.description).toContain('Galaxy Watch9');
+        expect(resolved.data.catalogueRef).toEqual({
+          provider: 'serpapi',
+          externalId: 'amzn:amazon.in:B0H82V826Z',
+        });
+
+        // The name the person typed over the product's own.
+        const item = (
+          await request(app.getHttpServer())
+            .post(`${V1}/wishlists/${wishlistId}/items/from-product`)
+            .set(auth(token))
+            .send({ ...resolved.data.catalogueRef, title: 'Watch for Dad' })
+            .expect(201)
+        ).body as Envelope<ItemView>;
+
+        expect(item.data.title).toBe('Watch for Dad');
+        expect(item.data.sourceProductId).not.toBeNull();
+        expect(item.data.imageUrls.length).toBeGreaterThan(0);
+        // Canonical, without somebody else's affiliate tag.
+        expect(item.data.productLink).toBe('https://www.amazon.in/dp/B0H82V826Z');
+        // Looked up once: the import reuses what the preview just paid for.
+        expect(amazonCalls).toEqual(['B0H82V826Z']);
+
+        const row = await productModel
+          .findOne({ provider: 'serpapi', externalId: 'amzn:amazon.in:B0H82V826Z' })
+          .exec();
+        expect(row!.listPriceMinor).toBe(4_199_900);
+        expect(row!.features.length).toBeGreaterThan(0);
+
+        // And it earns: the buy link goes through the affiliate network to the
+        // Amazon page itself, not through Google.
+        const res = await request(app.getHttpServer())
+          .get(`${V1}/r/${item.data.id}`)
+          .set(auth(token))
+          .expect(302);
+        expect(decodeURIComponent(res.headers.location)).toContain('amazon.in/dp/B0H82V826Z');
+      });
+
+      it('a second paste of the same link costs nothing', async () => {
+        const { token } = await newUser();
+        const paste = () =>
+          request(app.getHttpServer())
+            .post(`${V1}/products/resolve-url`)
+            .set(auth(token))
+            .send({ url: 'https://www.amazon.in/dp/B0H82V826Z' })
+            .expect(200);
+
+        await paste();
+        await paste();
+
+        expect(amazonCalls).toEqual(['B0H82V826Z']);
+      });
+
+      it('names a blocked shop page from the words in its link', async () => {
+        const { token } = await newUser();
+        const res = (
+          await request(app.getHttpServer())
+            .post(`${V1}/products/resolve-url`)
+            .set(auth(token))
+            // 404 from the origin, as a blocking shop would answer.
+            .send({ url: `${originUrl}/p/hand-painted-ceramic-mug-set?utm_source=wa` })
+            .expect(200)
+        ).body as Envelope<{
+          source: string;
+          product: { title: string; productUrl: string };
+          catalogueRef: unknown;
+        }>;
+
+        expect(res.data).toMatchObject({
+          source: 'link',
+          product: {
+            title: 'Hand Painted Ceramic Mug Set',
+            productUrl: `${originUrl}/p/hand-painted-ceramic-mug-set`,
+          },
+          catalogueRef: null,
+        });
+        // Google Shopping was asked once, and had nothing confident.
+        expect(shoppingCalls).toBe(1);
+      });
     });
 
     it('requires authentication', async () => {
