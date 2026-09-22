@@ -1,4 +1,4 @@
-import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
@@ -8,6 +8,7 @@ import { ErrorCode } from 'src/common/errors/error-codes';
 import type { AuthenticatedUser } from 'src/common/types/authenticated-user';
 import { USER_REGISTERED, type UserRegisteredEvent } from 'src/common/events/domain-events';
 import type { AppConfig } from 'src/config/configuration';
+import { AccountLifecycleService } from 'src/modules/profile/account-lifecycle.service';
 import { UsersService } from 'src/modules/users/users.service';
 import type { UserDocument } from 'src/modules/users/schemas/user.schema';
 import { OtpPurpose, type RequestContext, type TokenPair } from './auth.types';
@@ -64,6 +65,11 @@ export class AuthService implements OnModuleInit {
     private readonly emitter: EventEmitter2,
     @InjectModel(PasswordResetToken.name)
     private readonly resetModel: Model<PasswordResetTokenDocument>,
+    // forwardRef: ProfileModule imports this module for TokenService, and
+    // this service needs the lifecycle back for an OTP sign-in that starts
+    // over on a deleted account's number.
+    @Inject(forwardRef(() => AccountLifecycleService))
+    private readonly lifecycle: AccountLifecycleService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -202,17 +208,16 @@ export class AuthService implements OnModuleInit {
       return { user: AuthService.toUserView(fresh), tokens, isNewUser: false };
     }
 
-    // A soft-deleted account still holds this number in the unique index, so
-    // creating one here would fail on a duplicate key and surface as a bare 409.
-    // Say what actually happened instead.
+    // An account its owner deleted still holds this number in the unique index
+    // until its grace period lapses. Signing in with the number again is that
+    // owner starting over — the verified code proves it is them — so the old
+    // account is erased now and a new one made in its place.
+    //
+    // It used to refuse with "restore it before signing in again", but the
+    // only restore takes a password, which an OTP account never has: the owner
+    // was locked out of their own number for the whole grace period.
     const deleted = await this.users.findDeletedByIdentifierForRestore(normalized);
-    if (deleted) {
-      throw new AppException(
-        ErrorCode.ACCOUNT_DELETED,
-        'This account is pending deletion. Restore it before signing in again.',
-        403,
-      );
-    }
+    if (deleted) await this.lifecycle.eraseNow(deleted);
 
     const source = dto.source?.trim() || 'organic';
     // No passwordHash: the account is passwordless until its owner sets one

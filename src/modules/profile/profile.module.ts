@@ -1,5 +1,5 @@
 import { BullModule } from '@nestjs/bullmq';
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { QUEUE } from 'src/infra/queue/queue.constants';
 import { AuthModule } from 'src/modules/auth/auth.module';
@@ -39,9 +39,9 @@ import { UserProfile, UserProfileSchema } from './schemas/user-profile.schema';
     WishmateLinkModule,
     MediaModule,
     // For TokenService (revoke every session on deletion) and PasswordService
-    // (verify credentials on restore). AuthModule does not import this module,
-    // so there is no cycle.
-    AuthModule,
+    // (verify credentials on restore). AuthModule imports this module back,
+    // for the lifecycle, hence the forwardRef on both sides.
+    forwardRef(() => AuthModule),
   ],
   controllers: [
     ProfileController,

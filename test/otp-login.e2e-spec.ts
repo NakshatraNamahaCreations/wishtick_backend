@@ -1,6 +1,10 @@
 import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
+import { getModelToken } from '@nestjs/mongoose';
+import type { Model } from 'mongoose';
 import { ErrorCode } from 'src/common/errors/error-codes';
+import { AccountLifecycleService } from 'src/modules/profile/account-lifecycle.service';
+import { User, type UserDocument } from 'src/modules/users/schemas/user.schema';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
 interface Envelope<T> {
@@ -171,24 +175,88 @@ describe('Passwordless OTP sign-in (e2e)', () => {
   });
 
   describe('accounts pending deletion', () => {
-    it('explains the state instead of failing on a duplicate key', async () => {
-      const phone = uniquePhone();
+    /** Signs up by OTP, deletes the account, and answers what it was. */
+    const signUpAndDelete = async (phone: string): Promise<{ oldId: string; oldToken: string }> => {
       await requestCode(phone).expect(202);
       const signIn = await verifyCode(phone, ctx.sms.lastCode()).expect(200);
-      const { tokens } = (signIn.body as Envelope<OtpLoginPayload>).data;
+      const { user, tokens } = (signIn.body as Envelope<OtpLoginPayload>).data;
 
       await request(app.getHttpServer())
         .delete(`${V1}/me`)
         .set('Authorization', `Bearer ${tokens.accessToken}`)
         .expect(200);
       await ctx.reset();
+      return { oldId: user.id, oldToken: tokens.accessToken };
+    };
 
-      // The number is still held by the soft-deleted account, so a fresh
-      // sign-in must not silently create a second one.
+    // Signing in again with the number is its owner starting over. It used to
+    // refuse with "restore it first" — but restoring takes a password, which
+    // an OTP account never has, so the owner was locked out of their own number
+    // for the whole grace period.
+    it('starts a brand-new account on the same number', async () => {
+      const phone = uniquePhone();
+      const { oldId } = await signUpAndDelete(phone);
+
       await requestCode(phone).expect(202);
-      const res = await verifyCode(phone, ctx.sms.lastCode()).expect(403);
+      const res = await verifyCode(phone, ctx.sms.lastCode()).expect(200);
+      const { user, isNewUser } = (res.body as Envelope<OtpLoginPayload>).data;
 
-      expect((res.body as Envelope<unknown>).error?.code).toBe(ErrorCode.ACCOUNT_DELETED);
+      expect(isNewUser).toBe(true);
+      expect(user.id).not.toBe(oldId);
+      expect(user.phone).toBe(phone);
+    });
+
+    it('erases the old account now rather than at the end of its grace period', async () => {
+      const phone = uniquePhone();
+      const { oldId } = await signUpAndDelete(phone);
+
+      await requestCode(phone).expect(202);
+      await verifyCode(phone, ctx.sms.lastCode()).expect(200);
+
+      const users = app.get<Model<UserDocument>>(getModelToken(User.name));
+      const old = await users.findById(oldId).exec();
+      // The row stays so references elsewhere do not dangle; the person goes.
+      expect(old).not.toBeNull();
+      expect(old!.anonymizedAt).not.toBeNull();
+      expect(old!.phone).toBeUndefined();
+    });
+
+    it('does not bring the old account back to life', async () => {
+      const phone = uniquePhone();
+      const { oldToken } = await signUpAndDelete(phone);
+
+      await requestCode(phone).expect(202);
+      await verifyCode(phone, ctx.sms.lastCode()).expect(200);
+
+      await request(app.getHttpServer())
+        .get(`${V1}/auth/me`)
+        .set('Authorization', `Bearer ${oldToken}`)
+        .expect(401);
+    });
+
+    // The erasure is only for an account already pending deletion. A live
+    // account signing in must keep everything.
+    it('never erases a live account', async () => {
+      const phone = uniquePhone();
+      await requestCode(phone).expect(202);
+      const first = await verifyCode(phone, ctx.sms.lastCode()).expect(200);
+      const firstId = (first.body as Envelope<OtpLoginPayload>).data.user.id;
+      await ctx.reset();
+
+      await requestCode(phone).expect(202);
+      const again = await verifyCode(phone, ctx.sms.lastCode()).expect(200);
+      const { user, isNewUser } = (again.body as Envelope<OtpLoginPayload>).data;
+
+      expect(isNewUser).toBe(false);
+      expect(user.id).toBe(firstId);
+      const lifecycle = app.get(AccountLifecycleService);
+      const live = await app
+        .get<Model<UserDocument>>(getModelToken(User.name))
+        .findById(firstId)
+        .exec();
+      await expect(lifecycle.eraseNow(live!)).rejects.toMatchObject({
+        errorCode: ErrorCode.ACCOUNT_NOT_PENDING_DELETION,
+      });
     });
   });
 

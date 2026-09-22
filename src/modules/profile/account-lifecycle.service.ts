@@ -153,12 +153,7 @@ export class AccountLifecycleService {
   }
 
   /**
-   * Irreversible erasure. Runs when the grace period lapses.
-   *
-   * The row survives with its _id so foreign keys elsewhere (gifts given, chat
-   * authorship) do not dangle — a deleted user's past gift should still show as
-   * "a deleted user", not corrupt someone else's history. Everything that
-   * identifies a person is destroyed.
+   * Irreversible erasure. Runs when the grace period lapses. See [erase].
    */
   async anonymize(data: AnonymizeJobData): Promise<{ anonymized: boolean; reason?: string }> {
     const _id = new Types.ObjectId(data.userId);
@@ -177,6 +172,47 @@ export class AccountLifecycleService {
       return { anonymized: false, reason: 'grace-period-active' };
     }
 
+    await this.erase(_id);
+    this.logger.log(`Account ${data.userId} anonymized`);
+    return { anonymized: true };
+  }
+
+  /**
+   * Erases an account pending deletion now, without waiting out its grace
+   * period — for its owner, who has signed in again with the same number and
+   * chosen to start over.
+   *
+   * The grace period exists so the owner can change their mind; signing up
+   * afresh is them saying they will not. Until the old account is erased it
+   * holds the number in the unique index, so the new one could not be made.
+   *
+   * Callers must have proved the owner is the one asking — a verified sign-in
+   * code for the number does. Refuses an account that is not pending deletion:
+   * this must never be a way to erase a live one.
+   */
+  async eraseNow(user: UserDocument): Promise<void> {
+    if (!user.deletedAt || user.anonymizedAt) {
+      throw new AppException(
+        ErrorCode.ACCOUNT_NOT_PENDING_DELETION,
+        'This account is not pending deletion',
+        409,
+      );
+    }
+    const userId = user._id.toString();
+    await this.cancelScheduledAnonymization(userId);
+    await this.erase(user._id);
+    this.logger.log(`Account ${userId} erased early: its owner started afresh`);
+  }
+
+  /**
+   * The erasure itself, shared by the scheduled job and [eraseNow].
+   *
+   * The row survives with its _id so foreign keys elsewhere (gifts given, chat
+   * authorship) do not dangle — a deleted user's past gift should still show as
+   * "a deleted user", not corrupt someone else's history. Everything that
+   * identifies a person is destroyed.
+   */
+  private async erase(_id: Types.ObjectId): Promise<void> {
     await this.media.deleteAllForOwner(_id);
     await this.profiles.anonymize(_id);
 
@@ -198,9 +234,6 @@ export class AccountLifecycleService {
         },
       )
       .exec();
-
-    this.logger.log(`Account ${data.userId} anonymized`);
-    return { anonymized: true };
   }
 
   /**

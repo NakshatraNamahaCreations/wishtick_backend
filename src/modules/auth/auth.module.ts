@@ -1,7 +1,8 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { MongooseModule } from '@nestjs/mongoose';
 import { PassportModule } from '@nestjs/passport';
+import { ProfileModule } from 'src/modules/profile/profile.module';
 import { UsersModule } from 'src/modules/users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -20,6 +21,10 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 @Module({
   imports: [
     UsersModule,
+    // For AccountLifecycleService: an OTP sign-in on a deleted account's
+    // number erases that account before making the new one. ProfileModule
+    // imports this module back, hence the forwardRef on both sides.
+    forwardRef(() => ProfileModule),
     PassportModule.register({ defaultStrategy: 'jwt', session: false }),
     // Secrets are passed per-signAsync call rather than registered here: access
     // and refresh tokens use different secrets, and a module-level default would
