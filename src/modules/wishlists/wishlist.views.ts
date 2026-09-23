@@ -75,6 +75,21 @@ export interface ItemView {
   sourceProductId: string | null;
 }
 
+/**
+ * How long a hold on this list may run — see ReservationWindowService.
+ *
+ * Present only for a caller who could gift from the list at all. The client
+ * renders the Reserve button from it rather than assuming the flat 72 hours,
+ * which is wrong on every list attached to an event that is close.
+ */
+export interface ReservationWindowView {
+  allowed: boolean;
+  maxHoldMinutes: number;
+  /** When holds on this list end, at the latest. Null off an event. */
+  closesAt: Date | null;
+  eventStartsAt: Date | null;
+}
+
 export interface WishlistView {
   id: string;
   title: string;
@@ -103,6 +118,12 @@ export interface WishlistView {
    * [AccessPolicyService.canViewAddress], not by `access.canView`.
    */
   address?: AddressView | null;
+
+  /**
+   * How long a hold may run, for a caller who may gift. Absent for everyone
+   * else, who has no Reserve button to render.
+   */
+  reservationWindow?: ReservationWindowView;
 
   /**
    * Whether this caller may change that address.
@@ -259,6 +280,7 @@ export const toWishlistView = (
   access: AccessDecision,
   shareBaseUrl?: string,
   delivery?: { address: AddressView | null; canSet: boolean },
+  reservationWindow?: ReservationWindowView,
 ): WishlistView => {
   const view: WishlistView = {
     id: wishlist._id.toString(),
@@ -294,5 +316,6 @@ export const toWishlistView = (
     view.address = delivery.address;
     view.canSetAddress = delivery.canSet;
   }
+  if (reservationWindow) view.reservationWindow = reservationWindow;
   return view;
 };

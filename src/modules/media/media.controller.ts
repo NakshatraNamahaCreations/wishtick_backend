@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Redirect } from '@nestjs/common';
+import type { Response } from 'express';
+import { Body, Controller, Get, Param, Post, Res } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -96,15 +97,14 @@ export class MediaController {
    */
   @Get(':id/play')
   @Public()
-  @Redirect()
   @ApiOperation({
     summary: 'Redirect to a signed, expiring playback URL',
     description:
       'The stable link stored on a memory or a wishlist. Signed URLs expire, so this ' +
       'mints a new one per play rather than persisting one that would go stale.',
   })
-  async play(@Param('id') id: string): Promise<{ url: string; statusCode: number }> {
-    return { url: await this.media.playbackUrl(id), statusCode: 302 };
+  async play(@Param('id') id: string, @Res() res: Response): Promise<void> {
+    MediaController.sendTo(res, await this.media.playbackUrl(id));
   }
 
   /**
@@ -116,7 +116,6 @@ export class MediaController {
    */
   @Get(':id/download')
   @Public()
-  @Redirect()
   @ApiOperation({
     summary: 'Redirect to a signed, expiring single-file URL',
     description:
@@ -125,7 +124,25 @@ export class MediaController {
   })
   @ApiResponseDoc({ status: 404, description: 'MEDIA_NOT_FOUND — including a video with no MP4' })
   @ApiResponseDoc({ status: 409, description: 'MEDIA_NOT_UPLOADED — still encoding' })
-  async download(@Param('id') id: string): Promise<{ url: string; statusCode: number }> {
-    return { url: await this.media.downloadUrl(id), statusCode: 302 };
+  async download(@Param('id') id: string, @Res() res: Response): Promise<void> {
+    MediaController.sendTo(res, await this.media.downloadUrl(id));
+  }
+
+  /**
+   * Sends the redirect itself, rather than returning it for `@Redirect()`.
+   *
+   * `@Redirect()` reads the `url` off whatever the handler returns — and
+   * ResponseInterceptor wraps every returned object in `{success, data}`
+   * first, so Nest found no `url` and answered **302 with an empty Location**.
+   * A player handed that fails, which on screen read as "This video could not
+   * be played": every video wish, unplayable, while the clip itself was fine.
+   * Writing to the response skips the interceptor, which is how the affiliate
+   * redirect has always done it.
+   */
+  private static sendTo(res: Response, url: string): void {
+    // 302 and no-store: the signed URL expires, and a cached permanent
+    // redirect would send the next viewer to a dead link.
+    res.setHeader('Cache-Control', 'no-store');
+    res.redirect(302, url);
   }
 }

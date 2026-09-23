@@ -12,6 +12,7 @@ import { WishmateRelationship } from 'src/modules/wishmates/wishmates.views';
 import { MediaPurpose } from 'src/modules/media/schemas/media.schema';
 import { AddressesService, type AddressView } from 'src/modules/profile/addresses.service';
 import { AccessPolicyService } from './access/access-policy.service';
+import { ReservationWindowService } from './reservation-window.service';
 import type { AccessContext, AccessDecision } from './access/access.types';
 import type { CreateWishlistDto, ShareWishlistDto, UpdateWishlistDto } from './dto/wishlist.dto';
 import { WishlistItem, type WishlistItemDocument } from './schemas/wishlist-item.schema';
@@ -43,6 +44,7 @@ export class WishlistsService {
     private readonly media: MediaService,
     private readonly wishmates: WishmatesService,
     private readonly addresses: AddressesService,
+    private readonly windows: ReservationWindowService,
     private readonly config: ConfigService<AppConfig, true>,
   ) {}
 
@@ -129,18 +131,43 @@ export class WishlistsService {
     );
   }
 
-  /** Lists shared with the caller (accepted invites). */
+  /**
+   * Lists the caller can see that are not their own: ones they were invited
+   * to, and their WishMates' lists that are open to WishMates already.
+   *
+   * The second half was missing, and the gap was invisible from the owner's
+   * side. A list set to "All WishMates" *is* viewable by every WishMate — the
+   * access policy says so, and the share link works — but it appeared on
+   * nobody's Wishlist tab unless they had also been invited by hand. The
+   * owner saw a list they had deliberately opened to their WishMates; the
+   * WishMate saw nothing, and had no way to know it existed.
+   *
+   * Public lists of a WishMate come too: public is strictly more open than
+   * WishMates-only, so a rule that showed the narrower one and hid the wider
+   * would be the same bug in a different place.
+   */
   async listSharedWithMe(userId: string): Promise<WishlistView[]> {
-    const participantIds = await this.model.db
-      .collection('wishlist_participants')
-      .distinct('wishlistId', {
+    const [participantIds, mateIds] = await Promise.all([
+      this.model.db.collection('wishlist_participants').distinct('wishlistId', {
         userId: new Types.ObjectId(userId),
         state: 'accepted',
         revokedAt: null,
-      });
+      }),
+      this.wishmates.mateIdsOf(userId),
+    ]);
 
     const wishlists = await this.model
-      .find({ _id: { $in: participantIds }, archivedAt: null })
+      .find({
+        archivedAt: null,
+        $or: [
+          { _id: { $in: participantIds } },
+          // Their own setting, honoured on the tab as well as on the link.
+          {
+            ownerId: { $in: mateIds },
+            visibility: { $in: [WishlistVisibility.WISHMATES, WishlistVisibility.PUBLIC] },
+          },
+        ],
+      })
       .sort({ updatedAt: -1 })
       .exec();
 
@@ -159,6 +186,11 @@ export class WishlistsService {
       access,
       this.shareBaseUrl,
       await this.resolveDelivery(wishlist, ctx, access),
+      // Only for somebody who could gift from it: nobody else has a Reserve
+      // button to draw, and the list endpoints omit it for the same reason
+      // they omit the address — a lookup per row to serve a field no list
+      // view shows.
+      access.canGift ? await this.windows.forWishlist(wishlist) : undefined,
     );
   }
 

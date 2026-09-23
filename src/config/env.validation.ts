@@ -211,6 +211,12 @@ export const envValidationSchema = Joi.object({
   /** Warn the gifter this long before a reservation lapses. */
   RESERVATION_WARN_HOURS: Joi.number().min(0).max(240).default(12),
   /**
+   * How long before an event starts that holds on its wishlists end — and
+   * after which no new hold is offered, because an unbought hold running into
+   * the party leaves the recipient with nothing to open.
+   */
+  RESERVATION_EVENT_CUTOFF_HOURS: Joi.number().min(0).max(720).default(48),
+  /**
    * Per-provider webhook signing secrets, as a JSON object
    * `{"provider":"secret"}`. Empty means no webhook provider is configured,
    * and every webhook is rejected — fail closed.

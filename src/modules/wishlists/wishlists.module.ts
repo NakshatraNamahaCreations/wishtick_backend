@@ -7,6 +7,7 @@ import { UsersModule } from 'src/modules/users/users.module';
 import { EventParticipationModule } from 'src/modules/events/event-participation.module';
 import { WishmatesModule } from 'src/modules/wishmates/wishmates.module';
 import { AccessPolicyService } from './access/access-policy.service';
+import { ReservationWindowService } from './reservation-window.service';
 import { ItemsService } from './items.service';
 import { ParticipantsService } from './participants.service';
 import { PublicWishlistsController } from './public-wishlists.controller';
@@ -49,6 +50,8 @@ import { WishlistsService } from './wishlists.service';
     ParticipantsService,
     PublicWishlistsService,
     AccessPolicyService,
+    // Needs the Event model, which EventParticipationModule already brings.
+    ReservationWindowService,
   ],
   // AccessPolicyService is exported because Sprints 6 and 8 must authorize
   // against the same decision — nothing re-implements it.
@@ -57,6 +60,9 @@ import { WishlistsService } from './wishlists.service';
     WishlistsService,
     ItemsService,
     ParticipantsService,
+    // Gifting asks it how long a hold may run; it depends on wishlists
+    // already, so the arrow keeps pointing one way.
+    ReservationWindowService,
     MongooseModule,
   ],
 })

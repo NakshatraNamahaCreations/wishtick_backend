@@ -21,6 +21,7 @@ import { GiftingController } from './gifting.controller';
 import { GiftListService } from './gift-list.service';
 import { GiftingService } from './gifting.service';
 import { ReservationExpiryRegistrar } from './reservation-expiry.processor';
+import { ReservationSweepRegistrar } from './reservation-sweep.registrar';
 import { ReservationExpiryService } from './reservation-expiry.service';
 import { Gift, GiftSchema } from './schemas/gift.schema';
 import { WebhookEvent, WebhookEventSchema } from './schemas/webhook-event.schema';
@@ -59,6 +60,7 @@ import { WebhookService } from './webhook.service';
     GiftStatusService,
     ReservationExpiryService,
     ReservationExpiryRegistrar,
+    ReservationSweepRegistrar,
     WebhookService,
   ],
   exports: [

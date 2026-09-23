@@ -1,6 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import type { Queue } from 'bullmq';
@@ -14,7 +13,6 @@ import {
   GIFT_RESERVED,
   type GiftLifecycleEvent,
 } from 'src/common/events/domain-events';
-import type { AppConfig } from 'src/config/configuration';
 import { QUEUE } from 'src/infra/queue/queue.constants';
 import { LockService } from 'src/infra/redis/lock.service';
 import { AccessPolicyService } from 'src/modules/wishlists/access/access-policy.service';
@@ -23,6 +21,10 @@ import {
   type WishlistItemDocument,
 } from 'src/modules/wishlists/schemas/wishlist-item.schema';
 import type { WishlistDocument } from 'src/modules/wishlists/schemas/wishlist.schema';
+import {
+  ReservationWindowService,
+  type ReservationWindow,
+} from 'src/modules/wishlists/reservation-window.service';
 import { WishlistItemStatus } from 'src/modules/wishlists/wishlist.types';
 import { WishlistsService } from 'src/modules/wishlists/wishlists.service';
 import type { GiftActionDto, GiftOfflineDto, ReserveItemDto, SetShowNameDto } from './dto/gift.dto';
@@ -49,8 +51,8 @@ export class GiftingService {
     private readonly locks: LockService,
     private readonly access: AccessPolicyService,
     private readonly wishlists: WishlistsService,
+    private readonly windows: ReservationWindowService,
     private readonly emitter: EventEmitter2,
-    private readonly config: ConfigService<AppConfig, true>,
   ) {}
 
   /** The five ids every gift-lifecycle subscriber needs, pulled off the gift doc. */
@@ -91,6 +93,18 @@ export class GiftingService {
    */
   async reserve(itemId: string, userId: string, dto: ReserveItemDto): Promise<GiftView> {
     const item = await this.loadGiftableItem(itemId, userId);
+    // How long a hold may run here. On a list attached to an event it is
+    // whatever is left before the cutoff, and inside the cutoff there is no
+    // hold to be had — see ReservationWindowService.
+    const window = await this.reservationWindow(item);
+    if (!window.allowed) {
+      throw new AppException(
+        ErrorCode.RESERVATION_WINDOW_CLOSED,
+        'The event is too close to hold this gift. You can still buy it now.',
+        409,
+        { closesAt: window.closesAt, eventStartsAt: window.eventStartsAt },
+      );
+    }
 
     const gift = await this.locks.withBestEffortLock(
       `gift-item:${itemId}`,
@@ -124,7 +138,7 @@ export class GiftingService {
                   dto.hiddenFromOwner === false
                     ? GiftVisibility.VISIBLE
                     : GiftVisibility.HIDDEN_FROM_OWNER,
-                expiresAt: this.reservationExpiry(),
+                expiresAt: ReservationWindowService.holdUntil(window),
               },
               session,
             );
@@ -556,9 +570,10 @@ export class GiftingService {
 
   // ── Reservation expiry scheduling ──────────────────────────────────────────
 
-  private reservationExpiry(): Date {
-    const hours = this.config.get('gifting.reservationTtlHours', { infer: true });
-    return new Date(Date.now() + hours * 60 * 60 * 1_000);
+  /** The window for the list this item sits on. */
+  private async reservationWindow(item: WishlistItemDocument): Promise<ReservationWindow> {
+    const wishlist = await this.wishlists.findOrFail(item.wishlistId.toString());
+    return this.windows.forWishlist(wishlist);
   }
 
   private async scheduleExpiry(gift: GiftDocument): Promise<void> {

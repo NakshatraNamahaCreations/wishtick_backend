@@ -919,6 +919,62 @@ describe('Wishlists (e2e)', () => {
         .expect(201);
     };
 
+    // The bug: the owner opened a list to all their WishMates, and it showed
+    // up on nobody's tab. Viewable by link, invisible everywhere else — so
+    // the WishMate it was for had no way to know it existed.
+    it('is listed for a WishMate who was never invited to it', async () => {
+      const owner = await newUser('Rohan');
+      const mate = await newUser('Siya');
+      const stranger = await newUser('Nobody');
+      await connect(owner, mate);
+      await createWishlist(owner, {
+        title: "Suma's Wedding",
+        visibility: WishlistVisibility.WISHMATES,
+      });
+      await createWishlist(owner, {
+        title: 'Just mine',
+        visibility: WishlistVisibility.PRIVATE,
+      });
+
+      const listed = async (actor: Actor) =>
+        (
+          (
+            await request(app.getHttpServer())
+              .get(`${V1}/wishlists/shared-with-me`)
+              .set(auth(actor.token))
+              .expect(200)
+          ).body as Envelope<WishlistView[]>
+        ).data.map((w) => w.title);
+
+      expect(await listed(mate)).toEqual(["Suma's Wedding"]);
+      // Only for WishMates: the private one stays private, and somebody
+      // unconnected sees nothing at all.
+      expect(await listed(stranger)).toEqual([]);
+    });
+
+    it('stops being listed once they are no longer WishMates', async () => {
+      const owner = await newUser('Rohan');
+      const mate = await newUser('Siya');
+      await connect(owner, mate);
+      await createWishlist(owner, {
+        title: 'Open to mates',
+        visibility: WishlistVisibility.WISHMATES,
+      });
+
+      await request(app.getHttpServer())
+        .delete(`${V1}/wishmates/${owner.userId}`)
+        .set(auth(mate.token))
+        .expect(204);
+
+      const shared = (
+        await request(app.getHttpServer())
+          .get(`${V1}/wishlists/shared-with-me`)
+          .set(auth(mate.token))
+          .expect(200)
+      ).body as Envelope<WishlistView[]>;
+      expect(shared.data).toEqual([]);
+    });
+
     it('opens to a WishMate', async () => {
       const owner = await newUser('Rohan');
       const mate = await newUser('Siya');

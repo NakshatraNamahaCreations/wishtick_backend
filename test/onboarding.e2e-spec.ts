@@ -633,6 +633,39 @@ describe('Onboarding, profile & media (e2e)', () => {
       );
     });
 
+    /**
+     * The bug this pins: `@Redirect()` reads the `url` off what a handler
+     * returns, and ResponseInterceptor wraps that in `{success, data}` before
+     * Nest sees it — so `/play` answered **302 with an empty Location**. Every
+     * video wish was unplayable, and the app could only say "this video could
+     * not be played". The suite passed throughout, because nothing asked
+     * where the redirect went.
+     */
+    it('sends playback and download somewhere, not to an empty redirect', async () => {
+      const { token } = await newUser();
+      const ticket = await getTicket(token);
+      await request(app.getHttpServer())
+        .put(pathOf(ticket.uploadUrl))
+        .set('Content-Type', 'image/png')
+        .send(PNG_BYTES)
+        .expect(200);
+      await request(app.getHttpServer())
+        .post(`${V1}/media/confirm`)
+        .set(auth(token))
+        .send({ mediaId: ticket.mediaId })
+        .expect(201);
+
+      for (const route of ['play', 'download']) {
+        const res = await request(app.getHttpServer())
+          .get(`${V1}/media/${ticket.mediaId}/${route}`)
+          .expect(302);
+        expect(res.headers.location).toBeTruthy();
+        expect(res.headers.location).toContain(ticket.mediaId.slice(0, 6));
+        // The signed URL expires; a cached permanent redirect would outlive it.
+        expect(res.headers['cache-control']).toContain('no-store');
+      }
+    });
+
     it('rejects a tampered upload signature', async () => {
       const { token } = await newUser();
       const ticket = await getTicket(token);

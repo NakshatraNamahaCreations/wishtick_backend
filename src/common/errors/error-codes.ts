@@ -71,6 +71,8 @@ export enum ErrorCode {
   NOT_THE_GIFTER = 'NOT_THE_GIFTER',
   INVALID_GIFT_TRANSITION = 'INVALID_GIFT_TRANSITION',
   RESERVATION_EXPIRED = 'RESERVATION_EXPIRED',
+  /** The event this list is for is too close for a hold. See ReservationWindowService. */
+  RESERVATION_WINDOW_CLOSED = 'RESERVATION_WINDOW_CLOSED',
   IDEMPOTENCY_KEY_REQUIRED = 'IDEMPOTENCY_KEY_REQUIRED',
   IDEMPOTENCY_KEY_REUSED = 'IDEMPOTENCY_KEY_REUSED',
   // ── Wishmates ──────────────────────────────────────────────────────────

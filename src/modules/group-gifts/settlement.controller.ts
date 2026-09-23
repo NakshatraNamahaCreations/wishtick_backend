@@ -28,19 +28,26 @@ export class SettlementController {
 
   @Get('group-gifts/:id/balance')
   @ApiOperation({
-    summary: 'What the group owes or is owed',
+    summary: 'What the group owes or is owed (host, members and contributors)',
     description:
       'Total cost counts the primary item, every extra gift, and every charge — so a ' +
       'delivery charge added after funding puts a funded group back into shortfall.',
   })
-  balance(@Param('id') id: string): Promise<GroupGiftBalance> {
-    return this.settlements.balance(id);
+  @ApiResponseDoc({ status: 403, description: 'You have no part in this group gift' })
+  balance(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<GroupGiftBalance> {
+    return this.settlements.balance(id, userId);
   }
 
   @Get('group-gifts/:id/settlements')
-  @ApiOperation({ summary: 'Every open and closed balance on this group gift' })
-  async list(@Param('id') id: string): Promise<SettlementView[]> {
-    const rows = await this.settlements.listForGroupGift(id);
+  @ApiOperation({
+    summary: 'Every open and closed balance on this group gift (host and members)',
+  })
+  @ApiResponseDoc({ status: 403, description: 'You have no part in this group gift' })
+  async list(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+  ): Promise<SettlementView[]> {
+    const rows = await this.settlements.listForGroupGift(id, userId);
     return rows.map(toSettlementView);
   }
 

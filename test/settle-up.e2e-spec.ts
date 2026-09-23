@@ -34,6 +34,7 @@ interface Actor {
 }
 
 interface Balance {
+  returnedMinor: number;
   totalCostMinor: number;
   pledgedMinor: number;
   collectedMinor: number;
@@ -299,6 +300,55 @@ describe('Group-gift settle-up (e2e)', () => {
       expect(rows.data.every((r) => r.status === 'pending')).toBe(true);
     });
 
+    /**
+     * Money handed back is money the host no longer holds. It used to be left
+     * out of the balance entirely, so a returned surplus still read as a
+     * surplus and the same refund could be raised over and over.
+     */
+    it('comes off what the host holds once the contributor confirms it', async () => {
+      const { ggId, host, members } = await givenFundedGroup(300_000, 3);
+      const late = await newUser();
+      await seedContribution(ggId, late.userId, 60_000);
+      expect(members).toHaveLength(3);
+
+      const rows = (
+        await http()
+          .post(`${V1}/group-gifts/${ggId}/settlements/return`)
+          .set(auth(host.token))
+          .send({})
+          .expect(201)
+      ).body as Envelope<SettlementView[]>;
+      const owed = rows.data.reduce((sum, r) => sum + r.amountMinor, 0);
+      expect(owed).toBe(60_000);
+
+      // Still owed while the money is only promised.
+      expect((await balanceOf(ggId, host)).returnedMinor).toBe(0);
+
+      // The contributor is the receiver of a return, and confirming is what
+      // says it landed.
+      const everyone = [...members, late];
+      for (const row of rows.data) {
+        const receiver = everyone.find((m) => m.userId === row.contributorId)!;
+        await http()
+          .post(`${V1}/settlements/${row.id}/received`)
+          .set(auth(receiver.token))
+          .expect(200);
+      }
+
+      const after = await balanceOf(ggId, host);
+      expect(after.returnedMinor).toBe(60_000);
+      expect(after.collectedMinor).toBe(300_000);
+      expect(after.differenceMinor).toBe(0);
+      expect(after.direction).toBeNull();
+
+      // And there is nothing left to hand back a second time.
+      await http()
+        .post(`${V1}/group-gifts/${ggId}/settlements/return`)
+        .set(auth(host.token))
+        .send({})
+        .expect(409);
+    });
+
     it('refuses when there is nothing to return', async () => {
       const { ggId, host } = await givenFundedGroup(300_000, 3);
 
@@ -477,6 +527,26 @@ describe('Group-gift settle-up (e2e)', () => {
       expect(balance.differenceMinor).toBe(-200_000);
     });
 
+    it('has nobody to ask when the host is the only member', async () => {
+      const { itemId } = await givenItem(300_000);
+      const host = await newUser();
+      const gg = (
+        await http()
+          .post(`${V1}/items/${itemId}/group-gift`)
+          .set(auth(host.token))
+          .set(idem())
+          .send({ title: 'Just me', targetAmountMinor: 300_000 })
+          .expect(201)
+      ).body as Envelope<GroupGiftView>;
+
+      const refused = await http()
+        .post(`${V1}/group-gifts/${gg.data.id}/settlements/top-up`)
+        .set(auth(host.token))
+        .send({ additionalAmountMinor: 100_000 })
+        .expect(409);
+      expect((refused.body as Envelope<never>).error?.message).toContain('nobody but you');
+    });
+
     it('refuses a request for nothing', async () => {
       const { ggId, host } = await givenFundedGroup(300_000, 3);
 
@@ -485,6 +555,105 @@ describe('Group-gift settle-up (e2e)', () => {
         .set(auth(host.token))
         .send({ additionalAmountMinor: 0 })
         .expect(400);
+    });
+
+    /**
+     * The whole point of asking: once the members pay, the group is whole
+     * again. The credit used to be written against a contribution status
+     * nothing ever wrote, so the money vanished — target raised, collection
+     * untouched, shortfall for ever.
+     */
+    it('counts the money once each member pays, and funds the group again', async () => {
+      const { ggId, host, members } = await givenFundedGroup(300_000, 3);
+      const rows = (
+        await http()
+          .post(`${V1}/group-gifts/${ggId}/settlements/top-up`)
+          .set(auth(host.token))
+          .send({ additionalAmountMinor: 200_000 })
+          .expect(201)
+      ).body as Envelope<SettlementView[]>;
+      // One per member, and none for the host: they are the one asking.
+      expect(rows.data).toHaveLength(3);
+      expect(rows.data.some((r) => r.contributorId === host.userId)).toBe(false);
+
+      // The host is the receiver of a top-up, and confirming is what says the
+      // money arrived.
+      for (const row of rows.data) {
+        await http().post(`${V1}/settlements/${row.id}/received`).set(auth(host.token)).expect(200);
+      }
+
+      const balance = await balanceOf(ggId, host);
+      expect(balance.collectedMinor).toBe(500_000);
+      expect(balance.differenceMinor).toBe(0);
+      expect(balance.direction).toBeNull();
+
+      const gg = await groupGiftModel.findById(ggId).exec();
+      expect(gg!.collectedAmountMinor).toBe(500_000);
+      // Full again, so it stops taking money it no longer needs.
+      expect(gg!.status).toBe('funded');
+      expect(members).toHaveLength(3);
+    });
+
+    it('credits a re-confirmed request only once', async () => {
+      const { ggId, host } = await givenFundedGroup(300_000, 2);
+      const rows = (
+        await http()
+          .post(`${V1}/group-gifts/${ggId}/settlements/top-up`)
+          .set(auth(host.token))
+          .send({ additionalAmountMinor: 100_000 })
+          .expect(201)
+      ).body as Envelope<SettlementView[]>;
+
+      const first = rows.data[0];
+      await http().post(`${V1}/settlements/${first.id}/received`).set(auth(host.token)).expect(200);
+      await http().post(`${V1}/settlements/${first.id}/received`).set(auth(host.token)).expect(200);
+
+      const gg = await groupGiftModel.findById(ggId).exec();
+      expect(gg!.collectedAmountMinor).toBe(300_000 + first.amountMinor);
+    });
+
+    /**
+     * Only an open group takes money, so a request that left it funded asked
+     * for a total nobody could reach — not through the settlements and not
+     * through the ordinary contribute path either.
+     */
+    it('reopens the collection, so the gap can be closed either way', async () => {
+      const { ggId, host } = await givenFundedGroup(300_000, 3);
+      // The fixture seeds contributions straight into the collection, which
+      // does not run the funding transition — so put it where a real group
+      // that filled up would be.
+      await groupGiftModel.updateOne({ _id: ggId }, { $set: { status: 'funded' } }).exec();
+
+      await http()
+        .post(`${V1}/group-gifts/${ggId}/settlements/top-up`)
+        .set(auth(host.token))
+        .send({ additionalAmountMinor: 200_000 })
+        .expect(201);
+
+      const gg = await groupGiftModel.findById(ggId).exec();
+      expect(gg!.status).toBe('open');
+      expect(gg!.history.at(-1)).toMatchObject({
+        status: 'open',
+        note: 'reopened by a contribution request',
+      });
+    });
+
+    it('lets a stranger nowhere near the money', async () => {
+      const { ggId, host, members } = await givenFundedGroup(300_000, 2);
+      const stranger = await newUser();
+
+      await http().get(`${V1}/group-gifts/${ggId}/balance`).set(auth(stranger.token)).expect(403);
+      await http()
+        .get(`${V1}/group-gifts/${ggId}/settlements`)
+        .set(auth(stranger.token))
+        .expect(403);
+
+      // The people with a stake in it still see everything.
+      await http().get(`${V1}/group-gifts/${ggId}/balance`).set(auth(host.token)).expect(200);
+      await http()
+        .get(`${V1}/group-gifts/${ggId}/settlements`)
+        .set(auth(members[0].token))
+        .expect(200);
     });
   });
 

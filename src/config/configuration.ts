@@ -176,6 +176,8 @@ export interface AppConfig {
   };
   gifting: {
     reservationTtlHours: number;
+    /** Holds on an event's wishlists end this long before it starts. */
+    reservationEventCutoffHours: number;
     reservationWarnHours: number;
     /** provider → signing secret. */
     webhookSecrets: Record<string, string>;
@@ -412,6 +414,7 @@ export const configuration = (): AppConfig => {
     },
     gifting: {
       reservationTtlHours: toInt(process.env.RESERVATION_TTL_HOURS, 72),
+      reservationEventCutoffHours: toInt(process.env.RESERVATION_EVENT_CUTOFF_HOURS, 48),
       reservationWarnHours: toInt(process.env.RESERVATION_WARN_HOURS, 12),
       webhookSecrets: parseJsonRecord(process.env.GIFT_WEBHOOK_SECRETS),
       webhookToleranceSeconds: toInt(process.env.GIFT_WEBHOOK_TOLERANCE_SECONDS, 300),

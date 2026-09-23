@@ -7,7 +7,12 @@ import {
   UserProfile,
   type UserProfileDocument,
 } from 'src/modules/profile/schemas/user-profile.schema';
-import { ContributionStatus, SettlementDirection, SettlementStatus } from './group-gift.types';
+import {
+  ContributionStatus,
+  GroupGiftStatus,
+  SettlementDirection,
+  SettlementStatus,
+} from './group-gift.types';
 import { Contribution, type ContributionDocument } from './schemas/contribution.schema';
 import { GroupGift, type GroupGiftDocument } from './schemas/group-gift.schema';
 import { Settlement, type SettlementDocument } from './schemas/settlement.schema';
@@ -18,8 +23,10 @@ export interface GroupGiftBalance {
   totalCostMinor: number;
   /** Everything promised, settled or not. */
   pledgedMinor: number;
-  /** Only what the host has acknowledged receiving. */
+  /** What the host holds now: acknowledged contributions, less any returned. */
   collectedMinor: number;
+  /** Surplus already handed back, and confirmed by the person who got it. */
+  returnedMinor: number;
   /**
    * `collected − totalCost`. Positive is a surplus the host owes back; negative
    * is a shortfall the group owes. Zero means square.
@@ -54,8 +61,9 @@ export class SettlementService {
     return gg.targetAmountMinor;
   }
 
-  async balance(groupGiftId: string): Promise<GroupGiftBalance> {
+  async balance(groupGiftId: string, viewerId?: string): Promise<GroupGiftBalance> {
     const gg = await this.load(groupGiftId);
+    if (viewerId !== undefined) await this.assertInTheGroup(gg, viewerId);
     const totalCostMinor = SettlementService.totalCostMinor(gg);
 
     const rows = await this.contributions
@@ -66,9 +74,22 @@ export class SettlementService {
       .exec();
 
     const pledgedMinor = rows.reduce((sum, r) => sum + r.amountMinor, 0);
-    const collectedMinor = rows
+    const contributedMinor = rows
       .filter((r) => r.status === ContributionStatus.CONFIRMED)
       .reduce((sum, r) => sum + r.amountMinor, 0);
+
+    // Money already handed back is money the host no longer has. Without this
+    // a returned surplus still read as a surplus, and the host could raise the
+    // same refund again and again.
+    const returned = await this.settlements
+      .find({
+        groupGiftId: gg._id,
+        direction: SettlementDirection.RETURN,
+        status: SettlementStatus.CONFIRMED,
+      })
+      .exec();
+    const returnedMinor = returned.reduce((sum, r) => sum + r.amountMinor, 0);
+    const collectedMinor = contributedMinor - returnedMinor;
 
     // Measured against what the host actually holds, not what was promised: a
     // host cannot hand back money nobody has given them.
@@ -78,6 +99,7 @@ export class SettlementService {
       totalCostMinor,
       pledgedMinor,
       collectedMinor,
+      returnedMinor,
       differenceMinor,
       direction:
         differenceMinor > 0
@@ -175,7 +197,8 @@ export class SettlementService {
    *
    * Split across *named members* rather than only past contributors — the
    * frame's copy is "Each Member needs to add ₹333", and someone who joined
-   * without pledging is still a member.
+   * without pledging is still a member. The host is not among them: they are
+   * the one asking, and the shortfall is already theirs to carry.
    */
   async requestTopUp(
     groupGiftId: string,
@@ -193,12 +216,31 @@ export class SettlementService {
       );
     }
 
-    const members = gg.participantIds.map((id) => id.toString());
+    // Everybody but the host: the initiator is a participant too, and a
+    // request for ₹2,000 across a host and three members was billing the host
+    // ₹500 of their own ask — money they are already out of pocket for.
+    const members = gg.participantIds.map((id) => id.toString()).filter((id) => id !== hostId);
     if (members.length === 0) {
-      throw new AppException(ErrorCode.CONTRIBUTION_AMOUNT_INVALID, 'No members to ask', 409);
+      throw new AppException(
+        ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
+        'There is nobody but you to ask',
+        409,
+      );
     }
 
     gg.targetAmountMinor += input.additionalAmountMinor;
+    // Reopened, so the gap can be closed the ordinary way as well as through
+    // the settlements raised below: only an open group accepts money, and a
+    // funded one left funded would have a target nobody could reach.
+    if (gg.status === GroupGiftStatus.FUNDED) {
+      gg.status = GroupGiftStatus.OPEN;
+      gg.history.push({
+        status: GroupGiftStatus.OPEN,
+        at: new Date(),
+        by: hostId,
+        note: 'reopened by a contribution request',
+      });
+    }
     await gg.save();
 
     const allocations = SettlementService.splitEvenly(
@@ -308,24 +350,18 @@ export class SettlementService {
     settlement.confirmedAt = new Date();
     await settlement.save();
 
-    // A confirmed top-up is money the host now holds, so the contribution it
-    // covers becomes collected — which is what moves the balance back to zero.
+    // A confirmed top-up is money the host now holds, so it becomes collected
+    // — which is what moves the balance back to zero.
     if (settlement.direction === SettlementDirection.TOP_UP) {
-      await this.contributions
-        .updateOne(
-          {
-            groupGiftId: settlement.groupGiftId,
-            userId: settlement.contributorId,
-            status: ContributionStatus.PLEDGED,
-          },
-          { $set: { status: ContributionStatus.CONFIRMED } },
-        )
-        .exec();
+      await this.creditTopUp(settlement);
     }
     return settlement;
   }
 
-  async listForGroupGift(groupGiftId: string): Promise<SettlementDocument[]> {
+  async listForGroupGift(groupGiftId: string, viewerId?: string): Promise<SettlementDocument[]> {
+    if (viewerId !== undefined) {
+      await this.assertInTheGroup(await this.load(groupGiftId), viewerId);
+    }
     return this.settlements
       .find({ groupGiftId: new Types.ObjectId(groupGiftId) })
       .sort({ createdAt: 1 })
@@ -403,6 +439,99 @@ export class SettlementService {
       }
     }
     return created;
+  }
+
+  /**
+   * Records a confirmed top-up as collected money.
+   *
+   * It is written as a contribution, because that is what it is — this person
+   * handed the host money towards the gift — and because contributions are the
+   * one record `collectedAmountMinor`, the balance and the nightly reconciler
+   * are all derived from. Writing only the settlement left the target raised
+   * and the collection untouched, so a topped-up group sat in shortfall for
+   * ever and the progress bar never reached full.
+   *
+   * The settlement's own id is the idempotency key, so the unique
+   * `(groupGiftId, idempotencyKey)` index makes a re-confirmation a no-op
+   * rather than a second credit.
+   */
+  private async creditTopUp(settlement: SettlementDocument): Promise<void> {
+    const key = `settlement:${settlement._id.toString()}`;
+    try {
+      await this.contributions.create({
+        groupGiftId: settlement.groupGiftId,
+        userId: settlement.contributorId,
+        amountMinor: settlement.amountMinor,
+        status: ContributionStatus.CONFIRMED,
+        anonymous: false,
+        message: null,
+        idempotencyKey: key,
+      });
+    } catch (err) {
+      // Already credited on an earlier confirmation of this settlement.
+      if ((err as { code?: number })?.code === 11000) return;
+      throw err;
+    }
+
+    // First money from this person? Then they are a new contributor, counted
+    // the same way `contribute` counts one.
+    const prior = await this.contributions
+      .countDocuments({
+        groupGiftId: settlement.groupGiftId,
+        userId: settlement.contributorId,
+        status: ContributionStatus.CONFIRMED,
+        idempotencyKey: { $ne: key },
+      })
+      .exec();
+
+    await this.groupGifts
+      .updateOne(
+        { _id: settlement.groupGiftId },
+        {
+          $inc: {
+            collectedAmountMinor: settlement.amountMinor,
+            ...(prior === 0 ? { contributorCount: 1 } : {}),
+          },
+          $addToSet: { participantIds: settlement.contributorId },
+        },
+      )
+      .exec();
+
+    // Full again once the last share lands, so the group stops asking for
+    // money it no longer needs.
+    const gg = await this.groupGifts.findById(settlement.groupGiftId).exec();
+    if (
+      gg &&
+      gg.status === GroupGiftStatus.OPEN &&
+      gg.collectedAmountMinor >= gg.targetAmountMinor
+    ) {
+      gg.status = GroupGiftStatus.FUNDED;
+      gg.history.push({
+        status: GroupGiftStatus.FUNDED,
+        at: new Date(),
+        by: 'system:funded',
+        note: 'topped up',
+      });
+      await gg.save();
+    }
+  }
+
+  /**
+   * Who may see what a group owes: its host, its members, and anyone who has
+   * put money in. It was every signed-in caller, which handed a stranger the
+   * group's whole money position.
+   */
+  private async assertInTheGroup(gg: GroupGiftDocument, userId: string): Promise<void> {
+    const isHost = gg.initiatorId.toString() === userId;
+    const isMember = gg.participantIds.some((id) => id.toString() === userId);
+    if (isHost || isMember) return;
+
+    const contributed = await this.contributions
+      .exists({ groupGiftId: gg._id, userId: new Types.ObjectId(userId) })
+      .exec();
+    if (contributed) return;
+
+    throw new AppException(ErrorCode.FORBIDDEN, 'This group gift is not yours to see', 403);
   }
 
   private async confirmedContributorIds(groupGiftId: Types.ObjectId): Promise<string[]> {

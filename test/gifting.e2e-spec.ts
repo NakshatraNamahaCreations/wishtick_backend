@@ -35,6 +35,8 @@ interface GiftView {
   status: string;
   mode: string;
   orderRef?: string | null;
+  /** When the hold ends. Null on a gift that was never held. */
+  expiresAt?: string | null;
 }
 
 /** What the three Profile list screens render (`324:1108`, `324:1210`, `324:1253`). */
@@ -995,6 +997,233 @@ describe('Gifting (e2e)', () => {
 
       expect(report.unmatched).toBe(1);
       expect((await itemAs(owner, wishlistId, itemId)).lock).toBeNull();
+    });
+  });
+
+  // ── A hold has to be over before the party ────────────────────────────────
+
+  describe('a wishlist on an event', () => {
+    /**
+     * An owner's public list attached to their own event [hoursAway] from now,
+     * with one item on it, plus a gifter who may take it.
+     */
+    const listOnEvent = async (
+      hoursAway: number,
+    ): Promise<{ owner: Actor; gifter: Actor; wishlistId: string; itemId: string }> => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const { wishlistId, itemId } = await wishlistWithItem(owner);
+
+      const event = (
+        await request(app.getHttpServer())
+          .post(`${V1}/events`)
+          .set(auth(owner.token))
+          .send({
+            title: 'The wedding',
+            type: 'special',
+            startsAt: new Date(Date.now() + hoursAway * 3_600_000).toISOString(),
+            timezone: 'Asia/Kolkata',
+            wishlistIds: [wishlistId],
+          })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      expect(event.data.id).toBeDefined();
+
+      return { owner, gifter, wishlistId, itemId };
+    };
+
+    const windowFor = async (
+      actor: Actor,
+      wishlistId: string,
+    ): Promise<{
+      allowed: boolean;
+      maxHoldMinutes: number;
+      closesAt: string | null;
+      eventStartsAt: string | null;
+    }> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/wishlists/${wishlistId}`)
+            .set(auth(actor.token))
+            .expect(200)
+        ).body as Envelope<{
+          reservationWindow: {
+            allowed: boolean;
+            maxHoldMinutes: number;
+            closesAt: string | null;
+            eventStartsAt: string | null;
+          };
+        }>
+      ).data.reservationWindow;
+
+    /** Minutes from now until [iso], rounded down. */
+    const minutesUntil = (iso: string): number =>
+      Math.floor((new Date(iso).getTime() - Date.now()) / 60_000);
+
+    it('holds for the usual 72 hours while the event is far off', async () => {
+      const { gifter, wishlistId, itemId } = await listOnEvent(24 * 9);
+
+      expect(await windowFor(gifter, wishlistId)).toMatchObject({
+        allowed: true,
+        maxHoldMinutes: 72 * 60,
+      });
+
+      const gift = (await reserve(gifter, itemId).expect(201)).body as Envelope<GiftView>;
+      // Within a minute of 72h — the two clock reads are not the same instant.
+      expect(minutesUntil(gift.data.expiresAt!)).toBeGreaterThanOrEqual(72 * 60 - 1);
+      expect(minutesUntil(gift.data.expiresAt!)).toBeLessThanOrEqual(72 * 60);
+    });
+
+    it('cuts the hold to what is left before the cutoff', async () => {
+      // 54 hours out: the hold can only run the 6 hours before the cutoff.
+      const { gifter, wishlistId, itemId } = await listOnEvent(54);
+
+      const window = await windowFor(gifter, wishlistId);
+      expect(window.allowed).toBe(true);
+      expect(window.maxHoldMinutes).toBeGreaterThanOrEqual(6 * 60 - 1);
+      expect(window.maxHoldMinutes).toBeLessThanOrEqual(6 * 60);
+      expect(minutesUntil(window.closesAt!)).toBeLessThanOrEqual(6 * 60);
+
+      const gift = (await reserve(gifter, itemId).expect(201)).body as Envelope<GiftView>;
+      // It ends at the cutoff, not 72 hours from now.
+      expect(new Date(gift.data.expiresAt!).getTime()).toBeLessThanOrEqual(
+        new Date(window.closesAt!).getTime() + 60_000,
+      );
+    });
+
+    it('refuses a hold once the event is inside the cutoff', async () => {
+      const { gifter, wishlistId, itemId } = await listOnEvent(47);
+
+      expect(await windowFor(gifter, wishlistId)).toMatchObject({
+        allowed: false,
+        maxHoldMinutes: 0,
+      });
+
+      const refused = await reserve(gifter, itemId).expect(409);
+      expect((refused.body as Envelope<never>).error?.code).toBe(
+        ErrorCode.RESERVATION_WINDOW_CLOSED,
+      );
+    });
+
+    it('still lets the gift be bought inside the cutoff', async () => {
+      // Reserving is what closes; buying is the thing left, and the whole
+      // reason the hold is refused rather than the item locked away.
+      const { gifter, itemId } = await listOnEvent(12);
+
+      await request(app.getHttpServer())
+        .post(`${V1}/items/${itemId}/gift-offline`)
+        .set(auth(gifter.token))
+        .set(idem())
+        .send({})
+        .expect(201);
+    });
+
+    it('lets go of a hold when the host moves the date closer', async () => {
+      const { owner, gifter, wishlistId, itemId } = await listOnEvent(24 * 9);
+      const gift = (await reserve(gifter, itemId).expect(201)).body as Envelope<GiftView>;
+
+      // The host brings the wedding forward to tomorrow: the hold was capped
+      // against a deadline that no longer exists.
+      const events = (
+        await request(app.getHttpServer())
+          .get(`${V1}/events/mine`)
+          .set(auth(owner.token))
+          .expect(200)
+      ).body as Envelope<{ id: string }[]>;
+      await request(app.getHttpServer())
+        .patch(`${V1}/events/${events.data[0].id}`)
+        .set(auth(owner.token))
+        .send({ startsAt: new Date(Date.now() + 24 * 3_600_000).toISOString() })
+        .expect(200);
+
+      const released = await expiry.releasePastEventCutoff();
+
+      expect(released).toBe(1);
+      expect((await giftModel.findById(gift.data.id).exec())!.status).toBe(GiftStatus.CANCELLED);
+      // And the item is free for the one thing still open to anybody: buying it.
+      const item = (
+        await request(app.getHttpServer())
+          .get(`${V1}/wishlists/${wishlistId}/items/${itemId}`)
+          .set(auth(gifter.token))
+          .expect(200)
+      ).body as Envelope<{ status: string }>;
+      expect(item.data.status).toBe(WishlistItemStatus.AVAILABLE);
+    });
+
+    it('leaves a bought gift alone, however close the party is', async () => {
+      const { owner, gifter, itemId } = await listOnEvent(24 * 9);
+      const gift = (await reserve(gifter, itemId).expect(201)).body as Envelope<GiftView>;
+      await request(app.getHttpServer())
+        .post(`${V1}/gifts/${gift.data.id}/purchase`)
+        .set(auth(gifter.token))
+        .send({})
+        .expect(200);
+
+      const events = (
+        await request(app.getHttpServer())
+          .get(`${V1}/events/mine`)
+          .set(auth(owner.token))
+          .expect(200)
+      ).body as Envelope<{ id: string }[]>;
+      await request(app.getHttpServer())
+        .patch(`${V1}/events/${events.data[0].id}`)
+        .set(auth(owner.token))
+        .send({ startsAt: new Date(Date.now() + 3_600_000).toISOString() })
+        .expect(200);
+
+      expect(await expiry.releasePastEventCutoff()).toBe(0);
+      expect((await giftModel.findById(gift.data.id).exec())!.status).toBe(GiftStatus.PURCHASED);
+    });
+
+    it('a cancelled party is no deadline at all', async () => {
+      const { owner, gifter, wishlistId, itemId } = await listOnEvent(12);
+      const events = (
+        await request(app.getHttpServer())
+          .get(`${V1}/events/mine`)
+          .set(auth(owner.token))
+          .expect(200)
+      ).body as Envelope<{ id: string }[]>;
+      await request(app.getHttpServer())
+        .delete(`${V1}/events/${events.data[0].id}`)
+        .set(auth(owner.token))
+        .expect(200);
+
+      expect(await windowFor(gifter, wishlistId)).toMatchObject({
+        allowed: true,
+        maxHoldMinutes: 72 * 60,
+        closesAt: null,
+      });
+      await reserve(gifter, itemId).expect(201);
+    });
+
+    it('a list on no event keeps the flat 72 hours', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const { wishlistId, itemId } = await wishlistWithItem(owner);
+
+      expect(await windowFor(gifter, wishlistId)).toMatchObject({
+        allowed: true,
+        maxHoldMinutes: 72 * 60,
+        closesAt: null,
+        eventStartsAt: null,
+      });
+      await reserve(gifter, itemId).expect(201);
+      expect(await expiry.releasePastEventCutoff()).toBe(0);
+    });
+
+    it('tells nobody who cannot gift how long a hold would run', async () => {
+      const { owner, wishlistId } = await listOnEvent(24 * 9);
+      const mine = (
+        await request(app.getHttpServer())
+          .get(`${V1}/wishlists/${wishlistId}`)
+          .set(auth(owner.token))
+          .expect(200)
+      ).body as Envelope<{ reservationWindow?: unknown }>;
+
+      // The owner cannot gift from their own list, so there is no Reserve
+      // button to describe.
+      expect(mine.data.reservationWindow).toBeUndefined();
     });
   });
 
