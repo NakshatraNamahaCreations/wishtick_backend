@@ -57,12 +57,28 @@ export interface GiftSuggestionsView {
 }
 
 /**
- * One page of a product search, reordered for a WishMate.
+ * One row of a search made for a WishMate: the product, and why it is here.
  *
- * The ordinary search response — same items, same paging — plus who it was
- * ordered for, and whether their taste actually moved anything.
+ * The reasons sit on the product rather than wrapping it, unlike
+ * [GiftSuggestionView]. An app built before this shipped reads these pages as
+ * plain products and simply ignores two unknown fields; wrapping them would
+ * have emptied its grid.
  */
-export interface RecipientSearchView extends SearchResponse {
+export interface RecipientSearchItemView extends NormalizedProduct {
+  /** 0-100, a whole number — see [GiftSuggestionView.matchScore]. */
+  matchScore: number;
+  /** At most two short reasons — "Loves Blue", "Their size (XL)". */
+  reasons: string[];
+}
+
+/**
+ * One page of a product search, made for a WishMate.
+ *
+ * The ordinary search response — same paging — plus who it was ordered for,
+ * whether their taste actually moved anything, and per-row reasons.
+ */
+export interface RecipientSearchView extends Omit<SearchResponse, 'items'> {
+  items: RecipientSearchItemView[];
   recipient: { userId: string; displayName: string | null };
   personalised: boolean;
 }

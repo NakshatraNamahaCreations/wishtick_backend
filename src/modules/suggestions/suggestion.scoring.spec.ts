@@ -2,9 +2,11 @@ import type { NormalizedProduct } from '../products/product.types';
 import { EMPTY_TASTE, type TasteProfile } from '../taste/taste.types';
 import {
   budgetSignal,
+  colourSearchWord,
   MAX_PER_MERCHANT,
   qualitySignal,
   rankForTaste,
+  searchableColour,
   type RetrievedRow,
 } from './suggestion.scoring';
 
@@ -196,6 +198,8 @@ describe('colour', () => {
 describe('size', () => {
   const sizeOf = (title: string, sizes: TasteProfile['sizes']) =>
     rankForTaste([row(product({ title }))], taste({ sizes }), { limit: 1 })[0].signals.size;
+  const reasonsFor = (title: string, sizes: TasteProfile['sizes']) =>
+    rankForTaste([row(product({ title }))], taste({ sizes }), { limit: 1 })[0].reasons;
   const none = { clothing: null, shoe: null, fit: null };
 
   it('never matches a bare S, M or L', () => {
@@ -223,6 +227,50 @@ describe('size', () => {
 
   it('matches a fit as a word', () => {
     expect(sizeOf('Relaxed Fit Chinos', { ...none, fit: 'Relaxed' })).toBe(1);
+  });
+
+  it('says what it matched, naming the size rather than claiming a fit', () => {
+    // "Their size (XL)" is about the listing's words. "In their size" would be
+    // a claim about the product, which a title of a seller's whole size run
+    // does not support.
+    expect(reasonsFor('Oversized XL Hoodie', { ...none, clothing: 'XL' })).toContain(
+      'Their size (XL)',
+    );
+    expect(reasonsFor('Relaxed Fit Chinos', { ...none, fit: 'Relaxed' })).toContain(
+      'Their fit (Relaxed)',
+    );
+    expect(
+      reasonsFor('Running Shoes UK 9', { ...none, shoe: { system: 'UK', label: '9' } }),
+    ).toContain('Their shoe size (UK 9)');
+  });
+
+  it('says nothing when nothing matched', () => {
+    expect(reasonsFor('Cotton Tee', { ...none, clothing: 'XL' })).toEqual([]);
+  });
+});
+
+describe('a colour worth searching with', () => {
+  const plum = { key: 'purple_plum', word: 'plum', groupWord: 'purple', hex: null, label: 'Plum' };
+  const teal = { key: 'green_teal', word: 'teal', groupWord: null, hex: null, label: 'Teal' };
+  const rose = { key: 'red_rose', word: 'rose', groupWord: null, hex: null, label: 'Rose' };
+
+  it('prefers the family word, which merchants actually use', () => {
+    const colour = searchableColour([plum]);
+    expect(colour).not.toBeNull();
+    expect(colourSearchWord(colour!)).toBe('purple');
+  });
+
+  it('takes the shade itself when it has no family to fall back on', () => {
+    expect(colourSearchWord(searchableColour([teal])!)).toBe('teal');
+  });
+
+  it('refuses a word that is also a product', () => {
+    // "rose backpack" is a search for flowers.
+    expect(searchableColour([rose])).toBeNull();
+  });
+
+  it('is nothing for somebody who named no colour', () => {
+    expect(searchableColour([])).toBeNull();
   });
 });
 

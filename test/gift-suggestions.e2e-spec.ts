@@ -601,7 +601,12 @@ describe('Gift suggestions (e2e)', () => {
 
   describe('searching for somebody', () => {
     interface SearchBody {
-      items: { title: string; externalId: string }[];
+      items: {
+        title: string;
+        externalId: string;
+        matchScore: number;
+        reasons: string[];
+      }[];
       recipient: { userId: string; displayName: string | null };
       personalised: boolean;
       page: number;
@@ -639,6 +644,36 @@ describe('Gift suggestions (e2e)', () => {
       expect(body.items[0].title).toBe('Smart Speaker');
       expect(body.personalised).toBe(true);
       expect(body.recipient).toEqual({ userId: priyal.userId, displayName: 'Priyal' });
+    });
+
+    it('carries per-row reasons, so the app can say why a product is there', async () => {
+      const priyal = await someone('priyal_g6', 'Priyal');
+      const rohan = await someone('rohan_g6', 'Rohan');
+      await connect(rohan, priyal);
+      await setTaste(priyal, techLover);
+
+      const res = await searchFor(rohan, priyal, '?category=electronics').expect(200);
+      const items = (res.body as Envelope<SearchBody>).data.items;
+
+      // On the product, not wrapping it: an app built before this shipped
+      // reads these pages as plain products.
+      for (const item of items) {
+        expect(typeof item.matchScore).toBe('number');
+        expect(Array.isArray(item.reasons)).toBe(true);
+      }
+      expect(items.some((i) => i.reasons.length > 0)).toBe(true);
+    });
+
+    it('answers with empty reasons when there is no taste to explain', async () => {
+      const priyal = await someone('priyal_g7', 'Priyal');
+      const rohan = await someone('rohan_g7', 'Rohan');
+      await connect(rohan, priyal);
+
+      const res = await searchFor(rohan, priyal, '?category=electronics').expect(200);
+      const items = (res.body as Envelope<SearchBody>).data.items;
+
+      expect(items.length).toBeGreaterThan(0);
+      expect(items.every((i) => i.reasons.length === 0 && i.matchScore === 0)).toBe(true);
     });
 
     it('keeps the paging of the ordinary search', async () => {

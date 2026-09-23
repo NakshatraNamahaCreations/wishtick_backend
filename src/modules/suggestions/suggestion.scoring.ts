@@ -174,6 +174,30 @@ function interestSignal(
   return { value, reason: best ? `Likes ${best.label}` : null };
 }
 
+/**
+ * A colour word worth putting *into* a search, or null.
+ *
+ * Only the unambiguous ones, and only a group word ("blue") where there is
+ * one: asking a shopping engine for "plum backpack" finds fruit, and asking it
+ * for a shade nobody merchandises by name finds nothing at all. Null is the
+ * normal answer for somebody whose colours are all ambiguous — the search then
+ * simply runs unnarrowed.
+ */
+export function searchableColour(colours: TasteColour[]): TasteColour | null {
+  for (const colour of colours) {
+    if (colour.groupWord && SAFE_COLOUR_WORDS.has(colour.groupWord)) return colour;
+    if (SAFE_COLOUR_WORDS.has(colour.word)) return colour;
+  }
+  return null;
+}
+
+/** The word [searchableColour] would search with. */
+export function colourSearchWord(colour: TasteColour): string {
+  return colour.groupWord && SAFE_COLOUR_WORDS.has(colour.groupWord)
+    ? colour.groupWord
+    : colour.word;
+}
+
 function colourSignal(
   title: Title,
   colours: TasteColour[],
@@ -200,15 +224,29 @@ function colourSignal(
   return { value: 0, reason: null };
 }
 
-function sizeSignal(title: Title, taste: TasteProfile): number {
+/**
+ * Whether the listing says this is their size, 0 or 1, and why.
+ *
+ * The reason names what actually matched and nothing more — "Their size (XL)"
+ * for a title that says XL. It is never "in their size" as a claim about the
+ * product: the only evidence is a merchandising title, which may be listing
+ * every size the seller stocks.
+ */
+function sizeSignal(title: Title, taste: TasteProfile): { value: number; reason: string | null } {
   const { clothing, shoe, fit } = taste.sizes;
-  if (fit && title.wordSet.has(normalise(fit))) return 1;
+  if (fit && title.wordSet.has(normalise(fit))) {
+    return { value: 1, reason: `Their fit (${fit})` };
+  }
 
   if (clothing) {
     const size = normalise(clothing);
-    if (BARE_CLOTHING_SIZES.has(size) && title.wordSet.has(size)) return 1;
-    // S, M, L — only after the word "size".
-    if (new RegExp(`\\bsize ${size}\\b`).test(title.text)) return 1;
+    if (
+      (BARE_CLOTHING_SIZES.has(size) && title.wordSet.has(size)) ||
+      // S, M, L — only after the word "size".
+      new RegExp(`\\bsize ${size}\\b`).test(title.text)
+    ) {
+      return { value: 1, reason: `Their size (${clothing})` };
+    }
   }
 
   if (shoe) {
@@ -216,10 +254,10 @@ function sizeSignal(title: Title, taste: TasteProfile): number {
     const digits = shoe.label.replace(/[^0-9.]/g, '');
     const system = shoe.system.toLowerCase();
     if (digits && new RegExp(`\\b${system} ?${digits.replace('.', ' ')}\\b`).test(title.text)) {
-      return 1;
+      return { value: 1, reason: `Their shoe size (${shoe.system} ${shoe.label})` };
     }
   }
-  return 0;
+  return { value: 0, reason: null };
 }
 
 /**
@@ -318,13 +356,14 @@ export function rankForTaste(
     const title = titleOf(product);
     const interest = interestSignal(title, taste);
     const colour = colourSignal(title, taste.colours);
+    const size = sizeSignal(title, taste);
     const signals: SignalBreakdown = {
       interest: interest.value,
       budget: budgetSignal(product.amountMinor, taste.budget.minMinor, taste.budget.maxMinor),
       quality: qualitySignal(product.rating, product.reviewCount),
       shelf: shelfSignal(foundIn.length > 0 ? foundIn : [2]),
       colour: colour.value,
-      size: sizeSignal(title, taste),
+      size: size.value,
     };
     const budgetWeight = WEIGHTS.budget * BUDGET_TRUST[taste.budget.source];
     let score =
@@ -339,6 +378,9 @@ export function rankForTaste(
     const reasons: string[] = [];
     if (interest.reason) reasons.push(interest.reason);
     if (colour.reason) reasons.push(colour.reason);
+    // Size before the two generic lines below: "Their size (XL)" is about
+    // this person, where "Highly rated" would be true for anybody.
+    if (reasons.length < 2 && size.reason) reasons.push(size.reason);
     // Only for a budget somebody set. "Within ₹2,000" about a default ceiling
     // would state as a reason a limit nobody asked for.
     if (

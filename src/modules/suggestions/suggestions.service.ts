@@ -23,7 +23,13 @@ import {
 } from './suggestion.retrieval';
 import { shelfForOccasionAndRelation } from '../taste/taste.curation';
 import { SearchAllowance, VendorBudgetService } from './vendor-budget.service';
-import { MIN_SCORE_TO_SHOW, rankForTaste, type RetrievedRow } from './suggestion.scoring';
+import {
+  MIN_SCORE_TO_SHOW,
+  colourSearchWord,
+  rankForTaste,
+  searchableColour,
+  type RetrievedRow,
+} from './suggestion.scoring';
 import { inviteShelfTitle, occasionForEventType } from './invite.curation';
 import {
   worstFreshness,
@@ -168,15 +174,19 @@ export class SuggestionsService {
   }
 
   /**
-   * One page of an ordinary product search, reordered for [targetId].
+   * One page of a product search, for [targetId] rather than for anybody.
    *
-   * Retrieval is the shared, cached search everybody makes — nothing about the
-   * person reaches the vendor or the cache key. Only the order of the page
-   * that comes back changes, and nothing is dropped from it: a page that came
-   * back short would read as the end of the results.
+   * Two things make it theirs. The page is ranked by their taste — colours,
+   * sizes, fit, interests and budget — and every row comes back with the
+   * reasons that ranking found, so the app can say why a product is there.
+   * And when they have a colour we can safely search with, the same query is
+   * also asked in that colour and the two pages are merged before ranking:
+   * reordering alone can only promote what the vendor happened to return, and
+   * "blue" is rarely in the first twenty rows for a plain "backpack".
    *
-   * Reordered within the page, not across pages. The provider's order still
-   * decides what is on page 2; this only decides what leads it.
+   * Nothing is dropped from the page: a page that came back short would read
+   * as the end of the results. Reordered within the page, not across pages —
+   * the provider's order still decides what is on page 2.
    */
   async searchFor(
     viewerId: string,
@@ -195,7 +205,7 @@ export class SuggestionsService {
       );
     }
 
-    const [result, taste, profile] = await Promise.all([
+    const [result, taste, profile, allowance] = await Promise.all([
       this.products.search(query),
       this.taste.profileFor(targetId, {
         audience: relationship === WishmateRelationship.SELF ? 'self' : 'others',
@@ -203,25 +213,80 @@ export class SuggestionsService {
         maxPriceMinor: query.maxPriceMinor ?? null,
       }),
       this.profiles.getOrCreate(targetId),
+      this.budget.allowanceFor(viewerId),
     ]);
     const recipient = { userId: targetId, displayName: profile.displayName?.trim() || null };
 
     // Nothing to rank by: the provider's own order, and an honest flag.
     if (taste.completeness === 0) {
-      return { ...result, recipient, personalised: false };
+      return {
+        ...result,
+        items: result.items.map((product) => ({ ...product, matchScore: 0, reasons: [] })),
+        recipient,
+        personalised: false,
+      };
     }
 
-    const ranked = rankForTaste(
-      result.items.map((product) => ({ product, foundIn: [0] })),
-      taste,
-      { limit: result.items.length, diverse: false },
-    );
+    const rows: RetrievedRow[] = result.items.map((product) => ({ product, foundIn: [0] }));
+    const inTheirColour = await this.colourPage(query, taste, allowance);
+    const seen = new Set(rows.map((row) => `${row.product.provider}:${row.product.externalId}`));
+    for (const product of inTheirColour) {
+      const id = `${product.provider}:${product.externalId}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      // Second rank: found by a narrower search than the one that was typed,
+      // so it starts behind the page the reader actually asked for.
+      rows.push({ product, foundIn: [1] });
+    }
+
+    const ranked = rankForTaste(rows, taste, { limit: rows.length, diverse: false });
+    const items = ranked.slice(0, Math.max(result.items.length, result.pageSize)).map((item) => ({
+      ...item.product,
+      matchScore: Math.round(item.score * 100),
+      reasons: item.reasons,
+    }));
     return {
       ...result,
-      items: ranked.map((item) => item.product),
+      items,
       recipient,
-      personalised: ranked.some((item) => item.signals.interest > 0),
+      // Their own taste moved this page, rather than only the generic signals
+      // every product has. Colour and size count: they are the whole point of
+      // searching for a person rather than for a thing.
+      personalised: ranked.some(
+        (item) => item.signals.interest > 0 || item.signals.colour > 0 || item.signals.size > 0,
+      ),
     };
+  }
+
+  /**
+   * The same search again in a colour they like, or nothing.
+   *
+   * Costs one extra vendor call, so it runs only on a full allowance and only
+   * for a typed search — a category-only page is already a shelf, and this
+   * would narrow it to "blue kitchenware". The failure case is deliberately
+   * quiet: the page the reader asked for is already in hand, and a search that
+   * did not come back is not worth an error over.
+   */
+  private async colourPage(
+    query: ProductSearchQuery,
+    taste: TasteProfile,
+    allowance: SearchAllowance,
+  ): Promise<NormalizedProduct[]> {
+    const typed = query.q?.trim();
+    if (!typed || allowance !== SearchAllowance.FULL) return [];
+    const colour = searchableColour(taste.colours);
+    if (!colour) return [];
+    const word = colourSearchWord(colour);
+    // Already asking for it: no second call to make.
+    if (new RegExp(`\\b${word}\\b`, 'i').test(typed)) return [];
+
+    try {
+      const page = await this.products.search({ ...query, q: `${word} ${typed}`, page: 1 });
+      return page.items;
+    } catch (err) {
+      this.logger.debug(`Colour search for "${word} ${typed}" skipped: ${(err as Error).message}`);
+      return [];
+    }
   }
 
   /**
