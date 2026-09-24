@@ -504,7 +504,7 @@ describe('Group-gift settle-up (e2e)', () => {
   });
 
   describe('asking the group for more', () => {
-    it('raises the target and splits the extra across members', async () => {
+    it('raises the target and splits the extra across the host and members', async () => {
       const { ggId, host, members } = await givenFundedGroup(300_000, 3);
       expect(members).toHaveLength(3);
 
@@ -516,18 +516,59 @@ describe('Group-gift settle-up (e2e)', () => {
           .expect(201)
       ).body as Envelope<SettlementView[]>;
 
-      const total = rows.data.reduce((sum, r) => sum + r.amountMinor, 0);
-      expect(total).toBe(200_000);
+      // Four equal shares of ₹2,000: three requests to the members, and the
+      // host's own ₹500, which is not a request.
+      expect(rows.data).toHaveLength(3);
+      expect(rows.data.every((r) => r.amountMinor === 50_000)).toBe(true);
       expect(rows.data.every((r) => r.direction === 'top_up')).toBe(true);
 
       // Raising the ask without moving the goal would leave the progress bar
-      // insisting the group was already fully funded.
+      // insisting the group was already fully funded. The host's share is in
+      // already, so what is still owed is the members' three.
       const balance = await balanceOf(ggId, host);
       expect(balance.totalCostMinor).toBe(500_000);
-      expect(balance.differenceMinor).toBe(-200_000);
+      expect(balance.differenceMinor).toBe(-150_000);
     });
 
-    it('has nobody to ask when the host is the only member', async () => {
+    it("counts the host's own share as paid the moment they ask", async () => {
+      const { ggId, host } = await givenFundedGroup(300_000, 3);
+
+      await http()
+        .post(`${V1}/group-gifts/${ggId}/settlements/top-up`)
+        .set(auth(host.token))
+        .send({ additionalAmountMinor: 200_000 })
+        .expect(201);
+
+      // A top-up is paid to the host, so there is no settlement for them to
+      // settle with themselves — only the contribution.
+      const own = await contributionModel
+        .find({ groupGiftId: new Types.ObjectId(ggId), userId: new Types.ObjectId(host.userId) })
+        .exec();
+      expect(own.map((c) => c.amountMinor)).toEqual([50_000]);
+      expect(own[0].status).toBe(ContributionStatus.CONFIRMED);
+
+      const gg = await groupGiftModel.findById(ggId).exec();
+      expect(gg!.collectedAmountMinor).toBe(350_000);
+    });
+
+    it('puts any odd paise on the host, not on the members', async () => {
+      const { ggId, host } = await givenFundedGroup(300_000, 2);
+
+      // ₹1,000 across three is ₹333.34 + ₹333.33 + ₹333.33.
+      const rows = (
+        await http()
+          .post(`${V1}/group-gifts/${ggId}/settlements/top-up`)
+          .set(auth(host.token))
+          .send({ additionalAmountMinor: 100_000 })
+          .expect(201)
+      ).body as Envelope<SettlementView[]>;
+
+      expect(rows.data.map((r) => r.amountMinor)).toEqual([33_333, 33_333]);
+      const gg = await groupGiftModel.findById(ggId).exec();
+      expect(gg!.collectedAmountMinor).toBe(300_000 + 33_334);
+    });
+
+    it('a host who is the only member covers the rise themselves', async () => {
       const { itemId } = await givenItem(300_000);
       const host = await newUser();
       const gg = (
@@ -539,12 +580,19 @@ describe('Group-gift settle-up (e2e)', () => {
           .expect(201)
       ).body as Envelope<GroupGiftView>;
 
-      const refused = await http()
-        .post(`${V1}/group-gifts/${gg.data.id}/settlements/top-up`)
-        .set(auth(host.token))
-        .send({ additionalAmountMinor: 100_000 })
-        .expect(409);
-      expect((refused.body as Envelope<never>).error?.message).toContain('nobody but you');
+      const rows = (
+        await http()
+          .post(`${V1}/group-gifts/${gg.data.id}/settlements/top-up`)
+          .set(auth(host.token))
+          .send({ additionalAmountMinor: 100_000 })
+          .expect(201)
+      ).body as Envelope<SettlementView[]>;
+
+      // Nobody to ask, so no requests — the whole ₹1,000 is the host's share.
+      expect(rows.data).toHaveLength(0);
+      const after = await groupGiftModel.findById(gg.data.id).exec();
+      expect(after!.targetAmountMinor).toBe(400_000);
+      expect(after!.collectedAmountMinor).toBe(100_000);
     });
 
     it('refuses a request for nothing', async () => {
@@ -608,8 +656,11 @@ describe('Group-gift settle-up (e2e)', () => {
       await http().post(`${V1}/settlements/${first.id}/received`).set(auth(host.token)).expect(200);
       await http().post(`${V1}/settlements/${first.id}/received`).set(auth(host.token)).expect(200);
 
+      // The host's share was credited when they asked; the member's share
+      // once, however many times it is confirmed.
+      const hostShare = 100_000 - rows.data.reduce((sum, r) => sum + r.amountMinor, 0);
       const gg = await groupGiftModel.findById(ggId).exec();
-      expect(gg!.collectedAmountMinor).toBe(300_000 + first.amountMinor);
+      expect(gg!.collectedAmountMinor).toBe(300_000 + hostShare + first.amountMinor);
     });
 
     /**

@@ -197,8 +197,9 @@ export class SettlementService {
    *
    * Split across *named members* rather than only past contributors — the
    * frame's copy is "Each Member needs to add ₹333", and someone who joined
-   * without pledging is still a member. The host is not among them: they are
-   * the one asking, and the shortfall is already theirs to carry.
+   * without pledging is still a member. The host is one of them and pays an
+   * equal share, counted as paid at once rather than raised as a request —
+   * see below. A host who is the group's only member simply covers it all.
    */
   async requestTopUp(
     groupGiftId: string,
@@ -216,17 +217,12 @@ export class SettlementService {
       );
     }
 
-    // Everybody but the host: the initiator is a participant too, and a
-    // request for ₹2,000 across a host and three members was billing the host
-    // ₹500 of their own ask — money they are already out of pocket for.
-    const members = gg.participantIds.map((id) => id.toString()).filter((id) => id !== hostId);
-    if (members.length === 0) {
-      throw new AppException(
-        ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
-        'There is nobody but you to ask',
-        409,
-      );
-    }
+    // The host first, then everybody else. The host pays a share like any
+    // member — they started the group, and a rise in price is theirs to share
+    // in too — and first in line means any odd paise of an uneven split land
+    // on them rather than on the people being asked.
+    const others = gg.participantIds.map((id) => id.toString()).filter((id) => id !== hostId);
+    const payers = [hostId, ...others];
 
     gg.targetAmountMinor += input.additionalAmountMinor;
     // Reopened, so the gap can be closed the ordinary way as well as through
@@ -243,11 +239,28 @@ export class SettlementService {
     }
     await gg.save();
 
-    const allocations = SettlementService.splitEvenly(
+    const [hostShare, ...othersShares] = SettlementService.splitEvenly(
       input.additionalAmountMinor,
-      members.length,
-    ).map((amountMinor, i) => ({ contributorId: members[i], amountMinor }));
+      payers.length,
+    );
 
+    // The host's share is not a request. A top-up is paid *to* the host, so a
+    // settlement for it would be the host owing themselves — there is nothing
+    // to chase and nobody to confirm it. It counts as their contribution the
+    // moment they ask, which is also what they are committing to by asking.
+    if (hostShare > 0) {
+      await this.credit({
+        groupGiftId: gg._id,
+        userId: gg.initiatorId,
+        amountMinor: hostShare,
+        key: `top-up-host:${new Types.ObjectId().toString()}`,
+      });
+    }
+
+    const allocations = othersShares.map((amountMinor, i) => ({
+      contributorId: others[i],
+      amountMinor,
+    }));
     return this.raise(gg, SettlementDirection.TOP_UP, allocations, input.note ?? null);
   }
 
@@ -456,19 +469,41 @@ export class SettlementService {
    * rather than a second credit.
    */
   private async creditTopUp(settlement: SettlementDocument): Promise<void> {
-    const key = `settlement:${settlement._id.toString()}`;
+    await this.credit({
+      groupGiftId: settlement.groupGiftId,
+      userId: settlement.contributorId,
+      amountMinor: settlement.amountMinor,
+      key: `settlement:${settlement._id.toString()}`,
+    });
+  }
+
+  /**
+   * Records money the host now holds as a confirmed contribution.
+   *
+   * Shared by a member's confirmed top-up and the host's own share of one:
+   * both are somebody putting money towards the gift, and contributions are
+   * the one record the collected total, the balance and the nightly
+   * reconciler all come from. [key] is the idempotency key, so crediting the
+   * same thing twice is a no-op rather than a second credit.
+   */
+  private async credit(input: {
+    groupGiftId: Types.ObjectId;
+    userId: Types.ObjectId;
+    amountMinor: number;
+    key: string;
+  }): Promise<void> {
     try {
       await this.contributions.create({
-        groupGiftId: settlement.groupGiftId,
-        userId: settlement.contributorId,
-        amountMinor: settlement.amountMinor,
+        groupGiftId: input.groupGiftId,
+        userId: input.userId,
+        amountMinor: input.amountMinor,
         status: ContributionStatus.CONFIRMED,
         anonymous: false,
         message: null,
-        idempotencyKey: key,
+        idempotencyKey: input.key,
       });
     } catch (err) {
-      // Already credited on an earlier confirmation of this settlement.
+      // Already credited.
       if ((err as { code?: number })?.code === 11000) return;
       throw err;
     }
@@ -477,29 +512,29 @@ export class SettlementService {
     // the same way `contribute` counts one.
     const prior = await this.contributions
       .countDocuments({
-        groupGiftId: settlement.groupGiftId,
-        userId: settlement.contributorId,
+        groupGiftId: input.groupGiftId,
+        userId: input.userId,
         status: ContributionStatus.CONFIRMED,
-        idempotencyKey: { $ne: key },
+        idempotencyKey: { $ne: input.key },
       })
       .exec();
 
     await this.groupGifts
       .updateOne(
-        { _id: settlement.groupGiftId },
+        { _id: input.groupGiftId },
         {
           $inc: {
-            collectedAmountMinor: settlement.amountMinor,
+            collectedAmountMinor: input.amountMinor,
             ...(prior === 0 ? { contributorCount: 1 } : {}),
           },
-          $addToSet: { participantIds: settlement.contributorId },
+          $addToSet: { participantIds: input.userId },
         },
       )
       .exec();
 
     // Full again once the last share lands, so the group stops asking for
     // money it no longer needs.
-    const gg = await this.groupGifts.findById(settlement.groupGiftId).exec();
+    const gg = await this.groupGifts.findById(input.groupGiftId).exec();
     if (
       gg &&
       gg.status === GroupGiftStatus.OPEN &&
