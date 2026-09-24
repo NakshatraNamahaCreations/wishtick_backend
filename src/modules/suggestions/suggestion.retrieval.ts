@@ -78,12 +78,26 @@ export interface PlannedQuery {
  * Every plain search is exactly the category query Discover and the prewarm
  * already make, so they usually cost nothing.
  */
+/**
+ * The one interest term this person's searches are narrowed by — "jewellery",
+ * "art" — or undefined when they have none we can search with.
+ *
+ * Exported because it is not only the shelf's: the grid behind "Explore More"
+ * has to search for the same thing, or paging a personal shelf lands on the
+ * shared category page. Two people whose top *category* is the same — a
+ * jewellery lover and a painter are both "fashion" — then browse an identical
+ * grid, which is exactly what it looks like: a shelf that was never theirs.
+ */
+export function topSearchTerm(taste: TasteProfile): string | undefined {
+  return taste.tokens
+    .filter((token) => token.source === 'interest' && isCanonicalTerm(token.term))
+    .sort((a, b) => b.weight - a.weight || a.term.localeCompare(b.term))[0]?.term;
+}
+
 export function planQueries(taste: TasteProfile): PlannedQuery[] {
   const maxPriceMinor =
     taste.budget.source === 'explicit' ? bandFor(taste.budget.maxMinor) : undefined;
-  const topTerm = taste.tokens
-    .filter((token) => token.source === 'interest' && isCanonicalTerm(token.term))
-    .sort((a, b) => b.weight - a.weight || a.term.localeCompare(b.term))[0]?.term;
+  const topTerm = topSearchTerm(taste);
 
   const search = (category: string, shelfRank: number, q?: string): PlannedQuery => ({
     query: {

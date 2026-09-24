@@ -20,6 +20,7 @@ import {
   MAX_VENDOR_QUERIES_PER_REQUEST,
   planQueries,
   SUGGESTION_PAGE_SIZE,
+  topSearchTerm,
 } from './suggestion.retrieval';
 import { shelfForOccasionAndRelation } from '../taste/taste.curation';
 import { SearchAllowance, VendorBudgetService } from './vendor-budget.service';
@@ -164,6 +165,10 @@ export class SuggestionsService {
         recipientUserId: targetId,
         recipientName: displayName,
         category: taste.shelves[0] ?? null,
+        // And what they like travels with it too. Without this the grid pages
+        // the shared category search: a jewellery lover and a painter are
+        // both "fashion", and both were handed the same page of scrunchies.
+        keywords: topSearchTerm(taste) ?? null,
         minPriceMinor: null,
         // The same rule as the searches: only a price somebody asked for.
         maxPriceMinor:

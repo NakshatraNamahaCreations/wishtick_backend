@@ -612,6 +612,16 @@ describe('Gift suggestions (e2e)', () => {
       page: number;
     }
 
+    /** The filter the shelf hands to "Explore More". */
+    const queryFor = async (viewer: Actor, target: Actor) => {
+      const res = await suggestionsFor(viewer, target).expect(200);
+      return (
+        res.body as Envelope<{
+          exploreQuery: { category: string | null; keywords: string | null };
+        }>
+      ).data.exploreQuery;
+    };
+
     const searchFor = (viewer: Actor, target: Actor, query: string) =>
       request(app.getHttpServer())
         .get(`${V1}/people/${target.userId}/gift-search${query}`)
@@ -696,6 +706,40 @@ describe('Gift suggestions (e2e)', () => {
       const res = await searchFor(rohan, priyal, '?category=books').expect(200);
 
       expect((res.body as Envelope<SearchBody>).data.personalised).toBe(false);
+    });
+
+    it('hands Explore More what they like, not just the shelf they are on', async () => {
+      // The bug this pins: a jewellery lover and a shoe lover are both
+      // "fashion", so paging either shelf landed on one shared category page
+      // — the same grid for two people with nothing in common but a heading.
+      const priya = await someone('priya_g8', 'Priya');
+      const suma = await someone('suma_g8', 'Suma');
+      const rohan = await someone('rohan_g8', 'Rohan');
+      await connect(rohan, priya);
+      await connect(rohan, suma);
+      await setTaste(priya, {
+        interestCategories: ['fashion'],
+        interests: ['fashion_jewellery'],
+      });
+      await setTaste(suma, {
+        interestCategories: ['fashion'],
+        interests: ['fashion_shoes'],
+      });
+
+      const hers = await queryFor(rohan, priya);
+      const sumas = await queryFor(rohan, suma);
+
+      expect(hers.category).toBe(sumas.category);
+      expect(hers.keywords).toBe('jewellery');
+      expect(sumas.keywords).toBe('shoes');
+    });
+
+    it('says there are no keywords when they said nothing to search for', async () => {
+      const quiet = await someone('quiet_g8', 'Quiet');
+      const rohan = await someone('rohan_g9', 'Rohan');
+      await connect(rohan, quiet);
+
+      expect((await queryFor(rohan, quiet)).keywords).toBeNull();
     });
 
     it('the suggestion shelf hands its person to Explore More', async () => {
