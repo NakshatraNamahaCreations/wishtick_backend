@@ -104,6 +104,21 @@ export class CreateGroupGiftDto {
   @IsEnum(GroupGiftVisibility)
   visibility?: GroupGiftVisibility;
 
+  /**
+   * The owner is organising a group gift for themself: their WishMates chip
+   * in on something they want.
+   *
+   * An explicit ask, not something inferred from the list. Without it an
+   * owner on their own list is refused exactly as before — only the add
+   * sheet's Group Gifting flow, where "Myself" is chosen on purpose, sends
+   * it. The gift is then visible to them: they are its organiser, and a
+   * surprise kept from the person who started it would hide it from them.
+   */
+  @ApiPropertyOptional({ default: false })
+  @IsOptional()
+  @IsBoolean()
+  forMyself?: boolean;
+
   @ApiPropertyOptional({ description: "The initiator's pitch, shown on the share card." })
   @IsOptional()
   @IsString()

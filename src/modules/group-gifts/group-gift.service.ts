@@ -257,6 +257,7 @@ export class GroupGiftService {
   async create(itemId: string, userId: string, dto: CreateGroupGiftDto): Promise<GroupGiftView> {
     const item = await this.gifting.loadGiftableItem(itemId, userId, {
       ownerForSomeoneElse: true,
+      ownerForSelf: dto.forMyself === true,
     });
 
     // Which party this is for, decided once and here. See the note on
@@ -292,7 +293,11 @@ export class GroupGiftService {
       );
     }
     const deadline = this.parseDeadline(dto.deadline);
-    const visibility = dto.visibility ?? GroupGiftVisibility.HIDDEN_FROM_OWNER;
+    // Hidden from the recipient keeps a surprise — unless the recipient is the
+    // one organising it, when it would hide their own group gift from them.
+    const visibility = recipientId.equals(new Types.ObjectId(userId))
+      ? GroupGiftVisibility.VISIBLE
+      : (dto.visibility ?? GroupGiftVisibility.HIDDEN_FROM_OWNER);
 
     const gift = await this.locks.withBestEffortLock(
       `gift-item:${itemId}`,

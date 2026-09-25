@@ -484,11 +484,18 @@ export class GiftingService {
    * it: on a list made *for* a WishMate, the owner is not the person being
    * given anything, so organising a group gift there is not gifting yourself.
    * The caller is then responsible for making that WishMate the recipient.
+   *
+   * [ownerForSelf] is the other, narrower still: a group gift the owner starts
+   * *for themself*, which the caller asked for by name. The owner is then the
+   * recipient, and the caller must not hide the gift from them.
    */
   async loadGiftableItem(
     itemId: string,
     userId: string,
-    { ownerForSomeoneElse = false }: { ownerForSomeoneElse?: boolean } = {},
+    {
+      ownerForSomeoneElse = false,
+      ownerForSelf = false,
+    }: { ownerForSomeoneElse?: boolean; ownerForSelf?: boolean } = {},
   ): Promise<WishlistItemDocument> {
     if (!Types.ObjectId.isValid(itemId)) {
       throw new AppException(ErrorCode.WISHLIST_ITEM_NOT_FOUND, 'Item not found', 404);
@@ -507,6 +514,7 @@ export class GiftingService {
     }
     if (wishlist.ownerId.toString() === userId) {
       if (ownerForSomeoneElse && GiftingService.isForSomeoneElse(wishlist)) return item;
+      if (ownerForSelf && !GiftingService.isForSomeoneElse(wishlist)) return item;
       throw new AppException(
         ErrorCode.CANNOT_GIFT_OWN_ITEM,
         'You cannot gift an item from your own wishlist',
