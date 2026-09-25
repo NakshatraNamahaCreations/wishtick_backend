@@ -19,7 +19,15 @@ export const SHELF_VIEWED = 'shelf_viewed';
 export const SHELF_PRODUCT_OPENED = 'shelf_product_opened';
 
 /** Where a shelf can appear. */
-export const SHELF_SURFACES = ['profile', 'discover', 'invite', 'explore', 'home'] as const;
+export const SHELF_SURFACES = [
+  'profile',
+  'discover',
+  'invite',
+  'explore',
+  'home',
+  // "Gift ideas for Suma" under Suma's wishlist, where the list is filled.
+  'wishlist',
+] as const;
 
 /**
  * What a shelf can be. Discover's section kinds, plus the two shelves that
