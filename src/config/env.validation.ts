@@ -183,6 +183,10 @@ export const envValidationSchema = Joi.object({
   MEDIA_MAX_BYTES: Joi.number()
     .min(1024)
     .default(10 * 1024 * 1024),
+  /** Total a user's memory photos, videos and voice notes may take up. */
+  MEMORY_STORAGE_QUOTA_BYTES: Joi.number()
+    .min(1024 * 1024)
+    .default(500 * 1024 * 1024),
   /**
    * How long a media doc sits after being orphaned (a newer upload replaced
    * it — a profile photo, an event/wishlist/memory cover) before the sweeper

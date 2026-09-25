@@ -21,6 +21,7 @@ import {
   AddMemoryWishDto,
   CreateMemoryDto,
   SendMemoryReplyDto,
+  ShareMemoriesDto,
   UpdateMemoryDto,
 } from './dto/memory.dto';
 import { MemoriesService } from './memories.service';
@@ -70,6 +71,32 @@ export class MemoriesController {
   }
 
   /** Declared before `:id`, for the same reason as `reply-audience` below. */
+  @Get('shared-with-me')
+  @ApiOperation({
+    summary: '"Shared With You" — opened memories other people have shown you',
+  })
+  listSharedWithMe(@CurrentUser('id') userId: string): Promise<MemoryCapsuleView[]> {
+    return this.memories.listSharedWithMe(userId);
+  }
+
+  @Post('share')
+  @ApiOperation({
+    summary: 'Show some of your opened memories to some of your WishMates',
+    description:
+      'Only memories made for you, only once opened, and only with WishMates. Idempotent; ' +
+      'only people newly given access are notified.',
+  })
+  @ApiResponseDoc({ status: 404, description: 'MEMORY_NOT_FOUND — not yours to share' })
+  @ApiResponseDoc({ status: 409, description: 'INVALID_MEMORY_TRANSITION — still sealed' })
+  @ApiResponseDoc({ status: 403, description: 'FORBIDDEN — not a WishMate' })
+  share(
+    @CurrentUser('id') userId: string,
+    @Body() dto: ShareMemoriesDto,
+  ): Promise<{ shared: number; people: number }> {
+    return this.memories.share(userId, dto.capsuleIds, dto.userIds);
+  }
+
+  /** Declared before `:id`, for the same reason as `reply-audience` below. */
   @Get('incoming')
   @ApiOperation({
     summary: 'Sealed memories made for the caller: occasion and unlock time only',
@@ -112,6 +139,16 @@ export class MemoriesController {
     @Body() dto: SendMemoryReplyDto,
   ): Promise<MemoryReplyView> {
     return this.replies.send(userId, dto);
+  }
+
+  @Delete(':id/shares/:userId')
+  @ApiOperation({ summary: 'Stop showing one of your memories to one person' })
+  unshare(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Param('userId') viewerId: string,
+  ): Promise<MemoryCapsuleView> {
+    return this.memories.unshare(userId, id, viewerId);
   }
 
   @Delete('replies/:replyId')

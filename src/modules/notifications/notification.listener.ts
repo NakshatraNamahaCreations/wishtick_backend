@@ -10,6 +10,8 @@ import {
   EVENT_INVITED,
   EVENT_RSVP_CHANGED,
   EVENT_WISHLIST_ANSWERED,
+  EVENT_JOIN_ACCEPTED,
+  EVENT_JOIN_REQUESTED,
   EVENT_WISHLIST_OFFERED,
   GIFT_FULFILLED,
   GIFT_PURCHASED,
@@ -21,6 +23,7 @@ import {
   GROUP_GIFT_JOINED,
   GROUP_GIFT_PURCHASED,
   MEMORY_REPLY_SENT,
+  MEMORY_SHARED,
   MEMORY_UNLOCKED,
   REEL_RELEASED,
   USER_REGISTERED,
@@ -30,6 +33,8 @@ import {
   type EventCalledOffEvent,
   type EventDetailsChangedEvent,
   type EventInvitedEvent,
+  type EventJoinAcceptedEvent,
+  type EventJoinRequestedEvent,
   type EventRsvpChangedEvent,
   type EventWishlistAnsweredEvent,
   type EventWishlistOfferedEvent,
@@ -41,6 +46,7 @@ import {
   type GroupGiftJoinedEvent,
   type GroupGiftPurchasedEvent,
   type MemoryReplySentEvent,
+  type MemorySharedEvent,
   type MemoryUnlockedEvent,
   type ReelReleasedEvent,
   type UserRegisteredEvent,
@@ -330,6 +336,41 @@ export class NotificationListener {
     });
   }
 
+  @OnEvent(EVENT_JOIN_REQUESTED)
+  async onEventJoinRequested(e: EventJoinRequestedEvent): Promise<void> {
+    await this.guard('event-join-requested', async () => {
+      await this.notifications.enqueue({
+        userId: e.hostId,
+        type: NotificationType.EVENT_JOIN_REQUESTED,
+        // The event first, so the app can open that event's queue; the
+        // request after it, so two people asking are two notifications.
+        refId: `${e.eventId}:${e.requestId}`,
+        payload: {
+          requesterName: e.requesterName,
+          eventTitle: e.eventTitle,
+          url: `${this.web}/events/${e.eventId}`,
+        },
+      });
+    });
+  }
+
+  @OnEvent(EVENT_JOIN_ACCEPTED)
+  async onEventJoinAccepted(e: EventJoinAcceptedEvent): Promise<void> {
+    await this.guard('event-join-accepted', async () => {
+      await this.notifications.enqueue({
+        userId: e.requesterId,
+        type: NotificationType.EVENT_JOIN_ACCEPTED,
+        // The token, as an invitation's own notification carries: it is what
+        // the app opens their invitation by.
+        refId: e.inviteToken,
+        payload: {
+          eventTitle: e.eventTitle,
+          url: `${this.web}/i/${e.inviteToken}`,
+        },
+      });
+    });
+  }
+
   @OnEvent(EVENT_WISHLIST_OFFERED)
   async onEventWishlistOffered(e: EventWishlistOfferedEvent): Promise<void> {
     await this.guard('event-wishlist-offered', async () => {
@@ -447,6 +488,35 @@ export class NotificationListener {
             whenText,
             venue: e.venue,
             url: `${this.web}/i/${r.inviteToken}`,
+          },
+        });
+      }
+    });
+  }
+
+  /**
+   * Memories shown to somebody, one notification per viewer however many
+   * memories they were given.
+   *
+   * The refId leads with the first memory — the app opens it, and the story
+   * plays on from there — and ends with when it was shared, so a second share
+   * next week is news rather than a repeat of this one.
+   */
+  @OnEvent(MEMORY_SHARED)
+  async onMemoryShared(e: MemorySharedEvent): Promise<void> {
+    await this.guard('memory-shared', async () => {
+      const ownerName = await this.userName(e.ownerId);
+      for (const grant of e.grants) {
+        const first = grant.capsuleIds[0];
+        await this.notifications.enqueue({
+          userId: grant.viewerId,
+          type: NotificationType.MEMORY_SHARED,
+          refId: `${first}:${e.sharedAt.getTime()}`,
+          payload: {
+            ownerName,
+            count: grant.capsuleIds.length,
+            title: e.titles[first] ?? 'a memory',
+            url: `${this.web}/memories/${first}`,
           },
         });
       }

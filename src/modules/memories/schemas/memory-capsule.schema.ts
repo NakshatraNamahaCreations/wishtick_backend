@@ -135,6 +135,17 @@ export class MemoryCapsule {
   @Prop({ type: Number, default: 0 })
   wishCount!: number;
 
+  /**
+   * WishMates the recipient has chosen to show this memory to.
+   *
+   * The wishes are written to the recipient and readable by them alone — that
+   * is the promise a sealed memory makes. This is the one way past it, and it
+   * is the recipient's to open: they pick who, and can take it back, at which
+   * point the next read no longer includes the wishes.
+   */
+  @Prop({ type: [SchemaTypes.ObjectId], ref: 'User', default: [] })
+  sharedWith!: Types.ObjectId[];
+
   createdAt!: Date;
   updatedAt!: Date;
 }
@@ -150,3 +161,5 @@ MemoryCapsuleSchema.index({ recipientUserId: 1, unlockAt: -1 });
 // The unlock sweeper's safety net — a delayed job is the primary trigger, but a
 // job lost to a Redis flush must still be caught.
 MemoryCapsuleSchema.index({ status: 1, unlockAt: 1 });
+// "Shared With You": capsules a recipient has shown this viewer.
+MemoryCapsuleSchema.index({ sharedWith: 1, unlockedAt: -1 });

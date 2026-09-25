@@ -266,6 +266,8 @@ export class MemoryRepliesService {
       throw new AppException(ErrorCode.MEMORY_REPLY_NOT_FOUND, 'Reply not found', 404);
     }
     await reply.deleteOne();
+    // Frees the space it took from the author's allowance, and the bytes.
+    if (reply.mediaId) await this.media.markOrphaned(reply.mediaId).catch(() => undefined);
   }
 
   /**

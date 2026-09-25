@@ -550,6 +550,53 @@ describe('Onboarding, profile & media (e2e)', () => {
         .expect(400);
     });
 
+    describe('the age floor (13+)', () => {
+      /** A date-only string [years] years before today, UTC. */
+      const yearsAgo = (years: number, extraDays = 0) => {
+        const now = new Date();
+        return new Date(
+          Date.UTC(now.getUTCFullYear() - years, now.getUTCMonth(), now.getUTCDate() + extraDays),
+        )
+          .toISOString()
+          .slice(0, 10);
+      };
+
+      it('refuses somebody under 13, at registration and on a later edit', async () => {
+        const { token } = await newUser();
+
+        const onboarding = await request(app.getHttpServer())
+          .post(`${V1}/onboarding/steps/profile`)
+          .set(auth(token))
+          .send({ displayName: 'Young', dateOfBirth: yearsAgo(12) })
+          .expect(400);
+        expect((onboarding.body as { error: { message: string } }).error.message).toContain(
+          'at least 13',
+        );
+
+        await request(app.getHttpServer())
+          .patch(`${V1}/me`)
+          .set(auth(token))
+          .send({ dateOfBirth: yearsAgo(12) })
+          .expect(400);
+      });
+
+      it('lets somebody in on their 13th birthday, not the day before', async () => {
+        const { token } = await newUser();
+
+        // A day short: still 12.
+        await request(app.getHttpServer())
+          .patch(`${V1}/me`)
+          .set(auth(token))
+          .send({ dateOfBirth: yearsAgo(13, 1) })
+          .expect(400);
+        await request(app.getHttpServer())
+          .patch(`${V1}/me`)
+          .set(auth(token))
+          .send({ dateOfBirth: yearsAgo(13) })
+          .expect(200);
+      });
+    });
+
     it('requires authentication', async () => {
       await request(app.getHttpServer()).get(`${V1}/me`).expect(401);
       await request(app.getHttpServer()).patch(`${V1}/me`).send({ displayName: 'x' }).expect(401);

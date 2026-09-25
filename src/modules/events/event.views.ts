@@ -50,6 +50,12 @@ export interface EventView {
   share?: { slug: string; url: string };
   rsvpCounts?: RsvpCounts;
   /**
+   * Host-only, on the single-event read. People who opened this private
+   * event's link and asked to come, still waiting on an answer — the badge on
+   * the host's "Join requests" row. Zero once the event has started.
+   */
+  pendingJoinRequests?: number;
+  /**
    * Guest wishlists waiting on the host's answer. Host-only.
    *
    * Carried on the event itself so "My Events" can badge the card: the queue

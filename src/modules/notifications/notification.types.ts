@@ -53,6 +53,8 @@ export enum NotificationType {
   CELEBRATION_REMINDER = 'celebration_reminder',
   EVENT_INVITE = 'event_invite',
   EVENT_WISHLIST_OFFERED = 'event_wishlist_offered',
+  EVENT_JOIN_REQUESTED = 'event_join_requested',
+  EVENT_JOIN_ACCEPTED = 'event_join_accepted',
   EVENT_WISHLIST_ANSWERED = 'event_wishlist_answered',
   EVENT_RSVP = 'event_rsvp',
   EVENT_CANCELLED = 'event_cancelled',
@@ -67,6 +69,7 @@ export enum NotificationType {
   REEL_RELEASED = 'reel_released',
   MEMORY_UNLOCKED = 'memory_unlocked',
   MEMORY_REPLY = 'memory_reply',
+  MEMORY_SHARED = 'memory_shared',
   CONTENT_REMOVED = 'content_removed',
 }
 
@@ -221,6 +224,22 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     category: NotificationCategory.EVENTS,
     template: 'event-wishlist-offered',
   },
+  [NotificationType.EVENT_JOIN_REQUESTED]: {
+    // To the host. Somebody holding the link to a private party is waiting to
+    // be let in, and the host is the only one who can — nothing else would
+    // tell them the ask exists.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.EVENTS,
+    template: 'event-join-requested',
+  },
+  [NotificationType.EVENT_JOIN_ACCEPTED]: {
+    // To whoever asked. A decline is deliberately never sent.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.EVENTS,
+    template: 'event-join-accepted',
+  },
   [NotificationType.EVENT_WISHLIST_ANSWERED]: {
     // The other half. Offering a list used to end in silence whichever way the
     // host decided.
@@ -303,6 +322,14 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.MEMORIES,
     template: 'memory-unlocked',
+  },
+  [NotificationType.MEMORY_SHARED]: {
+    // Somebody chose to show you something private of theirs; that is worth
+    // hearing about now, not in tomorrow's digest.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.MEMORIES,
+    template: 'memory-shared',
   },
   [NotificationType.MEMORY_REPLY]: {
     channels: [NotificationChannel.IN_APP, NotificationChannel.EMAIL, NotificationChannel.PUSH],

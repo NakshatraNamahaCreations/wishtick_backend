@@ -190,6 +190,11 @@ export enum ErrorCode {
    * unguessable, so what leaks is only "the link you were sent is real".
    */
   EVENT_INVITE_REQUIRED = 'EVENT_INVITE_REQUIRED',
+  /** The host already said no to this person joining; they may not ask again. */
+  JOIN_REQUEST_DECLINED = 'JOIN_REQUEST_DECLINED',
+  /** Asking to join, or answering an ask, after the event has begun. */
+  EVENT_ALREADY_STARTED = 'EVENT_ALREADY_STARTED',
+  JOIN_REQUEST_NOT_FOUND = 'JOIN_REQUEST_NOT_FOUND',
   WISHLIST_NOT_LINKABLE = 'WISHLIST_NOT_LINKABLE',
 
   // Products / affiliate
@@ -205,6 +210,8 @@ export enum ErrorCode {
   // Media
   MEDIA_TYPE_NOT_ALLOWED = 'MEDIA_TYPE_NOT_ALLOWED',
   MEDIA_TOO_LARGE = 'MEDIA_TOO_LARGE',
+  /** This upload would take the owner past their memory storage allowance. */
+  MEMORY_STORAGE_FULL = 'MEMORY_STORAGE_FULL',
   MEDIA_TOO_LONG = 'MEDIA_TOO_LONG',
   MEDIA_NOT_FOUND = 'MEDIA_NOT_FOUND',
   MEDIA_NOT_UPLOADED = 'MEDIA_NOT_UPLOADED',

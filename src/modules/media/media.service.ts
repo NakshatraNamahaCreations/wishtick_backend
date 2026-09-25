@@ -47,6 +47,21 @@ export interface PurposeLimit {
 
 export type MediaLimitsView = Record<MediaPurpose, PurposeLimit>;
 
+/**
+ * The purposes that count towards a person's memory storage: what they
+ * recorded into a memory, sent back from one, or dressed one with.
+ */
+export const MEMORY_PURPOSES: MediaPurpose[] = [
+  MediaPurpose.MEMORY_WISH,
+  MediaPurpose.MEMORY_REPLY,
+  MediaPurpose.MEMORY_COVER,
+];
+
+export interface MemoryStorageUsage {
+  usedBytes: number;
+  quotaBytes: number;
+}
+
 @Injectable()
 export class MediaService {
   private readonly logger = new Logger(MediaService.name);
@@ -103,6 +118,52 @@ export class MediaService {
   }
 
   /**
+   * How much of their memory allowance one person has used, and the allowance.
+   *
+   * Counts what they *uploaded*, confirmed and still kept: a pending upload
+   * holds nothing yet, and an orphaned or failed one is on its way out. The
+   * uploaded size rather than what the transcoder stored — the ladder of
+   * resolutions is our cost of playing it, not something they chose to keep.
+   */
+  async memoryUsage(ownerId: string): Promise<MemoryStorageUsage> {
+    const [row] = await this.model
+      .aggregate<{ total: number }>([
+        {
+          $match: {
+            ownerId: new Types.ObjectId(ownerId),
+            purpose: { $in: MEMORY_PURPOSES },
+            status: { $in: [MediaStatus.READY, MediaStatus.PROCESSING] },
+          },
+        },
+        { $group: { _id: null, total: { $sum: { $ifNull: ['$sizeBytes', 0] } } } },
+      ])
+      .exec();
+    return {
+      usedBytes: row?.total ?? 0,
+      quotaBytes: this.config.get('storage.memoryQuotaBytes', { infer: true }),
+    };
+  }
+
+  /**
+   * Refuses [incomingBytes] more memory media when it would go over.
+   *
+   * The message names the allowance and the way out, because the person
+   * hitting it is in the middle of recording something for somebody.
+   */
+  private async assertMemoryRoom(ownerId: string, incomingBytes: number): Promise<void> {
+    const { usedBytes, quotaBytes } = await this.memoryUsage(ownerId);
+    if (usedBytes + incomingBytes <= quotaBytes) return;
+    const mb = (n: number) => Math.floor(n / (1024 * 1024));
+    throw new AppException(
+      ErrorCode.MEMORY_STORAGE_FULL,
+      `This would take your memories past their ${mb(quotaBytes)} MB of space ` +
+        `(${mb(usedBytes)} MB used). Remove a wish you no longer need, or send a shorter one.`,
+      413,
+      { usedBytes, quotaBytes, incomingBytes },
+    );
+  }
+
+  /**
    * Issues a presigned upload. The Media doc is created PENDING: at this point
    * we have only a promise that bytes will arrive, and plenty never will.
    */
@@ -132,6 +193,13 @@ export class MediaService {
         413,
         { maxBytes },
       );
+    }
+
+    // Checked here as a courtesy — before a phone spends minutes uploading a
+    // clip that will be refused — and again at confirm against real bytes,
+    // since this size is only the client's word.
+    if (MEMORY_PURPOSES.includes(input.purpose)) {
+      await this.assertMemoryRoom(ownerId, input.sizeBytes ?? 0);
     }
 
     const storageKey = MediaService.buildKey(ownerId, input.purpose, input.contentType);
@@ -205,6 +273,17 @@ export class MediaService {
         413,
         { maxBytes, actualBytes: info.sizeBytes },
       );
+    }
+
+    // The allowance, against what actually landed. This row is still pending,
+    // so it is not in the total yet; its bytes are the ones being asked about.
+    if (MEMORY_PURPOSES.includes(media.purpose)) {
+      try {
+        await this.assertMemoryRoom(ownerId, info.sizeBytes ?? 0);
+      } catch (err) {
+        await this.discard(media, 'memory-quota');
+        throw err;
+      }
     }
 
     const actualType = info.contentType ?? media.declaredContentType;

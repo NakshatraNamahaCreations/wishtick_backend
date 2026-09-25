@@ -124,6 +124,17 @@ export interface MemoryCapsuleView {
    * frame where one of them is still loading. It is also what gates replying.
    */
   isRecipient: boolean;
+  /**
+   * Whether the recipient has shown this memory to the caller. Such a viewer
+   * reads the wishes, but it is not theirs: they cannot reply, react or share
+   * it on.
+   */
+  isSharedWithMe: boolean;
+  /**
+   * Who the recipient has shared it with. Recipient-only — nobody else needs
+   * to know who else was shown.
+   */
+  sharedWith?: PublicIdentity[];
   createdAt: Date;
   // Everything below is empty until `unlocked` — the time-lock.
   wishes: MemoryWishView[];
@@ -197,11 +208,17 @@ export const toMemoryCapsuleView = (
     viewerId: string | null;
     shareBaseUrl?: string;
     person?: PublicIdentity | null;
+    /** Identities for [MemoryCapsule.sharedWith], shown to the recipient only. */
+    sharedWith?: PublicIdentity[];
   },
 ): MemoryCapsuleView => {
   const isHost = opts.viewerId !== null && capsule.hostId.toString() === opts.viewerId;
   const isRecipient =
     opts.viewerId !== null && capsule.recipientUserId?.toString() === opts.viewerId;
+  const isSharedWithMe =
+    opts.viewerId !== null &&
+    !isRecipient &&
+    (capsule.sharedWith ?? []).some((id) => id.toString() === opts.viewerId);
   const unlocked = MEMORY_CONTENT_VISIBLE.includes(capsule.status);
 
   const view: MemoryCapsuleView = {
@@ -227,6 +244,8 @@ export const toMemoryCapsuleView = (
     hostId: capsule.hostId.toString(),
     isHost,
     isRecipient,
+    isSharedWithMe,
+    ...(isRecipient ? { sharedWith: opts.sharedWith ?? [] } : {}),
     createdAt: capsule.createdAt,
     // The wishes are for the person the memory is *for*, and nobody else —
     // opening the capsule used to hand every wish to every viewer, so a host
@@ -234,7 +253,9 @@ export const toMemoryCapsuleView = (
     // recipient. Unlocking is what makes the capsule readable *to them*; it is
     // not a general publication. Contributors read their own words back
     // through `/wishes/mine`, which is unaffected.
-    wishes: unlocked && isRecipient ? wishes.map(toMemoryWishView) : [],
+    //
+    // The one widening: people the recipient chose to show it to.
+    wishes: unlocked && (isRecipient || isSharedWithMe) ? wishes.map(toMemoryWishView) : [],
   };
 
   if (isHost && opts.shareBaseUrl) {

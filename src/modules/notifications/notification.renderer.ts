@@ -180,6 +180,24 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     ],
     cta: { label: 'Review it', url: s(p, 'url') },
   }),
+  [NotificationType.EVENT_JOIN_REQUESTED]: (p) => ({
+    subject: `${who(p, 'requesterName')} asked to join ${s(p, 'eventTitle', 'your event')}`,
+    title: `${who(p, 'requesterName')} asked to join`,
+    lines: [
+      `${who(p, 'requesterName')} opened the link to ${s(p, 'eventTitle', 'your event')} and asked to come.`,
+      'Accept or decline them from the event.',
+    ],
+    cta: { label: 'Review the request', url: s(p, 'url') },
+  }),
+  [NotificationType.EVENT_JOIN_ACCEPTED]: (p) => ({
+    subject: `You're in — ${s(p, 'eventTitle', 'the event')}`,
+    title: 'Your request was accepted',
+    lines: [
+      `The host accepted your request to join ${s(p, 'eventTitle', 'their event')}.`,
+      'Open the invitation to RSVP.',
+    ],
+    cta: { label: 'View the invitation', url: s(p, 'url') },
+  }),
   [NotificationType.EVENT_WISHLIST_ANSWERED]: (p) => ({
     subject: p.approved
       ? `Your wishlist is on ${s(p, 'eventTitle', 'the event')}`
@@ -265,6 +283,24 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
       title,
       lines: [said || `${who(p, 'hostName')} updated ${event}.`],
       cta: { label: 'View the invitation', url: s(p, 'url') },
+    };
+  },
+  /**
+   * "Priya shared Priya's Birthday with you" — or, for several at once,
+   * "Priya shared 3 memories with you".
+   */
+  [NotificationType.MEMORY_SHARED]: (p) => {
+    const owner = who(p, 'ownerName');
+    const count = Number(p.count);
+    const headline =
+      Number.isFinite(count) && count > 1
+        ? `${owner} shared ${count} memories with you`
+        : `${owner} shared ${s(p, 'title', 'a memory')} with you`;
+    return {
+      subject: headline,
+      title: headline,
+      lines: ['Open it to watch the wishes inside.'],
+      cta: { label: 'Watch it', url: s(p, 'url') },
     };
   },
   [NotificationType.ITEM_PRICE_DROP]: (p) => ({

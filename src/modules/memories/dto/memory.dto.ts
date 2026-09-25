@@ -213,3 +213,23 @@ export class SendMemoryReplyDto {
   @IsMongoId({ each: true })
   recipientIds!: string[];
 }
+
+/** How many memories one share may cover, and how many people it may reach. */
+export const MEMORY_SHARE_MAX_CAPSULES = 50;
+export const MEMORY_SHARE_MAX_PEOPLE = 100;
+
+export class ShareMemoriesDto {
+  @ApiProperty({ type: [String], description: 'Opened memories made for you' })
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(MEMORY_SHARE_MAX_CAPSULES)
+  @IsMongoId({ each: true })
+  capsuleIds!: string[];
+
+  @ApiProperty({ type: [String], description: 'User ids of your WishMates' })
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(MEMORY_SHARE_MAX_PEOPLE)
+  @IsMongoId({ each: true })
+  userIds!: string[];
+}

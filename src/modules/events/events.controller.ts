@@ -40,6 +40,11 @@ import { EventsService } from './events.service';
 import type { EventView, InvitedEventView, InviteView } from './event.views';
 import { InvitePreviewService, type InvitePreview } from './invite-preview.service';
 import { InvitesService, type BulkInviteResult } from './invites.service';
+import {
+  JoinRequestsService,
+  type JoinRequestStatusView,
+  type JoinRequestView,
+} from './join-requests.service';
 import { GuestListExportService, GuestListFormat } from './guest-list-export.service';
 import { templatesForType, type InviteTemplate } from './invite-templates.data';
 import { InviteNotificationsService } from './invite-notifications.service';
@@ -61,6 +66,7 @@ export class EventsController {
     private readonly previews: InvitePreviewService,
     private readonly notifications: InviteNotificationsService,
     private readonly guestListExport: GuestListExportService,
+    private readonly joinRequests: JoinRequestsService,
   ) {}
 
   // ── Templates ─────────────────────────────────────────────────────────────
@@ -120,6 +126,93 @@ export class EventsController {
     return { token: invite.token };
   }
 
+  @Get('events/by-slug/:slug/join-request')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Where you stand with a private event whose link you opened',
+    description:
+      'Read after the join above answers EVENT_INVITE_REQUIRED, so the app can offer ' +
+      '“Request to join”, or say the ask is waiting, or that the host declined it. ' +
+      '`closed` once the event has started. `invited` carries the invitation token.',
+  })
+  joinRequestStatus(
+    @CurrentUser('id') userId: string,
+    @Param('slug') slug: string,
+  ): Promise<JoinRequestStatusView> {
+    return this.joinRequests.statusFor(slug, userId);
+  }
+
+  @Post('events/by-slug/:slug/join-request')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Ask the host to let you into a private event',
+    description:
+      'For a private event you hold the link to but are not invited to. The host is ' +
+      'notified and decides. Idempotent. If the link already lets you in — any event that ' +
+      'is not private, or a number the host invited — you are admitted instead, and the ' +
+      'answer is `invited` with your token.',
+  })
+  @ApiResponseDoc({
+    status: 409,
+    description:
+      'JOIN_REQUEST_DECLINED — the host said no, and you may not ask again. ' +
+      'EVENT_ALREADY_STARTED — too late to ask.',
+  })
+  requestToJoin(
+    @CurrentUser('id') userId: string,
+    @Param('slug') slug: string,
+  ): Promise<JoinRequestStatusView> {
+    return this.joinRequests.request(slug, userId);
+  }
+
+  @Get('events/:id/join-requests')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'People asking to join this event (host only)',
+    description: 'Waiting asks, oldest first. Empty once the event has started.',
+  })
+  joinRequestsForHost(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+  ): Promise<JoinRequestView[]> {
+    return this.joinRequests.listForHost(id, userId);
+  }
+
+  @Post('events/:id/join-requests/:requestId/accept')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Let someone who asked into the event',
+    description: 'Puts them on the guest list and tells them. Answers their place on it.',
+  })
+  @ApiResponseDoc({
+    status: 404,
+    description: 'JOIN_REQUEST_NOT_FOUND — answered already, or none',
+  })
+  acceptJoinRequest(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Param('requestId') requestId: string,
+  ): Promise<InviteView> {
+    return this.joinRequests.accept(id, requestId, userId);
+  }
+
+  @Post('events/:id/join-requests/:requestId/decline')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Turn down someone who asked to join',
+    description: 'The ask leaves your list at once. They are not told, and may not ask again.',
+  })
+  async declineJoinRequest(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Param('requestId') requestId: string,
+  ): Promise<void> {
+    await this.joinRequests.decline(id, requestId, userId);
+  }
+
   @Get('events/mine')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Events you host, with RSVP counts' })
@@ -164,8 +257,12 @@ export class EventsController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'One event you host' })
   @ApiResponseDoc({ status: 404, description: 'EVENT_NOT_FOUND — 404, never 403, for non-hosts' })
-  getOne(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<EventView> {
-    return this.events.getOne(id, userId);
+  async getOne(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<EventView> {
+    const view = await this.events.getOne(id, userId);
+    return {
+      ...view,
+      pendingJoinRequests: await this.joinRequests.pendingCount(view.id, view.startsAt),
+    };
   }
 
   @Patch('events/:id')

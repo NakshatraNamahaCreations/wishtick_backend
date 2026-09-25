@@ -199,6 +199,8 @@ export class MemoryWishesService {
     }
 
     await wish.deleteOne();
+    // Frees the space it took from the contributor's allowance, and the bytes.
+    if (wish.mediaId) await this.media.markOrphaned(wish.mediaId).catch(() => undefined);
     await this.capsuleModel.updateOne({ _id: capsule._id }, { $inc: { wishCount: -1 } }).exec();
   }
 

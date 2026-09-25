@@ -64,6 +64,32 @@ View the invitation: https://app.wishtick.test/x",
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_join_accepted 1`] = `
+{
+  "sms": "Your request was accepted — https://app.wishtick.test/x",
+  "subject": "You're in — Aarav's Birthday",
+  "text": "The host accepted your request to join Aarav's Birthday.
+
+Open the invitation to RSVP.
+
+View the invitation: https://app.wishtick.test/x",
+  "title": "Your request was accepted",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_join_requested 1`] = `
+{
+  "sms": "Someone asked to join — https://app.wishtick.test/x",
+  "subject": "Someone asked to join Aarav's Birthday",
+  "text": "Someone opened the link to Aarav's Birthday and asked to come.
+
+Accept or decline them from the event.
+
+Review the request: https://app.wishtick.test/x",
+  "title": "Someone asked to join",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_reminder 1`] = `
 {
   "sms": "Aarav's Birthday is in 2 days — https://app.wishtick.test/x",
@@ -250,6 +276,17 @@ Tap to see what they said.
 
 Read the reply: https://app.wishtick.test/x",
   "title": "Someone wrote back",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: memory_shared 1`] = `
+{
+  "sms": "Someone shared Password changed with you — https://app.wishtick.test/x",
+  "subject": "Someone shared Password changed with you",
+  "text": "Open it to watch the wishes inside.
+
+Watch it: https://app.wishtick.test/x",
+  "title": "Someone shared Password changed with you",
 }
 `;
 

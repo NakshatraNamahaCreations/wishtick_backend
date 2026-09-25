@@ -67,6 +67,14 @@ export interface MeView {
   };
 }
 
+/**
+ * The youngest anybody may be to hold an account.
+ *
+ * Thirteen: the common floor for services that collect personal data from
+ * their users, and the age the registration form now enforces too.
+ */
+export const MIN_AGE_YEARS = 13;
+
 @Injectable()
 export class ProfileService {
   private readonly logger = new Logger(ProfileService.name);
@@ -339,7 +347,29 @@ export class ProfileService {
         400,
       );
     }
+    // The age floor, checked here rather than only in the app: this parser is
+    // the one door a birth date comes through, from onboarding and from a
+    // later profile edit alike, so a client that skipped the check still
+    // cannot save an under-age date.
+    if (date.getTime() > ProfileService.latestAllowedBirthDate().getTime()) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        `You must be at least ${MIN_AGE_YEARS} years old to use Wishtick.`,
+        400,
+      );
+    }
     return date;
+  }
+
+  /**
+   * The last birthday that is old enough today: this date [MIN_AGE_YEARS]
+   * years ago, at UTC midnight like the stored dates. Somebody born on it
+   * turns 13 today and is allowed.
+   */
+  static latestAllowedBirthDate(now = new Date()): Date {
+    return new Date(
+      Date.UTC(now.getUTCFullYear() - MIN_AGE_YEARS, now.getUTCMonth(), now.getUTCDate()),
+    );
   }
 
   private static toDateOnly(date: Date): string {

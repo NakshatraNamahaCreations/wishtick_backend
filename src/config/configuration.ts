@@ -130,6 +130,8 @@ export interface AppConfig {
     signingSecret: string;
     urlTtlSeconds: number;
     maxBytes: number;
+    /** What one person's memories may hold in total — see MEMORY_PURPOSES. */
+    memoryQuotaBytes: number;
     localDir: string;
     s3: {
       bucket: string;
@@ -383,6 +385,7 @@ export const configuration = (): AppConfig => {
         process.env.STORAGE_SIGNING_SECRET || (process.env.JWT_ACCESS_SECRET as string),
       urlTtlSeconds: toInt(process.env.MEDIA_URL_TTL_SECONDS, 900),
       maxBytes: toInt(process.env.MEDIA_MAX_BYTES, 10 * 1024 * 1024),
+      memoryQuotaBytes: toInt(process.env.MEMORY_STORAGE_QUOTA_BYTES, 500 * 1024 * 1024),
       localDir: process.env.LOCAL_STORAGE_DIR ?? './uploads',
       s3: {
         bucket: process.env.S3_BUCKET ?? '',

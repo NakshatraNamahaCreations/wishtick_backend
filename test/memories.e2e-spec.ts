@@ -1,10 +1,10 @@
 import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
 import { getModelToken } from '@nestjs/mongoose';
-import type { Model } from 'mongoose';
+import { Types, type Model } from 'mongoose';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { MemoriesService } from 'src/modules/memories/memories.service';
-import { MediaPurpose } from 'src/modules/media/schemas/media.schema';
+import { Media, MediaPurpose, type MediaDocument } from 'src/modules/media/schemas/media.schema';
 import {
   EventInvite,
   type EventInviteDocument,
@@ -405,6 +405,299 @@ describe('Memories (e2e)', () => {
         .set(auth(recipient.token))
         .expect(409);
       expect((res.body as Envelope<unknown>).error?.code).toBe(ErrorCode.MEMORY_LOCKED);
+    });
+  });
+
+  describe('memory storage allowance', () => {
+    const MB = 1024 * 1024;
+    let mediaModel: Model<MediaDocument>;
+
+    beforeAll(() => {
+      mediaModel = app.get<Model<MediaDocument>>(getModelToken(Media.name));
+    });
+
+    /** Stands in for memory uploads already kept, without uploading them. */
+    const alreadyUsing = async (actor: Actor, bytes: number, status = 'ready') => {
+      await mediaModel.create({
+        ownerId: new Types.ObjectId(actor.userId),
+        purpose: 'memory_wish',
+        storageKey: `seed/${actor.userId}/${Date.now()}-${Math.random()}`,
+        status,
+        declaredContentType: 'video/mp4',
+        contentType: 'video/mp4',
+        sizeBytes: bytes,
+      });
+    };
+
+    const usage = async (actor: Actor) =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/media/memory-usage`)
+            .set(auth(actor.token))
+            .expect(200)
+        ).body as Envelope<{ usedBytes: number; quotaBytes: number }>
+      ).data;
+
+    /** [sizeBytes] left out entirely when null — a client need not declare it. */
+    const askToUpload = (actor: Actor, purpose: string, sizeBytes: number | null) =>
+      request(app.getHttpServer())
+        .post(`${V1}/media/upload-url`)
+        .set(auth(actor.token))
+        .send({ purpose, contentType: 'image/png', ...(sizeBytes ? { sizeBytes } : {}) });
+
+    it('is 500 MB, and counts only what is kept', async () => {
+      const me = await newUser();
+      await alreadyUsing(me, 100 * MB);
+      // A pending upload holds nothing yet; an orphaned one is on its way out.
+      await alreadyUsing(me, 50 * MB, 'pending');
+      await alreadyUsing(me, 50 * MB, 'orphaned');
+
+      expect(await usage(me)).toEqual({ usedBytes: 100 * MB, quotaBytes: 500 * MB });
+    });
+
+    it('refuses an upload that would go over, before it is uploaded', async () => {
+      const me = await newUser();
+      await alreadyUsing(me, 498 * MB);
+
+      const res = await askToUpload(me, 'memory_wish', 5 * MB).expect(413);
+      const body = res.body as Envelope<never>;
+      expect(body.error?.code).toBe(ErrorCode.MEMORY_STORAGE_FULL);
+      // It says what to do, not only what went wrong.
+      expect(body.error?.message).toContain('500 MB');
+
+      // A small one still fits.
+      await askToUpload(me, 'memory_wish', MB).expect(201);
+    });
+
+    it('counts replies and covers too, but nothing outside memories', async () => {
+      const me = await newUser();
+      await alreadyUsing(me, 500 * MB);
+
+      await askToUpload(me, 'memory_reply', MB).expect(413);
+      // A profile photo is not a memory, and a full allowance does not touch it.
+      await askToUpload(me, 'profile_photo', MB).expect(201);
+    });
+
+    it('checks the real bytes at confirm, not only what the phone claimed', async () => {
+      const me = await newUser();
+      await alreadyUsing(me, 500 * MB);
+
+      // Claims nothing up front — the size is only the client's word.
+      const ticket = (
+        (await askToUpload(me, 'memory_wish', null).expect(201)).body as Envelope<{
+          mediaId: string;
+          uploadUrl: string;
+        }>
+      ).data;
+      const url = new URL(ticket.uploadUrl);
+      await request(app.getHttpServer())
+        .put(url.pathname + url.search)
+        .set('Content-Type', 'image/png')
+        .send(PNG_BYTES)
+        .expect(200);
+
+      const res = await request(app.getHttpServer())
+        .post(`${V1}/media/confirm`)
+        .set(auth(me.token))
+        .send({ mediaId: ticket.mediaId })
+        .expect(413);
+      expect((res.body as Envelope<never>).error?.code).toBe(ErrorCode.MEMORY_STORAGE_FULL);
+      // And the refused file is not kept, or counted.
+      expect((await usage(me)).usedBytes).toBe(500 * MB);
+    });
+
+    it('gives the space back when a wish is removed', async () => {
+      const { host, recipient } = await hostAndRecipient();
+      const memory = await createMemory(host, {}, recipient);
+      const mediaId = await uploadMedia(host, 'memory_wish');
+      const wish = (
+        (
+          await request(app.getHttpServer())
+            .post(`${V1}/memories/${memory.id}/wishes`)
+            .set(auth(host.token))
+            .send({ kind: 'photo', mediaId })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data;
+      const before = (await usage(host)).usedBytes;
+      expect(before).toBeGreaterThan(0);
+
+      await request(app.getHttpServer())
+        .delete(`${V1}/memories/${memory.id}/wishes/${wish.id}`)
+        .set(auth(host.token))
+        .expect(204);
+
+      expect((await usage(host)).usedBytes).toBe(0);
+    });
+  });
+
+  describe('sharing memories you were given', () => {
+    interface SharedView extends MemoryView {
+      isSharedWithMe: boolean;
+      sharedWith?: { userId: string }[];
+    }
+
+    /**
+     * An opened memory made by [host] for [recipient], with one wish in it.
+     *
+     * One host per test, linked once: sign-ups are capped at five an hour per
+     * address, and every test here needs a sharer, a viewer and somebody left
+     * out as well.
+     */
+    const openedFor = async (host: Actor, recipient: Actor): Promise<string> => {
+      const memory = await createMemory(host, {}, recipient);
+      await request(app.getHttpServer())
+        .post(`${V1}/memories/${memory.id}/wishes`)
+        .set(auth(host.token))
+        .send({ kind: 'text', text: 'Happy birthday!' })
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`${V1}/memories/${memory.id}/unlock`)
+        .set(auth(host.token))
+        .expect(200);
+      return memory.id;
+    };
+
+    const view = async (actor: Actor, id: string): Promise<SharedView> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/memories/${id}`)
+            .set(auth(actor.token))
+            .expect(200)
+        ).body as Envelope<SharedView>
+      ).data;
+
+    const share = (actor: Actor, capsuleIds: string[], userIds: string[]) =>
+      request(app.getHttpServer())
+        .post(`${V1}/memories/share`)
+        .set(auth(actor.token))
+        .send({ capsuleIds, userIds });
+
+    it('shows the chosen memories to the chosen WishMates, and nobody else', async () => {
+      const { host, recipient: me } = await hostAndRecipient();
+      const a = await openedFor(host, me);
+      const b = await openedFor(host, me);
+      const c = await openedFor(host, me);
+      const friend = await newUser();
+      const other = await newUser();
+      await becomeWishmates(me, friend);
+      await becomeWishmates(me, other);
+
+      // Two of the three, with one of the two friends.
+      await share(me, [a, b], [friend.userId]).expect(201);
+
+      expect((await view(friend, a)).wishes.map((w) => w.text)).toEqual(['Happy birthday!']);
+      expect((await view(friend, a)).isSharedWithMe).toBe(true);
+      expect((await view(friend, b)).wishes).toHaveLength(1);
+      // Not the one left out, and not the friend left out.
+      expect((await view(friend, c)).wishes).toEqual([]);
+      expect((await view(other, a)).wishes).toEqual([]);
+
+      const listed = (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/memories/shared-with-me`)
+            .set(auth(friend.token))
+            .expect(200)
+        ).body as Envelope<SharedView[]>
+      ).data;
+      expect(listed.map((m) => m.id).sort()).toEqual([a, b].sort());
+    });
+
+    it('tells the recipient who can see it, and nobody else', async () => {
+      const { host, recipient: me } = await hostAndRecipient();
+      const id = await openedFor(host, me);
+      const friend = await newUser();
+      await becomeWishmates(me, friend);
+      await share(me, [id], [friend.userId]).expect(201);
+
+      expect((await view(me, id)).sharedWith?.map((p) => p.userId)).toEqual([friend.userId]);
+      // The list is the recipient's business, not the viewer's.
+      expect((await view(friend, id)).sharedWith).toBeUndefined();
+    });
+
+    it('can be taken back', async () => {
+      const { host, recipient: me } = await hostAndRecipient();
+      const id = await openedFor(host, me);
+      const friend = await newUser();
+      await becomeWishmates(me, friend);
+      await share(me, [id], [friend.userId]).expect(201);
+
+      await request(app.getHttpServer())
+        .delete(`${V1}/memories/${id}/shares/${friend.userId}`)
+        .set(auth(me.token))
+        .expect(200);
+
+      expect((await view(friend, id)).wishes).toEqual([]);
+      expect((await view(friend, id)).isSharedWithMe).toBe(false);
+    });
+
+    it('refuses anything that is not yours to share', async () => {
+      const { host, recipient: me } = await hostAndRecipient();
+      const friend = await newUser();
+      await becomeWishmates(me, friend);
+
+      // A memory made for somebody else.
+      await becomeWishmates(host, friend);
+      const notMine = await openedFor(host, friend);
+      await share(me, [notMine], [friend.userId]).expect(404);
+
+      // A memory still sealed: nobody can read it yet, so there is nothing to show.
+      const sealed = await createMemory(host, {}, me);
+      await share(me, [sealed.id], [friend.userId]).expect(409);
+
+      // Someone who is not a WishMate.
+      const mine = await openedFor(host, me);
+      const stranger = await newUser();
+      await share(me, [mine], [stranger.userId]).expect(403);
+      expect((await view(stranger, mine)).wishes).toEqual([]);
+    });
+
+    it('lets only the recipient take it back', async () => {
+      const { host, recipient: me } = await hostAndRecipient();
+      const id = await openedFor(host, me);
+      const friend = await newUser();
+      await becomeWishmates(me, friend);
+      await share(me, [id], [friend.userId]).expect(201);
+
+      // The viewer cannot remove anyone — themselves or otherwise.
+      await request(app.getHttpServer())
+        .delete(`${V1}/memories/${id}/shares/${friend.userId}`)
+        .set(auth(friend.token))
+        .expect(404);
+      expect((await view(friend, id)).wishes).toHaveLength(1);
+    });
+
+    it('tells each new viewer once, and not again for the same share', async () => {
+      const { host, recipient: me } = await hostAndRecipient();
+      const a = await openedFor(host, me);
+      const b = await openedFor(host, me);
+      const friend = await newUser();
+      await becomeWishmates(me, friend);
+
+      const shared = async (): Promise<{ type: string; title: string }[]> => {
+        await new Promise((r) => setTimeout(r, 150));
+        await ctx.drainNotifications();
+        return (
+          (
+            await request(app.getHttpServer())
+              .get(`${V1}/notifications`)
+              .set(auth(friend.token))
+              .expect(200)
+          ).body as Envelope<{ type: string; title: string }[]>
+        ).data.filter((n) => n.type === 'memory_shared');
+      };
+
+      await share(me, [a, b], [friend.userId]).expect(201);
+      const first = await shared();
+      expect(first).toHaveLength(1);
+      expect(first[0].title).toContain('shared 2 memories with you');
+
+      // The same again is not news.
+      await share(me, [a, b], [friend.userId]).expect(201);
+      expect(await shared()).toHaveLength(1);
     });
   });
 

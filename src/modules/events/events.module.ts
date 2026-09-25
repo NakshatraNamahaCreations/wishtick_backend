@@ -1,3 +1,6 @@
+import { JoinRequestsRegistrar } from './join-requests.processor';
+import { JoinRequestsService } from './join-requests.service';
+import { EventJoinRequest, EventJoinRequestSchema } from './schemas/event-join-request.schema';
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
@@ -35,6 +38,7 @@ import { Event, EventSchema } from './schemas/event.schema';
         name: EventWishlistSubmission.name,
         schema: EventWishlistSubmissionSchema,
       },
+      { name: EventJoinRequest.name, schema: EventJoinRequestSchema },
     ]),
     // Brings the EventInvite model with it, and is the same module WishlistsModule
     // imports for EVENT_PARTICIPATION — one registration, no duplicate model.
@@ -67,7 +71,10 @@ import { Event, EventSchema } from './schemas/event.schema';
     InviteNotificationsService,
     InvitePreviewService,
     InviteCardRenderer,
+    JoinRequestsService,
+    JoinRequestsRegistrar,
   ],
-  exports: [EventsService, InvitesService, EventRemindersService],
+  // JoinRequestsService: the e2e suite drives the sweep by hand.
+  exports: [EventsService, InvitesService, EventRemindersService, JoinRequestsService],
 })
 export class EventsModule {}

@@ -376,6 +376,40 @@ export interface EventInvitedEvent {
   eventTitle: string;
 }
 
+/**
+ * Somebody opened a private event's share link without being on its guest
+ * list, and asked the host to let them in.
+ *
+ * The host has to answer before they can come, and nothing else would tell
+ * them the ask exists — so it is announced rather than left in a queue.
+ */
+export const EVENT_JOIN_REQUESTED = 'event.join_requested';
+
+export interface EventJoinRequestedEvent {
+  eventId: string;
+  requestId: string;
+  hostId: string;
+  requesterName: string | null;
+  eventTitle: string;
+}
+
+/**
+ * The host let somebody in who asked to join.
+ *
+ * A decline is deliberately not announced: the asker finds out only if they
+ * open the link again, which is kinder than a notification that says no.
+ */
+export const EVENT_JOIN_ACCEPTED = 'event.join_accepted';
+
+export interface EventJoinAcceptedEvent {
+  eventId: string;
+  requestId: string;
+  requesterId: string;
+  /** Their invitation token now — what the notification opens. */
+  inviteToken: string;
+  eventTitle: string;
+}
+
 /** The host approved or declined a guest's offered wishlist. */
 export const EVENT_WISHLIST_ANSWERED = 'event.wishlist_answered';
 
@@ -464,4 +498,22 @@ export interface EventDetailsChangedEvent {
   /** When the change was saved: two edits in one evening are two notices. */
   changedAt: Date;
   recipients: EventGuestRecipient[];
+}
+
+/**
+ * A recipient showed some of their memories to some of their WishMates.
+ *
+ * Carries only the people newly given access — sharing the same memories
+ * with the same person twice is not news to them.
+ */
+export const MEMORY_SHARED = 'memory.shared';
+
+export interface MemorySharedEvent {
+  /** The recipient who shared. */
+  ownerId: string;
+  /** Per viewer, the memories they can now watch. */
+  grants: { viewerId: string; capsuleIds: string[] }[];
+  /** Titles by capsule id, for the notification's words. */
+  titles: Record<string, string>;
+  sharedAt: Date;
 }

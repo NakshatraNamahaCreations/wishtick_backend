@@ -19,6 +19,7 @@ import { EventInvite, type EventInviteDocument } from './schemas/event-invite.sc
 import { EventsService } from './events.service';
 import { WishmatesService } from 'src/modules/wishmates/wishmates.service';
 import { UsersService } from 'src/modules/users/users.service';
+import type { PublicIdentity } from 'src/modules/wishmates/wishmates.views';
 
 const MAX_INVITES_PER_EVENT = 500;
 
@@ -101,10 +102,23 @@ export class InvitesService {
     }
 
     // PRIVATE means invitees only — the host decides who comes, so holding the
-    // link is not enough. It is enough to have been invited *by number*: a
+    // link is not enough. Being invited is: by account, or *by number* — a
     // host inviting from their contacts has no account to point at yet, and
     // this is where that row finds its person.
     if (event.visibility === EventVisibility.PRIVATE) {
+      // Their own invite first. The number claim below gives up at once for
+      // an account with no verified number, so a guest invited by name — a
+      // WishMate, or someone whose ask to join the host accepted — was turned
+      // away by the very link to the party they were on the list for.
+      const mine = await this.model
+        .findOne({
+          eventId: event._id,
+          invitedUserId: new Types.ObjectId(userId),
+          revokedAt: null,
+        })
+        .exec();
+      if (mine) return mine;
+
       const claimed = await this.claimPhoneInvite(event, userId);
       if (claimed) return claimed;
       throw new AppException(
@@ -316,7 +330,22 @@ export class InvitesService {
     const ids = invites
       .map((i) => i.invitedUserId?.toString())
       .filter((id): id is string => id !== undefined && id !== null);
-    const unique = [...new Set(ids)];
+    const byUser = await this.peopleFor(ids);
+
+    return invites.map((invite) =>
+      toInviteView(invite, byUser.get(invite.invitedUserId?.toString() ?? '') ?? null),
+    );
+  }
+
+  /**
+   * Who each of [userIds] is, as a guest list shows them — in one lookup.
+   *
+   * Shared with the join-request queue, so a person asking to come looks the
+   * same as a person already coming.
+   */
+  async peopleFor(userIds: string[]): Promise<Map<string, PublicIdentity>> {
+    const unique = [...new Set(userIds)];
+    if (unique.length === 0) return new Map();
     const people = await this.wishmates.identitiesOf(unique);
     const byUser = new Map(people.map((p) => [p.userId, p]));
 
@@ -338,10 +367,59 @@ export class InvitesService {
         });
       }
     }
+    return byUser;
+  }
 
-    return invites.map((invite) =>
-      toInviteView(invite, byUser.get(invite.invitedUserId?.toString() ?? '') ?? null),
-    );
+  /**
+   * Puts [userId] on [event]'s guest list because the host said yes to them —
+   * an accepted join request. Answers their invite.
+   *
+   * An invite they already hold is returned as it is. One the host revoked is
+   * restored: the host has just decided, again, that this person comes, and a
+   * later yes outranks an earlier no.
+   *
+   * Not announced as EVENT_INVITED: the person asked, and is told their ask
+   * was accepted — "you're invited" would read as though the host had thought
+   * of them unprompted.
+   */
+  async admit(event: EventDocument, userId: string): Promise<EventInviteDocument> {
+    const invitedUserId = new Types.ObjectId(userId);
+    const existing = await this.model.findOne({ eventId: event._id, invitedUserId }).exec();
+    if (existing) {
+      if (existing.revokedAt !== null) {
+        existing.revokedAt = null;
+        await existing.save();
+      }
+      return existing;
+    }
+
+    const count = await this.model.countDocuments({ eventId: event._id, revokedAt: null }).exec();
+    if (count >= MAX_INVITES_PER_EVENT) {
+      throw new AppException(
+        ErrorCode.INVITE_LIMIT_REACHED,
+        'This event has reached its guest limit.',
+        409,
+      );
+    }
+
+    return this.model.create({
+      eventId: event._id,
+      invitedUserId,
+      token: InvitesService.newToken(),
+      rsvp: RsvpResponse.PENDING,
+    });
+  }
+
+  /** Whether [userId] holds a live invite to [event]. */
+  async isInvited(event: EventDocument, userId: string): Promise<boolean> {
+    const found = await this.model
+      .exists({
+        eventId: event._id,
+        invitedUserId: new Types.ObjectId(userId),
+        revokedAt: null,
+      })
+      .exec();
+    return found !== null;
   }
 
   /**

@@ -13,6 +13,7 @@ import { ConfirmUploadDto, CreateUploadUrlDto } from './dto/media.dto';
 import {
   MediaService,
   type MediaLimitsView,
+  type MemoryStorageUsage,
   type MediaView,
   type UploadTicket,
 } from './media.service';
@@ -73,6 +74,15 @@ export class MediaController {
   })
   limits(): MediaLimitsView {
     return this.media.limits();
+  }
+
+  /** Declared before `:id`, which would otherwise read "memory-usage" as an id. */
+  @Get('memory-usage')
+  @ApiOperation({
+    summary: 'How much of your memory storage you have used, and the allowance',
+  })
+  memoryUsage(@CurrentUser('id') userId: string): Promise<MemoryStorageUsage> {
+    return this.media.memoryUsage(userId);
   }
 
   @Get(':id')

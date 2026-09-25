@@ -8,7 +8,12 @@ import { Model, Types } from 'mongoose';
 import { customAlphabet } from 'nanoid';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
-import { MEMORY_UNLOCKED, type MemoryUnlockedEvent } from 'src/common/events/domain-events';
+import {
+  MEMORY_SHARED,
+  MEMORY_UNLOCKED,
+  type MemorySharedEvent,
+  type MemoryUnlockedEvent,
+} from 'src/common/events/domain-events';
 import type { AppConfig } from 'src/config/configuration';
 import { QUEUE } from 'src/infra/queue/queue.constants';
 import { Event, type EventDocument } from 'src/modules/events/schemas/event.schema';
@@ -153,6 +158,18 @@ export class MemoriesService {
 
   async remove(id: string, userId: string): Promise<void> {
     const capsule = await this.findOwnedOrFail(id, userId);
+    // Their files go with them. Left READY, they would count against everyone
+    // who recorded one for as long as the account lived, and stay billed.
+    const wishMedia = await this.wishModel
+      .find({ capsuleId: capsule._id, mediaId: { $ne: null } })
+      .select('mediaId')
+      .exec();
+    for (const w of wishMedia) {
+      await this.media.markOrphaned(w.mediaId!).catch(() => undefined);
+    }
+    if (capsule.coverMediaId) {
+      await this.media.markOrphaned(capsule.coverMediaId).catch(() => undefined);
+    }
     await this.wishModel.deleteMany({ capsuleId: capsule._id }).exec();
     await capsule.deleteOne();
     await this.scheduler.remove(unlockJobId(capsule._id.toString())).catch(() => undefined);
@@ -248,6 +265,113 @@ export class MemoriesService {
     }
     const wishes = await this.wishesOf(capsule._id);
     return toPublicMemoryView(capsule, wishes);
+  }
+
+  // ── Sharing ───────────────────────────────────────────────────────────────
+
+  /**
+   * Shows some of the caller's memories to some of their WishMates.
+   *
+   * Only memories made *for* the caller, and only opened ones: a sealed
+   * capsule's wishes are not readable yet by anybody, and sharing one would
+   * only promise the viewer something that is not there. Only WishMates: the
+   * wishes were written to the caller, and passing them to an account they
+   * have no link with is exactly what the sealed-memory promise rules out.
+   *
+   * Idempotent — sharing again with somebody who already has it changes
+   * nothing, and only people newly given access are told.
+   */
+  async share(
+    userId: string,
+    capsuleIds: string[],
+    viewerIds: string[],
+  ): Promise<{ shared: number; people: number }> {
+    const capsules = await this.capsuleModel
+      .find({ _id: { $in: [...new Set(capsuleIds)].map((id) => new Types.ObjectId(id)) } })
+      .exec();
+    // 404 for anything the caller cannot share, rather than sharing the rest:
+    // a half-applied share is one the person did not ask for.
+    if (capsules.length !== new Set(capsuleIds).size) {
+      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Memory not found', 404);
+    }
+    for (const capsule of capsules) {
+      if (capsule.recipientUserId?.toString() !== userId) {
+        throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Memory not found', 404);
+      }
+      if (capsule.status !== MemoryStatus.UNLOCKED) {
+        throw new AppException(
+          ErrorCode.INVALID_MEMORY_TRANSITION,
+          'A memory can be shared once it has opened',
+          409,
+        );
+      }
+    }
+
+    const viewers = [...new Set(viewerIds)].filter((id) => id !== userId);
+    for (const viewerId of viewers) {
+      const relationship = await this.wishmates.relationshipWith(userId, viewerId);
+      if (relationship !== WishmateRelationship.WISHMATES) {
+        throw new AppException(
+          ErrorCode.FORBIDDEN,
+          'Memories can only be shared with your WishMates',
+          403,
+        );
+      }
+    }
+    if (viewers.length === 0) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'Choose who to share with', 400);
+    }
+
+    // Worked out before the write, so only new access is announced.
+    const grants = viewers
+      .map((viewerId) => ({
+        viewerId,
+        capsuleIds: capsules
+          .filter((c) => !(c.sharedWith ?? []).some((id) => id.toString() === viewerId))
+          .map((c) => c._id.toString()),
+      }))
+      .filter((g) => g.capsuleIds.length > 0);
+
+    await this.capsuleModel
+      .updateMany(
+        { _id: { $in: capsules.map((c) => c._id) } },
+        { $addToSet: { sharedWith: { $each: viewers.map((id) => new Types.ObjectId(id)) } } },
+      )
+      .exec();
+
+    if (grants.length > 0) {
+      this.emitter.emit(MEMORY_SHARED, {
+        ownerId: userId,
+        grants,
+        titles: Object.fromEntries(capsules.map((c) => [c._id.toString(), c.title])),
+        sharedAt: new Date(),
+      } satisfies MemorySharedEvent);
+    }
+    return { shared: capsules.length, people: viewers.length };
+  }
+
+  /** Takes one person's access to one memory away. The recipient's own call. */
+  async unshare(userId: string, capsuleId: string, viewerId: string): Promise<MemoryCapsuleView> {
+    const capsule = await this.loadOrFail(capsuleId);
+    if (capsule.recipientUserId?.toString() !== userId) {
+      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Memory not found', 404);
+    }
+    if (Types.ObjectId.isValid(viewerId)) {
+      await this.capsuleModel
+        .updateOne({ _id: capsule._id }, { $pull: { sharedWith: new Types.ObjectId(viewerId) } })
+        .exec();
+    }
+    return this.getOne(capsuleId, userId);
+  }
+
+  /** "Shared With You" — memories other people have shown the caller. */
+  async listSharedWithMe(userId: string): Promise<MemoryCapsuleView[]> {
+    const capsules = await this.capsuleModel
+      .find({ sharedWith: new Types.ObjectId(userId), status: MemoryStatus.UNLOCKED })
+      .sort({ unlockedAt: -1 })
+      .limit(MAX_OPEN_CAPSULES)
+      .exec();
+    return Promise.all(capsules.map((c) => this.assemble(c, userId)));
   }
 
   // ── Unlock ────────────────────────────────────────────────────────────────
@@ -350,11 +474,46 @@ export class MemoriesService {
     viewerId: string | null,
   ): Promise<MemoryCapsuleView> {
     const wishes = await this.wishesOf(capsule._id);
+    const isRecipient = viewerId !== null && capsule.recipientUserId?.toString() === viewerId;
+    const shared = capsule.sharedWith ?? [];
     return toMemoryCapsuleView(capsule, wishes, {
       viewerId,
       shareBaseUrl: this.web,
       person: await this.recipientOf(capsule),
+      // Looked up only for the one person allowed to see the list.
+      sharedWith:
+        isRecipient && shared.length > 0
+          ? await this.identitiesWithFallback(shared.map((id) => id.toString()))
+          : [],
     });
+  }
+
+  /**
+   * Everyone in [ids], in order, whether or not they have a profile.
+   *
+   * [WishmatesService.identitiesOf] answers only for accounts with a profile
+   * row, so a WishMate who signed up and filled nothing in would silently
+   * drop out of the recipient's "Shared with" list — and could then never be
+   * removed from it, because they would not be on it to remove.
+   */
+  private async identitiesWithFallback(ids: string[]): Promise<PublicIdentity[]> {
+    const found = await this.wishmates.identitiesOf(ids);
+    const byId = new Map(found.map((p) => [p.userId, p]));
+    const missing = ids.filter((id) => !byId.has(id));
+    const names =
+      missing.length > 0 ? await this.users.displayNamesFor(missing) : new Map<string, string>();
+    return ids.map(
+      (id) =>
+        byId.get(id) ?? {
+          userId: id,
+          username: null,
+          displayName: names.get(id) ?? 'A WishMate',
+          photoUrl: null,
+          avatarKey: null,
+          online: false,
+          lastSeenAt: null,
+        },
+    );
   }
 
   /**
