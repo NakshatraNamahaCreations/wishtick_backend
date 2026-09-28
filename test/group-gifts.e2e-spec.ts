@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { Types, type Model } from 'mongoose';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { AuthService } from 'src/modules/auth/auth.service';
+import { Event, type EventDocument } from 'src/modules/events/schemas/event.schema';
 import { GiftStatus } from 'src/modules/gifting/gift.types';
 import { Gift, type GiftDocument } from 'src/modules/gifting/schemas/gift.schema';
 import { GroupGiftReconcileService } from 'src/modules/group-gifts/group-gift-reconcile.service';
@@ -32,6 +33,7 @@ interface GroupGiftView {
   targetAmountMinor: number;
   collectedAmountMinor: number;
   percentFunded: number;
+  recipientName: string | null;
   contributorCount: number;
   participantCount: number;
   participants: { userId: string; name: string }[];
@@ -53,11 +55,14 @@ interface GiftContributorsView {
   groupGiftId: string;
   title: string;
   contributorCount: number;
+  currency: string;
+  collectedAmountMinor: number;
   contributors: {
     userId: string | null;
     name: string;
     anonymous: boolean;
     organiser: boolean;
+    amountMinor: number;
   }[];
 }
 
@@ -70,6 +75,7 @@ describe('Group gifting (e2e)', () => {
   let ctx: TestApp;
   let app: INestApplication;
   let groupGiftModel: Model<GroupGiftDocument>;
+  let eventModel: Model<EventDocument>;
   let giftModel: Model<GiftDocument>;
   let reconcile: GroupGiftReconcileService;
   let authService: AuthService;
@@ -143,6 +149,7 @@ describe('Group gifting (e2e)', () => {
     ctx = await createTestApp();
     app = ctx.app;
     groupGiftModel = app.get<Model<GroupGiftDocument>>(getModelToken(GroupGift.name));
+    eventModel = app.get<Model<EventDocument>>(getModelToken(Event.name));
     giftModel = app.get<Model<GiftDocument>>(getModelToken(Gift.name));
     reconcile = app.get(GroupGiftReconcileService);
     authService = app.get(AuthService);
@@ -306,6 +313,118 @@ describe('Group gifting (e2e)', () => {
         const doc = await groupGiftModel.findById(gg.data.id).exec();
         expect(doc!.recipientId.toString()).toBe(owner.userId);
         expect(doc!.visibility).toBe('hidden_from_owner');
+      });
+    });
+
+    describe('on a list for someone off Wishtick', () => {
+      /** A list the owner made for Puttu — nobody's WishMate, not on the app. */
+      const listForPuttu = async (
+        owner: Actor,
+      ): Promise<{ wishlistId: string; itemId: string; view: { forName: string | null } }> => {
+        const wl = (
+          await request(app.getHttpServer())
+            .post(`${V1}/wishlists`)
+            .set(auth(owner.token))
+            .send({ title: 'For Puttu', visibility: 'public', forName: '  Puttu ' })
+            .expect(201)
+        ).body as Envelope<{ id: string; forName: string | null; forUserId: string | null }>;
+        expect(wl.data.forUserId).toBeNull();
+        const item = (
+          await request(app.getHttpServer())
+            .post(`${V1}/wishlists/${wl.data.id}/items`)
+            .set(auth(owner.token))
+            .send({ title: 'Cricket bat', price: { amountMinor: 500000 } })
+            .expect(201)
+        ).body as Envelope<{ id: string }>;
+        return { wishlistId: wl.data.id, itemId: item.data.id, view: wl.data };
+      };
+
+      it('takes a name, no account needed', async () => {
+        const owner = await newUser();
+        const { view } = await listForPuttu(owner);
+        expect(view.forName).toBe('Puttu');
+      });
+
+      it('lets the owner organise one, holding it for them by name', async () => {
+        const owner = await newUser();
+        const { itemId } = await listForPuttu(owner);
+
+        // Not "for myself": it is Puttu's gift, the owner only hands it over.
+        const gg = (await createGroupGift(owner, itemId, {}).expect(201))
+          .body as Envelope<GroupGiftView>;
+        expect(gg.data.recipientName).toBe('Puttu');
+
+        const doc = await groupGiftModel.findById(gg.data.id).exec();
+        expect(doc!.recipientId.toString()).toBe(owner.userId);
+        expect(doc!.forName).toBe('Puttu');
+        expect(doc!.visibility).toBe('visible');
+
+        await contribute(owner, gg.data.id, { amountMinor: 1_000 }).expect(201);
+      });
+
+      it('lets a friend start one the owner can see and chip in to', async () => {
+        const owner = await newUser();
+        const friend = await newUser();
+        const { itemId } = await listForPuttu(owner);
+
+        const gg = (await createGroupGift(friend, itemId, {}).expect(201))
+          .body as Envelope<GroupGiftView>;
+        // Nobody on the app to keep it from, so nothing is hidden.
+        const doc = await groupGiftModel.findById(gg.data.id).exec();
+        expect(doc!.visibility).toBe('visible');
+
+        await request(app.getHttpServer())
+          .get(`${V1}/group-gifts/${gg.data.id}`)
+          .set(auth(owner.token))
+          .expect(200);
+        await contribute(owner, gg.data.id, { amountMinor: 2_000 }).expect(201);
+      });
+
+      it("names them on the giver's list and stays off the owner's Received", async () => {
+        const owner = await newUser();
+        const friend = await newUser();
+        const { itemId } = await listForPuttu(owner);
+        await createGroupGift(friend, itemId, {}).expect(201);
+
+        const given = (
+          await request(app.getHttpServer())
+            .get(`${V1}/gifts/given`)
+            .set(auth(friend.token))
+            .expect(200)
+        ).body as Envelope<{ counterpartyName: string | null }[]>;
+        expect(given.data.map((g) => g.counterpartyName)).toEqual(['Puttu']);
+
+        const received = (
+          await request(app.getHttpServer())
+            .get(`${V1}/gifts/received`)
+            .set(auth(owner.token))
+            .expect(200)
+        ).body as Envelope<unknown[]>;
+        expect(received.data).toHaveLength(0);
+      });
+
+      it('clears or renames who it is for', async () => {
+        const owner = await newUser();
+        const { wishlistId } = await listForPuttu(owner);
+
+        const cleared = (
+          await request(app.getHttpServer())
+            .patch(`${V1}/wishlists/${wishlistId}`)
+            .set(auth(owner.token))
+            .send({ forUserId: null })
+            .expect(200)
+        ).body as Envelope<{ forName: string | null; forUserId: string | null }>;
+        expect(cleared.data.forName).toBeNull();
+
+        const renamed = (
+          await request(app.getHttpServer())
+            .patch(`${V1}/wishlists/${wishlistId}`)
+            .set(auth(owner.token))
+            .send({ forName: 'Ammu' })
+            .expect(200)
+        ).body as Envelope<{ forName: string | null; forUserId: string | null }>;
+        expect(renamed.data.forName).toBe('Ammu');
+        expect(renamed.data.forUserId).toBeNull();
       });
     });
 
@@ -600,6 +719,183 @@ describe('Group gifting (e2e)', () => {
 
   // ── Exit criterion: anonymous contributors never appear by name ─────────────
 
+  // ── Who may chip in, and when ─────────────────────────────────────────────
+
+  describe('the host, and the person it is for', () => {
+    /** Moves a group gift's deadline into the past, as time would. */
+    const closeCollection = async (ggId: string): Promise<void> => {
+      await groupGiftModel
+        .updateOne({ _id: ggId }, { $set: { deadline: new Date(Date.now() - 60_000) } })
+        .exec();
+    };
+
+    /**
+     * An owner's list on their own event, with a group gift a friend started
+     * for them. The event is [hoursAway] from now; negative puts it in the past.
+     */
+    const onEvent = async (): Promise<{
+      owner: Actor;
+      host: Actor;
+      ggId: string;
+      eventId: string;
+    }> => {
+      const owner = await newUser();
+      const host = await newUser();
+      const { wishlistId, itemId } = await wishlistWithItem(owner);
+      const event = (
+        await request(app.getHttpServer())
+          .post(`${V1}/events`)
+          .set(auth(owner.token))
+          .send({
+            title: 'The wedding',
+            type: 'special',
+            startsAt: new Date(Date.now() + 10 * 86_400_000).toISOString(),
+            timezone: 'Asia/Kolkata',
+            wishlistIds: [wishlistId],
+          })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      const gg = (
+        await createGroupGift(host, itemId, {
+          targetAmountMinor: 10_000,
+          deadline: new Date(Date.now() + 5 * 86_400_000).toISOString(),
+        }).expect(201)
+      ).body as Envelope<GroupGiftView>;
+      return { owner, host, ggId: gg.data.id, eventId: event.data.id };
+    };
+
+    /** The event is over: it started two days ago and has no end time. */
+    const endEvent = async (eventId: string): Promise<void> => {
+      await eventModel
+        .updateOne(
+          { _id: eventId },
+          { $set: { startsAt: new Date(Date.now() - 2 * 86_400_000), endsAt: null } },
+        )
+        .exec();
+    };
+
+    it('the host can chip in after the collection has closed', async () => {
+      const owner = await newUser();
+      const host = await newUser();
+      const friend = await newUser();
+      const { itemId } = await wishlistWithItem(owner);
+      const gg = (
+        await createGroupGift(host, itemId, {
+          targetAmountMinor: 10_000,
+          deadline: new Date(Date.now() + 86_400_000).toISOString(),
+        }).expect(201)
+      ).body as Envelope<GroupGiftView>;
+      await closeCollection(gg.data.id);
+
+      // Everybody else is held to the date the host set…
+      const closed = await contribute(friend, gg.data.id, { amountMinor: 1_000 }).expect(409);
+      expect((closed.body as Envelope<never>).error?.code).toBe(ErrorCode.GROUP_GIFT_CLOSED);
+
+      // …but it is the host's collection, and topping it up is their call.
+      const after = (await contribute(host, gg.data.id, { amountMinor: 1_000 }).expect(201))
+        .body as Envelope<GroupGiftView>;
+      expect(after.data.collectedAmountMinor).toBe(1_000);
+    });
+
+    it('a host who started one for themselves can chip in to it', async () => {
+      // They are also its recipient, which used to be refused outright.
+      const owner = await newUser();
+      const { itemId } = await wishlistWithItem(owner);
+      const gg = (
+        await createGroupGift(owner, itemId, { forMyself: true, targetAmountMinor: 10_000 }).expect(
+          201,
+        )
+      ).body as Envelope<GroupGiftView>;
+
+      const after = (await contribute(owner, gg.data.id, { amountMinor: 2_500 }).expect(201))
+        .body as Envelope<GroupGiftView>;
+      expect(after.data.collectedAmountMinor).toBe(2_500);
+    });
+
+    it('keeps it a surprise from the person it is for until the event is over', async () => {
+      const { owner, ggId } = await onEvent();
+
+      const refused = await contribute(owner, ggId, { amountMinor: 1_000 }).expect(403);
+      expect((refused.body as Envelope<never>).error?.message).toContain('once the event is over');
+      await request(app.getHttpServer())
+        .get(`${V1}/group-gifts/${ggId}`)
+        .set(auth(owner.token))
+        .expect(404);
+      const mine = (
+        await request(app.getHttpServer())
+          .get(`${V1}/group-gifts/mine`)
+          .set(auth(owner.token))
+          .expect(200)
+      ).body as Envelope<GroupGiftView[]>;
+      expect(mine.data.map((g) => g.id)).not.toContain(ggId);
+    });
+
+    it('once the event is over, they can find it and chip in — past the deadline too', async () => {
+      const { owner, ggId, eventId } = await onEvent();
+      await endEvent(eventId);
+      // The deadline was set for the party; it cannot keep them out after it.
+      await closeCollection(ggId);
+
+      const mine = (
+        await request(app.getHttpServer())
+          .get(`${V1}/group-gifts/mine`)
+          .set(auth(owner.token))
+          .expect(200)
+      ).body as Envelope<GroupGiftView[]>;
+      expect(mine.data.map((g) => g.id)).toContain(ggId);
+      await request(app.getHttpServer())
+        .get(`${V1}/group-gifts/${ggId}`)
+        .set(auth(owner.token))
+        .expect(200);
+
+      const after = (await contribute(owner, ggId, { amountMinor: 3_000 }).expect(201))
+        .body as Envelope<GroupGiftView>;
+      expect(after.data.collectedAmountMinor).toBe(3_000);
+    });
+
+    it('a cancelled party is over too', async () => {
+      const { owner, ggId, eventId } = await onEvent();
+      await request(app.getHttpServer())
+        .delete(`${V1}/events/${eventId}`)
+        .set(auth(owner.token))
+        .expect(200);
+
+      await contribute(owner, ggId, { amountMinor: 1_000 }).expect(201);
+    });
+
+    it('an end time the host gave is what counts, not the start', async () => {
+      const { owner, ggId, eventId } = await onEvent();
+      // Started yesterday, still going until tomorrow: not over yet.
+      await eventModel
+        .updateOne(
+          { _id: eventId },
+          {
+            $set: {
+              startsAt: new Date(Date.now() - 86_400_000),
+              endsAt: new Date(Date.now() + 86_400_000),
+            },
+          },
+        )
+        .exec();
+
+      await contribute(owner, ggId, { amountMinor: 1_000 }).expect(403);
+    });
+
+    it('a group gift on no event stays shut to its recipient', async () => {
+      const owner = await newUser();
+      const host = await newUser();
+      const { itemId } = await wishlistWithItem(owner);
+      const gg = (await createGroupGift(host, itemId, { targetAmountMinor: 10_000 }).expect(201))
+        .body as Envelope<GroupGiftView>;
+
+      const refused = await contribute(owner, gg.data.id, { amountMinor: 1_000 }).expect(403);
+      // No "after the event" promise where there is no event.
+      expect((refused.body as Envelope<never>).error?.message).toBe(
+        'You cannot contribute to a gift for yourself',
+      );
+    });
+  });
+
   describe('anonymity', () => {
     it('hides anonymous contributors from every participant projection', async () => {
       const owner = await newUser();
@@ -643,6 +939,7 @@ describe('Group gifting (e2e)', () => {
       owner: Actor;
       initiator: Actor;
       named: Actor;
+      secret: Actor;
       giftId: string;
     }> => {
       const owner = await newUser();
@@ -672,33 +969,90 @@ describe('Group gifting (e2e)', () => {
       ).body as Envelope<{ id: string; isGroup: boolean }[]>;
       expect(received.data).toHaveLength(1);
       expect(received.data[0].isGroup).toBe(true);
-      return { owner, initiator, named, giftId: received.data[0].id };
+      return { owner, initiator, named, secret, giftId: received.data[0].id };
     };
 
     const contributors = (actor: Actor, giftId: string): request.Test =>
       request(app.getHttpServer()).get(`${V1}/gifts/${giftId}/contributors`).set(auth(actor.token));
 
-    it('names the organiser and the givers, and counts the anonymous one', async () => {
-      const { owner, initiator, named, giftId } = await delivered();
+    /**
+     * The recipient is told who gave and how much — anonymous givers
+     * included. A product decision that reversed "names only, anonymous
+     * uncounted": anonymity now hides a giver from the other contributors,
+     * not from the person the gift is for.
+     */
+    it('names the host and every giver, with what each gave', async () => {
+      const { owner, initiator, named, secret, giftId } = await delivered();
 
       const view = (await contributors(owner, giftId).expect(200))
         .body as Envelope<GiftContributorsView>;
 
       expect(view.data.contributorCount).toBe(2);
-      // The organiser leads, whether or not they put money in themselves.
+      expect(view.data.collectedAmountMinor).toBe(3000);
+      expect(view.data.currency).toBe('INR');
+      // The host leads, whether or not they put money in themselves.
       expect(view.data.contributors[0]).toMatchObject({
         userId: initiator.userId,
         organiser: true,
-        anonymous: false,
+        amountMinor: 0,
       });
-      expect(view.data.contributors.map((c) => c.userId)).toContain(named.userId);
-      // Counted, never named — the same redaction the timeline applies.
-      const anon = view.data.contributors.filter((c) => c.anonymous);
-      expect(anon).toHaveLength(1);
-      expect(anon[0].userId).toBeNull();
-      expect(anon[0].name).toBe('Someone');
-      // Amounts are nobody's business here; the answer carries none at all.
-      expect(JSON.stringify(view.data)).not.toContain('2000');
+      // Then the givers, most given first.
+      expect(view.data.contributors.slice(1)).toEqual([
+        expect.objectContaining({
+          userId: secret.userId,
+          amountMinor: 2000,
+          anonymous: true,
+          organiser: false,
+        }),
+        expect.objectContaining({
+          userId: named.userId,
+          amountMinor: 1000,
+          anonymous: false,
+          organiser: false,
+        }),
+      ]);
+      // The anonymous giver is named to the recipient.
+      expect(view.data.contributors[1].name).not.toBe('Someone');
+    });
+
+    it('adds up someone who chipped in more than once into one row', async () => {
+      const owner = await newUser();
+      const initiator = await newUser();
+      const twice = await newUser();
+      const { itemId } = await wishlistWithItem(owner);
+      const gg = (await createGroupGift(initiator, itemId, { targetAmountMinor: 3000 }).expect(201))
+        .body as Envelope<GroupGiftView>;
+      await contribute(twice, gg.data.id, { amountMinor: 1000 }).expect(201);
+      await contribute(twice, gg.data.id, { amountMinor: 500 }).expect(201);
+      await contribute(initiator, gg.data.id, { amountMinor: 1500 }).expect(201);
+      for (const step of ['purchase', 'fulfill']) {
+        await request(app.getHttpServer())
+          .post(`${V1}/group-gifts/${gg.data.id}/${step}`)
+          .set(auth(initiator.token))
+          .send({})
+          .expect(200);
+      }
+      const received = (
+        await request(app.getHttpServer())
+          .get(`${V1}/gifts/received`)
+          .set(auth(owner.token))
+          .expect(200)
+      ).body as Envelope<{ id: string }[]>;
+
+      const view = (await contributors(owner, received.data[0].id).expect(200))
+        .body as Envelope<GiftContributorsView>;
+
+      expect(view.data.contributors).toHaveLength(2);
+      // A host who also paid shows what they paid.
+      expect(view.data.contributors[0]).toMatchObject({
+        userId: initiator.userId,
+        organiser: true,
+        amountMinor: 1500,
+      });
+      expect(view.data.contributors[1]).toMatchObject({
+        userId: twice.userId,
+        amountMinor: 1500,
+      });
     });
 
     it('is the recipient’s alone to read', async () => {

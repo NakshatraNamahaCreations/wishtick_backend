@@ -74,6 +74,18 @@ export class CreateWishlistDto {
   @IsOptional()
   @IsMongoId()
   forUserId?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'Puttu',
+    description:
+      'Who the list is for, by name, when they are not a WishMate or not on Wishtick. ' +
+      'Ignored when forUserId is given; setting it clears forUserId; null or empty clears it.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  @Transform(trim)
+  forName?: string | null;
 }
 
 export class UpdateWishlistDto {
@@ -121,6 +133,18 @@ export class UpdateWishlistDto {
   @IsOptional()
   @IsMongoId()
   forUserId?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'Puttu',
+    description:
+      'Who the list is for, by name, when they are not a WishMate or not on Wishtick. ' +
+      'Ignored when forUserId is given; setting it clears forUserId; null or empty clears it.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  @Transform(trim)
+  forName?: string | null;
 }
 
 export class ShareWishlistDto {

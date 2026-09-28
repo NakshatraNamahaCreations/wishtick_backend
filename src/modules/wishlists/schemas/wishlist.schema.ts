@@ -85,6 +85,17 @@ export class Wishlist {
   forUserId!: Types.ObjectId | null;
 
   /**
+   * Who the list is for, by name alone — someone who is not the owner's
+   * WishMate, or not on Wishtick at all. Never set together with [forUserId].
+   *
+   * There is no account to hand anything to, so the owner stands in: gifts
+   * from the list are recorded as theirs to receive and pass on, and nobody on
+   * Wishtick is the surprise's subject.
+   */
+  @Prop({ type: String, default: null, trim: true, maxlength: 60 })
+  forName!: string | null;
+
+  /**
    * The one delivery address gifters on this list may see, or null.
    *
    * This is the *only* way an address is ever shared: a WishMate cannot read

@@ -132,7 +132,7 @@ export class GiftingService {
               {
                 item: fresh,
                 gifterId: new Types.ObjectId(userId),
-                recipientId: await this.recipientOf(fresh),
+                ...(await this.recipientOf(fresh)),
                 mode: GiftMode.ONLINE,
                 visibility:
                   dto.hiddenFromOwner === false
@@ -214,7 +214,7 @@ export class GiftingService {
               {
                 item: fresh,
                 gifterId: new Types.ObjectId(userId),
-                recipientId: await this.recipientOf(fresh),
+                ...(await this.recipientOf(fresh)),
                 visibility:
                   dto.hiddenFromOwner === false
                     ? GiftVisibility.VISIBLE
@@ -353,7 +353,7 @@ export class GiftingService {
                 {
                   item: fresh,
                   gifterId: new Types.ObjectId(userId),
-                  recipientId: await this.recipientOf(fresh),
+                  ...(await this.recipientOf(fresh)),
                   mode: GiftMode.ONLINE,
                   visibility: GiftVisibility.HIDDEN_FROM_OWNER,
                   expiresAt: null,
@@ -527,9 +527,15 @@ export class GiftingService {
     return item;
   }
 
-  /** Whether a list names a WishMate other than its owner as who it is for. */
+  /**
+   * Whether a list is for somebody other than its owner — a WishMate it names,
+   * or anyone at all by name.
+   */
   static isForSomeoneElse(wishlist: WishlistDocument): boolean {
-    return Boolean(wishlist.forUserId && !wishlist.forUserId.equals(wishlist.ownerId));
+    return (
+      Boolean(wishlist.forUserId && !wishlist.forUserId.equals(wishlist.ownerId)) ||
+      Boolean(wishlist.forName)
+    );
   }
 
   /**
@@ -539,9 +545,26 @@ export class GiftingService {
    * creator, so a gift for Priya on a list her sister made landed in the
    * sister's Gifts Received.
    */
-  private async recipientOf(item: WishlistItemDocument): Promise<Types.ObjectId> {
+  private async recipientOf(
+    item: WishlistItemDocument,
+  ): Promise<{ recipientId: Types.ObjectId; forName: string | null }> {
     const wishlist = await this.wishlists.findOrFail(item.wishlistId.toString());
-    return GiftingService.isForSomeoneElse(wishlist) ? wishlist.forUserId! : item.ownerId;
+    return GiftingService.recipientOfList(wishlist, item.ownerId);
+  }
+
+  /**
+   * Who receives what is given from [wishlist]: the WishMate it names, else
+   * its owner — who, on a list for someone off Wishtick, holds it for them
+   * under their name.
+   */
+  static recipientOfList(
+    wishlist: WishlistDocument,
+    ownerId: Types.ObjectId,
+  ): { recipientId: Types.ObjectId; forName: string | null } {
+    if (wishlist.forUserId && !wishlist.forUserId.equals(wishlist.ownerId)) {
+      return { recipientId: wishlist.forUserId, forName: null };
+    }
+    return { recipientId: ownerId, forName: wishlist.forName || null };
   }
 
   private async loadActiveGiftForItem(itemId: string): Promise<GiftDocument> {

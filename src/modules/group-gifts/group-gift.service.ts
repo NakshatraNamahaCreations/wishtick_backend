@@ -20,6 +20,8 @@ import {
 } from 'src/common/events/domain-events';
 import type { AppConfig } from 'src/config/configuration';
 import { LockService } from 'src/infra/redis/lock.service';
+import { EventStatus } from 'src/modules/events/event.types';
+import { Event, type EventDocument } from 'src/modules/events/schemas/event.schema';
 import { GiftStatusService } from 'src/modules/gifting/gift-status.service';
 import { GiftingService } from 'src/modules/gifting/gifting.service';
 import { GiftMode, GiftStatus, GiftType, GiftVisibility } from 'src/modules/gifting/gift.types';
@@ -112,6 +114,9 @@ export class GroupGiftService {
     // The holder gift, read from the recipient's side — the one route into a
     // group gift that its recipient is allowed to take.
     @InjectModel(Gift.name) private readonly giftModel: Model<GiftDocument>,
+    // Read-only: whether the event a group gift was for is over — see
+    // [surpriseIsOver].
+    @InjectModel(Event.name) private readonly eventModel: Model<EventDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly status: GiftStatusService,
     private readonly gifting: GiftingService,
@@ -176,7 +181,8 @@ export class GroupGiftService {
   }
 
   /**
-   * Who chipped in, for the person the group gift went to (`Gifts Received`).
+   * Who chipped in and how much, for the person the group gift went to
+   * (`Gifts Received`).
    *
    * The rest of this module hides a group gift from its recipient — that is the
    * surprise — so they arrive at it from the other end: the holder gift on
@@ -184,7 +190,11 @@ export class GroupGiftService {
    * received list applies is applied again here rather than trusted, because
    * this is a different route to the same secret.
    *
-   * Amounts are left out on purpose; see [GiftContributorView].
+   * The recipient is told everything: every giver by name — those who chose
+   * "anonymous" included — and what each gave. That is a product decision
+   * (2026-09-25), reversing the earlier "names only, anonymous uncounted"
+   * rule. "Anonymous" still hides a giver from the *other* contributors (the
+   * timeline); it no longer hides them from the recipient.
    */
   async contributorsForGift(giftId: string, userId: string): Promise<GiftContributorsView> {
     // Not the recipient, not yet theirs to know about, or not a group gift at
@@ -213,20 +223,25 @@ export class GroupGiftService {
       .exec();
 
     const organiserId = group.initiatorId.toString();
-    const named: string[] = [];
-    let anonymousCount = 0;
+
+    // One row per person however many times they chipped in: their total, and
+    // whether every one of those contributions was marked anonymous.
+    const given = new Map<string, { amountMinor: number; anonymous: boolean }>();
     for (const c of contributions) {
-      if (c.anonymous) {
-        anonymousCount++;
-        continue;
-      }
       const id = c.userId.toString();
-      // One row per person however many times they chipped in.
-      if (!named.includes(id)) named.push(id);
+      const so = given.get(id);
+      given.set(id, {
+        amountMinor: (so?.amountMinor ?? 0) + c.amountMinor,
+        anonymous: (so?.anonymous ?? true) && c.anonymous,
+      });
     }
-    // The organiser leads the list whether or not they put money in themselves:
-    // they are the reason there was a group at all.
-    const ordered = [organiserId, ...named.filter((id) => id !== organiserId)];
+
+    // The host leads whether or not they put money in themselves — they are
+    // the reason there was a group at all — then the givers, most given first.
+    const givers = [...given.keys()]
+      .filter((id) => id !== organiserId)
+      .sort((a, b) => given.get(b)!.amountMinor - given.get(a)!.amountMinor);
+    const ordered = [organiserId, ...givers];
 
     const userDocs = await this.users.findManyByIds(ordered);
     const names = await this.resolveNames(ordered, userDocs);
@@ -235,22 +250,15 @@ export class GroupGiftService {
       groupGiftId: group._id.toString(),
       title: group.title,
       contributorCount: group.contributorCount,
-      contributors: [
-        ...ordered.map((id) => ({
-          userId: id,
-          name: displayNameOf(names, id),
-          anonymous: false,
-          organiser: id === organiserId,
-        })),
-        // Anonymous givers are counted, never named — the same redaction the
-        // contribution timeline applies, and for the same reason.
-        ...Array.from({ length: anonymousCount }, () => ({
-          userId: null,
-          name: 'Someone',
-          anonymous: true,
-          organiser: false,
-        })),
-      ],
+      currency: group.currency,
+      collectedAmountMinor: [...given.values()].reduce((sum, g) => sum + g.amountMinor, 0),
+      contributors: ordered.map((id) => ({
+        userId: id,
+        name: displayNameOf(names, id),
+        anonymous: given.get(id)?.anonymous ?? false,
+        organiser: id === organiserId,
+        amountMinor: given.get(id)?.amountMinor ?? 0,
+      })),
     };
   }
 
@@ -270,6 +278,9 @@ export class GroupGiftService {
     // let them through for that), and the gift is that WishMate's.
     const recipientId =
       list.ownerId.toString() === userId && list.forUserId ? list.forUserId : item.ownerId;
+    // A list for someone off Wishtick names them and nothing more: the owner
+    // holds the gift for them, and there is nobody on the app to surprise.
+    const forName = list.forUserId ? null : list.forName || null;
 
     const itemPrice = dto.targetAmountMinor ?? item.price?.amountMinor ?? null;
     // Charges are agreed on the way to "Proceed to Contribution", so they are
@@ -295,9 +306,10 @@ export class GroupGiftService {
     const deadline = this.parseDeadline(dto.deadline);
     // Hidden from the recipient keeps a surprise — unless the recipient is the
     // one organising it, when it would hide their own group gift from them.
-    const visibility = recipientId.equals(new Types.ObjectId(userId))
-      ? GroupGiftVisibility.VISIBLE
-      : (dto.visibility ?? GroupGiftVisibility.HIDDEN_FROM_OWNER);
+    const visibility =
+      recipientId.equals(new Types.ObjectId(userId)) || forName
+        ? GroupGiftVisibility.VISIBLE
+        : (dto.visibility ?? GroupGiftVisibility.HIDDEN_FROM_OWNER);
 
     const gift = await this.locks.withBestEffortLock(
       `gift-item:${itemId}`,
@@ -331,6 +343,7 @@ export class GroupGiftService {
                 expiresAt: null,
                 type: GiftType.GROUP,
                 amountMinorOverride: target,
+                forName,
               },
               session,
             );
@@ -344,6 +357,7 @@ export class GroupGiftService {
                   eventId,
                   initiatorId: new Types.ObjectId(userId),
                   recipientId,
+                  forName,
                   giftId: holder._id,
                   title: dto.title,
                   targetAmountMinor: target,
@@ -466,7 +480,7 @@ export class GroupGiftService {
 
     const gift = await this.loadOrFail(groupGiftId);
     await this.acceptPendingInvite(gift, userId);
-    await this.authorizeParticipation(gift, userId);
+    const { ignoresDeadline } = await this.authorizeParticipation(gift, userId);
 
     // Fast path for a durable replay (Redis flushed between retries): the row is
     // already there, so return the current state without re-running anything.
@@ -498,7 +512,9 @@ export class GroupGiftService {
                   { status: gg.status },
                 );
               }
-              if (gg.deadline && gg.deadline.getTime() <= Date.now()) {
+              // Not for the host, nor for the recipient after the event — see
+              // authorizeParticipation.
+              if (!ignoresDeadline && gg.deadline && gg.deadline.getTime() <= Date.now()) {
                 throw new AppException(
                   ErrorCode.GROUP_GIFT_CLOSED,
                   'The collection has closed',
@@ -1038,6 +1054,7 @@ export class GroupGiftService {
                 expiresAt: null,
                 type: GiftType.GROUP,
                 amountMinorOverride: fresh.price?.amountMinor ?? null,
+                forName: gift.forName ?? null,
               },
               session,
             );
@@ -1234,27 +1251,39 @@ export class GroupGiftService {
           { participantIds: _userId },
           ...(contributedIds.length > 0 ? [{ _id: { $in: contributedIds } }] : []),
           ...(invitedIds.length > 0 ? [{ _id: { $in: invitedIds } }] : []),
-        ],
-        $nor: [
-          {
-            recipientId: _userId,
-            visibility: GroupGiftVisibility.HIDDEN_FROM_OWNER,
-          },
+          // Group gifts made for this person. Most are still a surprise and
+          // are dropped below; the rest are theirs to see and to chip in to.
+          { recipientId: _userId },
         ],
       })
       .sort({ createdAt: -1 })
       .limit(limit)
       .exec();
 
-    return Promise.all(gifts.map((gift) => this.assembleView(gift, userId)));
+    // A hidden group gift reaches its recipient only once the event it was for
+    // is over — see surpriseIsOver. Until then it is a surprise, and absent.
+    const visible: GroupGiftDocument[] = [];
+    for (const gift of gifts) {
+      const hiddenFromMe =
+        gift.recipientId.equals(_userId) &&
+        !gift.initiatorId.equals(_userId) &&
+        gift.visibility === GroupGiftVisibility.HIDDEN_FROM_OWNER;
+      if (hiddenFromMe && !(await this.surpriseIsOver(gift))) continue;
+      visible.push(gift);
+    }
+
+    return Promise.all(visible.map((gift) => this.assembleView(gift, userId)));
   }
 
   async get(groupGiftId: string, userId: string): Promise<GroupGiftView> {
     const gift = await this.loadOrFail(groupGiftId);
-    // The recipient must not discover a surprise through the group-gift endpoint.
+    // The recipient must not discover a surprise through the group-gift
+    // endpoint — until the event is over, when there is no surprise left and
+    // they may chip in themselves.
     if (
       gift.recipientId.toString() === userId &&
-      gift.visibility === GroupGiftVisibility.HIDDEN_FROM_OWNER
+      gift.visibility === GroupGiftVisibility.HIDDEN_FROM_OWNER &&
+      !(await this.surpriseIsOver(gift))
     ) {
       throw new AppException(ErrorCode.GROUP_GIFT_NOT_FOUND, 'Group gift not found', 404);
     }
@@ -1450,14 +1479,41 @@ export class GroupGiftService {
   }
 
   /**
-   * The gifting authorization, applied to participation: the caller must be able
-   * to gift the wishlist, and the owner cannot contribute to their own gift.
+   * Who may take part in a group gift, and whether its deadline binds them.
+   *
+   * Everyone else must be able to gift from the wishlist and is held to the
+   * deadline. Two people are let in by right, and past the deadline:
+   *
+   *  - **the host**, who started it — for a friend, for a WishMate or for
+   *    themselves. It is their collection, and topping it up whenever they
+   *    choose is the organiser's call to make, not a date's. A host who
+   *    started a group gift *for themselves* is also its recipient, which the
+   *    rule below used to refuse outright: they could never add a rupee to
+   *    their own.
+   *  - **the person it is for, once the event is over** — see
+   *    [surpriseIsOver]. Until then they are refused, because the group is a
+   *    surprise; afterwards there is nothing left to spoil, and chipping in is
+   *    how they get the gift they actually wanted. The deadline was set for
+   *    the party, so it cannot be what keeps them out after it.
+   *
+   * Any other recipient is refused as before.
    */
-  private async authorizeParticipation(gift: GroupGiftDocument, userId: string): Promise<void> {
-    if (gift.recipientId.toString() === userId) {
+  private async authorizeParticipation(
+    gift: GroupGiftDocument,
+    userId: string,
+  ): Promise<{ ignoresDeadline: boolean }> {
+    const isHost = gift.initiatorId.toString() === userId;
+    // Not the owner of a list made for someone off Wishtick: they only hold
+    // the gift for that person, and it is no surprise to them.
+    const isRecipient = gift.recipientId.toString() === userId && !gift.forName;
+
+    if (isRecipient && !isHost && !(await this.surpriseIsOver(gift))) {
       throw new AppException(
         ErrorCode.CANNOT_GIFT_OWN_ITEM,
-        'You cannot contribute to a gift for yourself',
+        // Only promise "after the event" where there is an event to be after.
+        gift.eventId
+          ? 'You can add to a gift for yourself once the event is over'
+          : 'You cannot contribute to a gift for yourself',
         403,
       );
     }
@@ -1466,15 +1522,46 @@ export class GroupGiftService {
     if (!decision.canView) {
       throw new AppException(ErrorCode.GROUP_GIFT_NOT_FOUND, 'Group gift not found', 404);
     }
+    // The host and, past the event, the recipient are in by right: neither
+    // needs canGift, which an owner never has on their own list.
+    if (isHost || isRecipient) return { ignoresDeadline: true };
+
     // An owner never has canGift on their own list, because ordinarily that
     // would be paying for their own present. On a list made for a WishMate the
     // recipient is someone else, so the owner chipping in is just giving.
-    if (wishlist.ownerId.toString() === userId && !gift.recipientId.equals(wishlist.ownerId)) {
-      return;
+    if (
+      wishlist.ownerId.toString() === userId &&
+      (!gift.recipientId.equals(wishlist.ownerId) || gift.forName)
+    ) {
+      return { ignoresDeadline: false };
     }
     if (!decision.canGift) {
       throw new AppException(ErrorCode.FORBIDDEN, 'You cannot gift from this wishlist', 403);
     }
+    return { ignoresDeadline: false };
+  }
+
+  /**
+   * Whether the event a group gift was for has been and gone.
+   *
+   * Over means past its end time when the host gave one, and otherwise a day
+   * after it started — a party with no end time is over by the next day. A
+   * cancelled event counts as over too: there is no longer a party to keep
+   * the gift a secret for.
+   *
+   * A group gift on no event is never "over" in this sense: nothing marks the
+   * moment its surprise ends, so it stays hidden from its recipient.
+   */
+  private async surpriseIsOver(gift: GroupGiftDocument, now = new Date()): Promise<boolean> {
+    if (!gift.eventId) return false;
+    const event = await this.eventModel
+      .findById(gift.eventId)
+      .select('startsAt endsAt status')
+      .exec();
+    if (!event) return false;
+    if (event.status === EventStatus.CANCELLED) return true;
+    const endsAt = event.endsAt ?? new Date(event.startsAt.getTime() + 24 * 60 * 60_000);
+    return endsAt.getTime() <= now.getTime();
   }
 
   /**

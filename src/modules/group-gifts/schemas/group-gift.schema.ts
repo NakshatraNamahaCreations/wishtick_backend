@@ -158,6 +158,14 @@ export class GroupGift {
   recipientId!: Types.ObjectId;
 
   /**
+   * Who it is really for, by name, when the list names someone off the
+   * owner's WishMates — see Wishlist.forName. [recipientId] is then the list's
+   * owner, holding it for them, and the group is visible to all.
+   */
+  @Prop({ type: String, default: null })
+  forName!: string | null;
+
+  /**
    * The holder `Gift` (type = group) that claims the item.
    *
    * The group gift itself does not touch item status — it drives this gift

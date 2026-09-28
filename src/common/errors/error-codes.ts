@@ -196,6 +196,13 @@ export enum ErrorCode {
   EVENT_ALREADY_STARTED = 'EVENT_ALREADY_STARTED',
   JOIN_REQUEST_NOT_FOUND = 'JOIN_REQUEST_NOT_FOUND',
   WISHLIST_NOT_LINKABLE = 'WISHLIST_NOT_LINKABLE',
+  /**
+   * A wishlist is connected to one event at a time, and this one is already on
+   * another of the host's events. `details.wishlists` names each list and the
+   * event it is on; sending the same request with `moveWishlists: true` moves
+   * them here.
+   */
+  WISHLIST_ON_ANOTHER_EVENT = 'WISHLIST_ON_ANOTHER_EVENT',
 
   // Products / affiliate
   PRODUCT_NOT_FOUND = 'PRODUCT_NOT_FOUND',

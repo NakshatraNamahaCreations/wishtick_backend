@@ -103,6 +103,16 @@ export class CreateEventDto {
   @ArrayMaxSize(10)
   wishlistIds?: string[];
 
+  @ApiPropertyOptional({
+    description:
+      'Move any of wishlistIds that are connected to another of your events: they are ' +
+      'disconnected there and connected here. Without it such a list is refused with ' +
+      'WISHLIST_ON_ANOTHER_EVENT.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  moveWishlists?: boolean;
+
   @ApiPropertyOptional({ type: InviteTemplateChoiceDto })
   @IsOptional()
   @ValidateNested()
@@ -207,6 +217,16 @@ export class UpdateEventDto {
   @IsMongoId({ each: true })
   @ArrayMaxSize(10)
   wishlistIds?: string[];
+
+  @ApiPropertyOptional({
+    description:
+      'Move any of wishlistIds that are connected to another of your events: they are ' +
+      'disconnected there and connected here. Without it such a list is refused with ' +
+      'WISHLIST_ON_ANOTHER_EVENT.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  moveWishlists?: boolean;
 
   @ApiPropertyOptional({ type: InviteTemplateChoiceDto })
   @IsOptional()

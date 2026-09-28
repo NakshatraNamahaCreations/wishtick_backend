@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { QUEUE } from 'src/infra/queue/queue.constants';
 import { ChatModule } from 'src/modules/chat/chat.module';
+import { Event, EventSchema } from 'src/modules/events/schemas/event.schema';
 import { GiftingModule } from 'src/modules/gifting/gifting.module';
 import { Gift, GiftSchema } from 'src/modules/gifting/schemas/gift.schema';
 import { ProductsModule } from 'src/modules/products/products.module';
@@ -45,6 +46,9 @@ import { SettlementService } from './settlement.service';
       // The saved UPI ID lives on the profile; settle-up reads and optionally
       // writes it. Read-only coupling — this module never owns a profile.
       { name: UserProfile.name, schema: UserProfileSchema },
+      // Read-only: whether the event a group gift was for has been and gone,
+      // which is when its recipient may see it and chip in themselves.
+      { name: Event.name, schema: EventSchema },
     ]),
     BullModule.registerQueue({ name: QUEUE.SCHEDULER }),
     // GiftStatusService (the holder gift) and GiftingService (loadGiftableItem).

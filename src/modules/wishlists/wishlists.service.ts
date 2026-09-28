@@ -98,6 +98,8 @@ export class WishlistsService {
       description: dto.description ?? null,
       occasionLabel: dto.occasionLabel ?? null,
       forUserId,
+      // A WishMate picked wins over a name typed: the two never coexist.
+      forName: forUserId ? null : dto.forName || null,
       visibility: dto.visibility ?? WishlistVisibility.PRIVATE,
       coverUrl,
       coverMediaId: dto.coverMediaId ? new Types.ObjectId(dto.coverMediaId) : null,
@@ -281,8 +283,18 @@ export class WishlistsService {
     if (dto.title !== undefined) wishlist.title = dto.title;
     if (dto.description !== undefined) wishlist.description = dto.description;
     if (dto.occasionLabel !== undefined) wishlist.occasionLabel = dto.occasionLabel;
+    // Who it is for is one answer, given as a WishMate or as a name. An
+    // explicit null for the WishMate means "for nobody", and clears the name
+    // too; either one given replaces the other.
     if (dto.forUserId !== undefined) {
       wishlist.forUserId = await this.resolveForUser(ctx.userId!, dto.forUserId);
+      wishlist.forName = null;
+    }
+    if (dto.forName !== undefined && !wishlist.forUserId) {
+      wishlist.forName = dto.forName || null;
+    } else if (dto.forName && dto.forUserId === undefined) {
+      wishlist.forName = dto.forName;
+      wishlist.forUserId = null;
     }
     if (dto.chatEnabled !== undefined) wishlist.chatEnabled = dto.chatEnabled;
 

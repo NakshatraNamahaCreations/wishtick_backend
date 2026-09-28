@@ -119,7 +119,8 @@ export class PublicWishlistsService {
       wishlist.forUserId && !wishlist.forUserId.equals(wishlist.ownerId)
         ? wishlist.forUserId
         : wishlist.ownerId;
-    const isRecipient = Boolean(viewerUserId) && recipientId.toString() === viewerUserId;
+    const isRecipient =
+      Boolean(viewerUserId) && recipientId.toString() === viewerUserId && !wishlist.forName;
     const items =
       wishlist.ownerId.toString() === viewerUserId
         ? loaded.filter((i) => !i.hiddenFromOwner)

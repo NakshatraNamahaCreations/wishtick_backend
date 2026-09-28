@@ -55,7 +55,9 @@ export class ItemsService {
       wishlist.forUserId && !wishlist.forUserId.equals(wishlist.ownerId),
     );
     const recipientId = forSomeoneElse ? wishlist.forUserId! : wishlist.ownerId;
-    const isRecipient = Boolean(userId) && recipientId.toString() === userId;
+    // A list for someone off Wishtick has no recipient here at all: its owner
+    // is organising it for them.
+    const isRecipient = Boolean(userId) && recipientId.toString() === userId && !wishlist.forName;
     const ids = isRecipient ? [] : namedBuyerIds(items);
     const full = ids.length > 0 ? await this.users.displayNamesFor(ids) : new Map<string, string>();
     return {

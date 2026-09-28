@@ -141,7 +141,9 @@ export class EventsService {
 
     // Linked after create so the reverse pointer can name the event id.
     if (dto.wishlistIds?.length) {
-      event.wishlistIds = await this.resolveWishlists(event._id, hostId, dto.wishlistIds);
+      event.wishlistIds = await this.resolveWishlists(event._id, hostId, dto.wishlistIds, [], {
+        move: dto.moveWishlists === true,
+      });
       await event.save();
     }
 
@@ -247,6 +249,7 @@ export class EventsService {
         event.hostId,
         dto.wishlistIds,
         event.wishlistIds,
+        { move: dto.moveWishlists === true },
       );
     }
 
@@ -529,19 +532,26 @@ export class EventsService {
    *    removing a list from an event actually revokes the event-scoped access.
    *
    * `previous` lets update() diff old against new; create() passes none.
+   *
+   * A wishlist is connected to one event at a time. One newly attached here
+   * while it is on another event is refused — the host is asked first — unless
+   * [opts.move] says they agreed, when it is disconnected from the other event
+   * before being connected here. A list on somebody else's event, offered
+   * there as a guest, is theirs to withdraw from and is never moved.
    */
   private async resolveWishlists(
     eventId: Types.ObjectId,
     hostId: Types.ObjectId,
     ids: string[],
     previous: Types.ObjectId[] = [],
+    opts: { move?: boolean } = {},
   ): Promise<Types.ObjectId[]> {
     const objectIds = ids.map((id) => new Types.ObjectId(id));
 
     if (objectIds.length > 0) {
       const owned = await this.wishlists
         .find({ _id: { $in: objectIds }, ownerId: hostId, archivedAt: null })
-        .select('_id')
+        .select('_id title eventId')
         .exec();
       if (owned.length !== objectIds.length) {
         throw new AppException(
@@ -549,6 +559,62 @@ export class EventsService {
           'You can only attach wishlists you own',
           403,
         );
+      }
+
+      // Only the lists joining now: one already here is not "elsewhere".
+      const elsewhere = owned.filter(
+        (w) => w.eventId && !w.eventId.equals(eventId) && !previous.some((id) => id.equals(w._id)),
+      );
+      if (elsewhere.length > 0) {
+        const others = await this.model
+          .find({ _id: { $in: elsewhere.map((w) => w.eventId!) } })
+          .select('_id title hostId wishlistIds')
+          .exec();
+        const byId = new Map(others.map((e) => [e._id.toString(), e]));
+        // A pointer to an event that is gone is stale, not a connection.
+        const connected = elsewhere.filter((w) => byId.has(w.eventId!.toString()));
+
+        const onSomeoneElses = connected.find(
+          (w) => !byId.get(w.eventId!.toString())!.hostId.equals(hostId),
+        );
+        if (onSomeoneElses) {
+          throw new AppException(
+            ErrorCode.WISHLIST_NOT_LINKABLE,
+            `“${onSomeoneElses.title}” is shared on another host’s event. ` +
+              'Withdraw it from that event before connecting it here.',
+            409,
+          );
+        }
+
+        if (connected.length > 0 && !opts.move) {
+          const [first] = connected;
+          const firstEvent = byId.get(first.eventId!.toString())!;
+          throw new AppException(
+            ErrorCode.WISHLIST_ON_ANOTHER_EVENT,
+            connected.length === 1
+              ? `“${first.title}” is already connected to “${firstEvent.title}”. ` +
+                  'A wishlist can be connected to only one event at a time.'
+              : `${connected.length} of these wishlists are already connected to other ` +
+                  'events. A wishlist can be connected to only one event at a time.',
+            409,
+            {
+              wishlists: connected.map((w) => ({
+                wishlistId: w._id.toString(),
+                wishlistTitle: w.title,
+                eventId: w.eventId!.toString(),
+                eventTitle: byId.get(w.eventId!.toString())!.title,
+              })),
+            },
+          );
+        }
+
+        // Moving: taken off the other event's row first, so no moment leaves
+        // one list on two invitations.
+        for (const w of connected) {
+          await this.model
+            .updateOne({ _id: w.eventId, hostId }, { $pull: { wishlistIds: w._id } })
+            .exec();
+        }
       }
     }
 

@@ -1105,6 +1105,98 @@ describe('Events & invites (e2e)', () => {
     });
   });
 
+  describe('one event per wishlist', () => {
+    const listOf = async (host: Actor, title = 'Party list'): Promise<string> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .post(`${V1}/wishlists`)
+            .set(auth(host.token))
+            .send({ title, visibility: WishlistVisibility.PUBLIC })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+
+    const attach = (host: Actor, eventId: string, body: Record<string, unknown>) =>
+      request(app.getHttpServer())
+        .patch(`${V1}/events/${eventId}`)
+        .set(auth(host.token))
+        .send(body);
+
+    const wishlistIdsOf = async (host: Actor, eventId: string): Promise<string[]> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/events/${eventId}`)
+            .set(auth(host.token))
+            .expect(200)
+        ).body as Envelope<{ wishlistIds: string[] }>
+      ).data.wishlistIds;
+
+    it('asks before taking a list from another event, naming both', async () => {
+      const host = await newUser();
+      const first = await createEvent(host, { title: 'Gagan’s Birthday' });
+      const second = await createEvent(host, { title: 'Housewarming' });
+      const listId = await listOf(host, 'Xyz Testing');
+      await attach(host, first.id, { wishlistIds: [listId] }).expect(200);
+
+      const refused = await attach(host, second.id, { wishlistIds: [listId] }).expect(409);
+      const body = refused.body as Envelope<never> & {
+        error: { details?: { wishlists: { eventTitle: string; wishlistTitle: string }[] } };
+      };
+      expect(body.error?.code).toBe(ErrorCode.WISHLIST_ON_ANOTHER_EVENT);
+      expect(body.error?.message).toContain('Gagan’s Birthday');
+      expect(body.error.details?.wishlists).toEqual([
+        expect.objectContaining({ wishlistTitle: 'Xyz Testing', eventTitle: 'Gagan’s Birthday' }),
+      ]);
+      // Nothing moved on a refusal.
+      expect(await wishlistIdsOf(host, first.id)).toEqual([listId]);
+      expect(await wishlistIdsOf(host, second.id)).toEqual([]);
+    });
+
+    it('moves it when the host agrees, leaving it on one event only', async () => {
+      const host = await newUser();
+      const first = await createEvent(host);
+      const second = await createEvent(host);
+      const keep = await listOf(host, 'Stays put');
+      const listId = await listOf(host);
+      await attach(host, first.id, { wishlistIds: [keep, listId] }).expect(200);
+
+      await attach(host, second.id, { wishlistIds: [listId], moveWishlists: true }).expect(200);
+
+      expect(await wishlistIdsOf(host, first.id)).toEqual([keep]);
+      expect(await wishlistIdsOf(host, second.id)).toEqual([listId]);
+    });
+
+    it('does the same when the event is being created', async () => {
+      const host = await newUser();
+      const first = await createEvent(host);
+      const listId = await listOf(host);
+      await attach(host, first.id, { wishlistIds: [listId] }).expect(200);
+
+      await request(app.getHttpServer())
+        .post(`${V1}/events`)
+        .set(auth(host.token))
+        .send({
+          title: 'Second',
+          type: 'special',
+          startsAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+          timezone: 'Asia/Kolkata',
+          wishlistIds: [listId],
+        })
+        .expect(409);
+    });
+
+    it('saving an event with its own list again is not a move', async () => {
+      const host = await newUser();
+      const event = await createEvent(host);
+      const listId = await listOf(host);
+      await attach(host, event.id, { wishlistIds: [listId] }).expect(200);
+
+      await attach(host, event.id, { wishlistIds: [listId] }).expect(200);
+    });
+  });
+
   describe('group gifts on an invitation (291:1008)', () => {
     /// A wishlist with one priced item, attached to the event.
     const wishlistOn = async (

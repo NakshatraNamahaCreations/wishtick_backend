@@ -48,6 +48,15 @@ export class Gift {
   @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true })
   recipientId!: Types.ObjectId;
 
+  /**
+   * Who it is really for, by name, when the list was made for someone who is
+   * not on the owner's WishMates — see Wishlist.forName. [recipientId] is then
+   * the list's owner, who receives it to pass on; it is not a gift *to* them,
+   * so it stays off their Gifts Received.
+   */
+  @Prop({ type: String, default: null })
+  forName!: string | null;
+
   @Prop({ type: String, enum: Object.values(GiftType), default: GiftType.SINGLE })
   type!: GiftType;
 

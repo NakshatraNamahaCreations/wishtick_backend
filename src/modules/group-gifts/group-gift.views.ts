@@ -142,21 +142,34 @@ export interface PublicGroupGiftView {
  * of what each friendship was worth.
  */
 export interface GiftContributorView {
-  /** Null when they chose to be anonymous — there is nobody to open. */
+  /** Always set: the recipient is told who gave, anonymous givers included. */
   userId: string | null;
   name: string;
+  /**
+   * Whether every contribution this person made was marked anonymous. Kept
+   * for older app builds; the name is sent regardless — see
+   * [GroupGiftService.contributorsForGift].
+   */
   anonymous: boolean;
-  /** The one who started it and collected the money. */
+  /** The one who started it and collected the money — the host. */
   organiser: boolean;
+  /**
+   * What they put in, confirmed contributions only, summed across however
+   * many times they chipped in. Zero for a host who organised without paying.
+   */
+  amountMinor: number;
 }
 
-/** Who was behind a group gift, for the person who received it. */
+/** Who was behind a group gift, and how much each gave, for its recipient. */
 export interface GiftContributorsView {
   groupGiftId: string;
   title: string;
-  /** Everyone who put money in, the anonymous ones included. */
+  /** Everyone who put money in. */
   contributorCount: number;
-  /** Named first, then the anonymous ones; the organiser leads either way. */
+  currency: string;
+  /** What arrived in total — the confirmed contributions summed. */
+  collectedAmountMinor: number;
+  /** The host first, then the givers, largest amount first. */
   contributors: GiftContributorView[];
 }
 
@@ -302,9 +315,13 @@ export function toGroupGiftView(input: {
     chatId: gift.chatId ? gift.chatId.toString() : null,
     // The gift's recipient rather than the item's owner — on a list made for a
     // WishMate the owner organised it and somebody else receives it.
-    recipientName: items.has(gift.itemId.toString())
-      ? displayNameOf(names, gift.recipientId.toString())
-      : null,
+    // And by the name the list gave, for someone off Wishtick — the recipient
+    // on record is then only the owner holding it for them.
+    recipientName:
+      gift.forName ??
+      (items.has(gift.itemId.toString())
+        ? displayNameOf(names, gift.recipientId.toString())
+        : null),
     thankYouNote: gift.thankYouNote,
     thankYouAt: gift.thankYouAt,
     createdAt: gift.createdAt,

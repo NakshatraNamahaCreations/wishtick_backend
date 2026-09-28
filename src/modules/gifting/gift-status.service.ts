@@ -73,6 +73,8 @@ export class GiftStatusService {
       type?: GiftType;
       amountMinorOverride?: number | null;
       showBuyerName?: boolean;
+      /** See Gift.forName. */
+      forName?: string | null;
     },
     session: ClientSession,
   ): Promise<GiftDocument> {
@@ -85,6 +87,7 @@ export class GiftStatusService {
             wishlistId: input.item.wishlistId,
             gifterId: input.gifterId,
             recipientId: input.recipientId,
+            forName: input.forName ?? null,
             type: input.type ?? GiftType.SINGLE,
             mode: input.mode,
             status: GiftStatus.RESERVED,
@@ -292,6 +295,8 @@ export class GiftStatusService {
       visibility: string;
       deliveryNotes: string | null;
       showBuyerName?: boolean;
+      /** See Gift.forName. */
+      forName?: string | null;
       type?: GiftType;
     },
     session: ClientSession,
@@ -305,6 +310,7 @@ export class GiftStatusService {
             wishlistId: input.item.wishlistId,
             gifterId: input.gifterId,
             recipientId: input.recipientId,
+            forName: input.forName ?? null,
             type: input.type ?? GiftType.SINGLE,
             mode: GiftMode.OFFLINE,
             status: GiftStatus.PURCHASED,

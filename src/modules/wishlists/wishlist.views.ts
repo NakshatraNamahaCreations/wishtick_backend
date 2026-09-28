@@ -100,6 +100,8 @@ export interface WishlistView {
   chatEnabled: boolean;
   eventId: string | null;
   forUserId: string | null;
+  /** Who it is for by name, when that is not a WishMate. See Wishlist.forName. */
+  forName: string | null;
   stats: { itemCount: number; fulfilledCount: number };
   archivedAt: Date | null;
   createdAt: Date;
@@ -292,6 +294,7 @@ export const toWishlistView = (
     chatEnabled: wishlist.chatEnabled,
     eventId: wishlist.eventId?.toString() ?? null,
     forUserId: wishlist.forUserId?.toString() ?? null,
+    forName: wishlist.forName ?? null,
     stats: {
       itemCount: wishlist.stats?.itemCount ?? 0,
       fulfilledCount: wishlist.stats?.fulfilledCount ?? 0,

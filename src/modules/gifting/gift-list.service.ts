@@ -74,6 +74,8 @@ export class GiftListService {
       .find({
         recipientId: new Types.ObjectId(userId),
         type: { $ne: GiftType.SELF },
+        // Held for someone off Wishtick, not given to this person.
+        forName: null,
         $or: [
           { visibility: GiftVisibility.VISIBLE },
           { status: { $in: [GiftStatus.FULFILLED, GiftStatus.COMPLETED] } },
@@ -157,7 +159,10 @@ export class GiftListService {
           amountMinor: gift.amountMinor ?? item?.price?.amountMinor ?? null,
           currency: gift.currency || item?.price?.currency || 'INR',
         },
-        counterpartyName: names.get(counterpartyId) ?? null,
+        // "For Puttu" on a gift for someone off Wishtick, not the list owner
+        // holding it for them.
+        counterpartyName:
+          (opts.side === 'given' ? gift.forName : null) ?? names.get(counterpartyId) ?? null,
         // Never on a withdrawn gift: a late courier event could have marked
         // its order delivered, and the card would then read "Delivered on …"
         // for something the gifter had called off.
