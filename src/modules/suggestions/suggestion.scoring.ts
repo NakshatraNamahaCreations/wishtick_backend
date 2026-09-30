@@ -1,3 +1,4 @@
+import { merchantTrust } from '../products/merchant-trust';
 import type { NormalizedProduct } from '../products/product.types';
 import { normalise } from '../taste/taste.lexicon';
 import type { TasteColour, TasteGender, TasteProfile } from '../taste/taste.types';
@@ -40,6 +41,8 @@ export interface SignalBreakdown {
   size: number;
   /** 1 made for them, -1 made only for the other gender, 0 says neither. */
   gender: number;
+  /** Where it is sold: 1 a store people know, 0.5 anybody, 0 a reseller. */
+  trust: number;
 }
 
 export interface ScoredProduct {
@@ -59,6 +62,7 @@ export const WEIGHTS = {
   colour: 0.06,
   size: 0.04,
   gender: 0.08,
+  trust: 0.12,
 } as const;
 
 /**
@@ -524,6 +528,9 @@ export function rankForTaste(
       colour: colour.value,
       size: size.value,
       gender: genderSignal(title, taste.gender),
+      // Kept in the ranking, or ordering a page for somebody would undo the
+      // trusted-stores-first order the search already gave it.
+      trust: merchantTrust(product) / 2,
     };
     const budgetWeight = WEIGHTS.budget * BUDGET_TRUST[taste.budget.source];
     let score =
@@ -533,7 +540,8 @@ export function rankForTaste(
       WEIGHTS.shelf * signals.shelf +
       WEIGHTS.colour * signals.colour +
       WEIGHTS.size * signals.size +
-      WEIGHTS.gender * Math.max(0, signals.gender);
+      WEIGHTS.gender * Math.max(0, signals.gender) +
+      WEIGHTS.trust * signals.trust;
     if (signals.gender < 0) score *= OTHER_GENDER_KEEPS;
     if (product.inStock === false) score *= 0.2;
 

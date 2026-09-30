@@ -13,6 +13,7 @@ import type {
   ProductSearchResult,
   ProviderCategory,
 } from './product.types';
+import { trustedFirst } from './merchant-trust';
 import { ResultFreshness } from './product.types';
 import { PRODUCT_PROVIDER, type IProductProvider } from './providers/product-provider.port';
 import { ProviderGuard, ProviderUnavailableError } from './providers/provider-guard.service';
@@ -98,7 +99,11 @@ export class ProductsService {
       cached &&
       Date.now() - cached.cachedAt < this.cfg.cacheTtlSeconds * 1_000
     ) {
-      return { ...cached.data, freshness: ResultFreshness.CACHED };
+      return {
+        ...cached.data,
+        items: trustedFirst(cached.data.items),
+        freshness: ResultFreshness.CACHED,
+      };
     }
 
     try {
@@ -119,7 +124,8 @@ export class ProductsService {
       // to work from even if the provider is down later.
       await this.upsertMany(result.items);
 
-      return { ...result, freshness: ResultFreshness.LIVE };
+      // Trusted stores first on every page — see merchant-trust.ts.
+      return { ...result, items: trustedFirst(result.items), freshness: ResultFreshness.LIVE };
     } catch (err) {
       if (!(err instanceof ProviderUnavailableError)) throw err;
 
@@ -127,7 +133,11 @@ export class ProductsService {
         this.logger.warn(
           `${this.provider.name} unavailable (${err.reason}); serving stale search results`,
         );
-        return { ...cached.data, freshness: ResultFreshness.STALE };
+        return {
+          ...cached.data,
+          items: trustedFirst(cached.data.items),
+          freshness: ResultFreshness.STALE,
+        };
       }
 
       // Nothing cached to fall back on. 503 with a retry hint, not a 500: this
