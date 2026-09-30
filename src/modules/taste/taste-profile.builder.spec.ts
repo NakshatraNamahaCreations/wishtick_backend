@@ -299,3 +299,26 @@ describe('how much there is to go on', () => {
     expect(full.completeness).toBeLessThanOrEqual(1);
   });
 });
+
+describe('who the gifts are for', () => {
+  it("takes the account's own gender", () => {
+    expect(buildTasteProfile({ gender: 'female' }, lexicon).gender).toBe('female');
+    expect(buildTasteProfile({ gender: 'male' }, lexicon).gender).toBe('male');
+  });
+
+  it('assumes nothing for "other" or unset', () => {
+    expect(buildTasteProfile({ gender: 'other' }, lexicon).gender).toBeNull();
+    expect(buildTasteProfile({}, lexicon).gender).toBeNull();
+  });
+
+  it('reads a saved date by its relation', () => {
+    expect(buildTasteProfile({ relation: 'My Mom' }, lexicon).gender).toBe('female');
+    expect(buildTasteProfile({ relation: 'Brother' }, lexicon).gender).toBe('male');
+    // Says nothing about it.
+    expect(buildTasteProfile({ relation: 'Best Friend' }, lexicon).gender).toBeNull();
+  });
+
+  it('lets the account win over a relation', () => {
+    expect(buildTasteProfile({ gender: 'male', relation: 'Sister' }, lexicon).gender).toBe('male');
+  });
+});

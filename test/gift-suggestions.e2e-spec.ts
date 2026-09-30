@@ -1,7 +1,10 @@
 import type { INestApplication } from '@nestjs/common';
+import { getModelToken } from '@nestjs/mongoose';
+import type { Model } from 'mongoose';
 import request from 'supertest';
 import { CacheService } from 'src/infra/redis/cache.service';
 import { ProductsService } from 'src/modules/products/products.service';
+import { Product, type ProductDocument } from 'src/modules/products/schemas/product.schema';
 import { TastePrewarmService } from 'src/modules/suggestions/taste-prewarm.service';
 import { DAILY_SEARCH_HARD_CAP } from 'src/modules/suggestions/vendor-budget.service';
 import { FixtureProductProvider } from 'src/modules/products/providers/fixture-provider';
@@ -53,6 +56,14 @@ interface TasteBody {
  * three paid searches for one request.
  */
 describe('Gift suggestions (e2e)', () => {
+  /**
+   * With the provider down, search falls back to products it has saved. These
+   * tests are about there being nothing to fall back on.
+   */
+  const forgetSavedProducts = async (): Promise<void> => {
+    await app.get<Model<ProductDocument>>(getModelToken(Product.name)).deleteMany({}).exec();
+  };
+
   let ctx: TestApp;
   let app: INestApplication;
   let fixture: FixtureProductProvider;
@@ -417,6 +428,7 @@ describe('Gift suggestions (e2e)', () => {
       const host = await someone('host_i2', 'Host');
       const guest = await someone('guest_i2', 'Guest');
       const token = await inviteTokenFor(host, guest, { personName: 'Siya' });
+      await forgetSavedProducts();
       fixture.faults = { fail: true };
 
       const res = await shelfFor(token).expect(200);
@@ -591,6 +603,7 @@ describe('Gift suggestions (e2e)', () => {
       const priyal = await someone('priyal_s9', 'Priyal');
       const rohan = await someone('rohan_s9', 'Rohan');
       await connect(rohan, priyal);
+      await forgetSavedProducts();
       fixture.faults = { fail: true };
 
       const res = await suggestionsFor(rohan, priyal, '?maxPriceMinor=777777').expect(503);
@@ -684,6 +697,82 @@ describe('Gift suggestions (e2e)', () => {
 
       expect(items.length).toBeGreaterThan(0);
       expect(items.every((i) => i.reasons.length === 0 && i.matchScore === 0)).toBe(true);
+    });
+
+    describe('with a gender they gave', () => {
+      const setGender = (actor: Actor, gender: string) =>
+        request(app.getHttpServer())
+          .patch(`${V1}/me`)
+          .set(auth(actor.token))
+          .send({ gender })
+          .expect(200);
+
+      it('asks the shop for their section, on a shelf it splits by gender', async () => {
+        const priya = await someone('priya_x1', 'Priya');
+        const rohan = await someone('rohan_x1', 'Rohan');
+        await connect(rohan, priya);
+        await setGender(priya, 'female');
+        const search = jest.spyOn(app.get(ProductsService), 'search');
+
+        const res = await searchFor(rohan, priya, '?category=fashion').expect(200);
+
+        expect(search.mock.calls.map(([q]) => q.q)).toContain('for women');
+        // The fixture has nothing "for women", so the ordinary page stands in
+        // rather than an empty one.
+        expect((res.body as Envelope<SearchBody>).data.items.length).toBeGreaterThan(0);
+      });
+
+      it('adds it to a typed search for something sold by gender', async () => {
+        const dev = await someone('dev_x2', 'Dev');
+        const rohan = await someone('rohan_x2', 'Rohan');
+        await connect(rohan, dev);
+        await setGender(dev, 'male');
+        const search = jest.spyOn(app.get(ProductsService), 'search');
+
+        await searchFor(rohan, dev, '?q=watch').expect(200);
+
+        expect(search.mock.calls.map(([q]) => q.q)).toContain('watch for men');
+      });
+
+      it('leaves shelves the shop does not split alone', async () => {
+        const priya = await someone('priya_x3', 'Priya');
+        const rohan = await someone('rohan_x3', 'Rohan');
+        await connect(rohan, priya);
+        await setGender(priya, 'female');
+        const search = jest.spyOn(app.get(ProductsService), 'search');
+
+        await searchFor(rohan, priya, '?category=electronics').expect(200);
+
+        expect(search.mock.calls.every(([q]) => !q.q)).toBe(true);
+      });
+
+      it('assumes nothing for "other"', async () => {
+        const sam = await someone('sam_x4', 'Sam');
+        const rohan = await someone('rohan_x4', 'Rohan');
+        await connect(rohan, sam);
+        await setGender(sam, 'other');
+        const search = jest.spyOn(app.get(ProductsService), 'search');
+
+        await searchFor(rohan, sam, '?category=fashion').expect(200);
+
+        expect(search.mock.calls.every(([q]) => !q.q)).toBe(true);
+      });
+
+      it('never hands the gender back to the app', async () => {
+        const priya = await someone('priya_x5', 'Priya');
+        const rohan = await someone('rohan_x5', 'Rohan');
+        await connect(rohan, priya);
+        await setGender(priya, 'female');
+        await setTaste(priya, techLover);
+
+        const shelf = await suggestionsFor(rohan, priya).expect(200);
+        const page = await searchFor(rohan, priya, '?category=fashion').expect(200);
+
+        expect(JSON.stringify(shelf.body)).not.toMatch(/for women|female/i);
+        expect(
+          (page.body as Envelope<SearchBody>).data.items.flatMap((i) => i.reasons).join(' '),
+        ).not.toMatch(/women|female/i);
+      });
     });
 
     it('keeps the paging of the ordinary search', async () => {

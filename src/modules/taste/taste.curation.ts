@@ -140,6 +140,33 @@ export function relationWord(relation: string | null | undefined): string | null
   return words.find((word) => word in RELATION_SHELVES) ?? null;
 }
 
+/** What a relation says about who the gift is for — "Mom" is a woman. */
+const RELATION_GENDER: Readonly<Record<string, 'female' | 'male'>> = {
+  mom: 'female',
+  mother: 'female',
+  wife: 'female',
+  girlfriend: 'female',
+  sister: 'female',
+  daughter: 'female',
+  dad: 'male',
+  father: 'male',
+  husband: 'male',
+  boyfriend: 'male',
+  brother: 'male',
+  son: 'male',
+};
+
+/**
+ * The gender a free-text relation names, or null.
+ *
+ * Only the words that say it outright: "friend", "colleague" and "partner"
+ * say nothing, and are left saying nothing.
+ */
+export function genderForRelation(relation: string | null | undefined): 'female' | 'male' | null {
+  const word = relationWord(relation);
+  return word ? (RELATION_GENDER[word] ?? null) : null;
+}
+
 /**
  * The shelves to try, in order, when the best one — [shelfForOccasionAndRelation]
  * — has nothing left to show that an earlier shelf on the feed did not.

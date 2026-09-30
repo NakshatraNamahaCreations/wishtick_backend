@@ -1,6 +1,6 @@
 import type { NormalizedProduct } from '../products/product.types';
 import { normalise } from '../taste/taste.lexicon';
-import type { TasteColour, TasteProfile } from '../taste/taste.types';
+import type { TasteColour, TasteGender, TasteProfile } from '../taste/taste.types';
 
 /**
  * Re-ranking a shelf of products for one person.
@@ -38,6 +38,8 @@ export interface SignalBreakdown {
   shelf: number;
   colour: number;
   size: number;
+  /** 1 made for them, -1 made only for the other gender, 0 says neither. */
+  gender: number;
 }
 
 export interface ScoredProduct {
@@ -56,7 +58,17 @@ export const WEIGHTS = {
   shelf: 0.1,
   colour: 0.06,
   size: 0.04,
+  gender: 0.08,
 } as const;
+
+/**
+ * What a product made only for the other gender keeps of its score.
+ *
+ * A penalty rather than a filter: a page for somebody must not come back
+ * short, and "men's watch" is still a fair gift for plenty of women. It just
+ * stops leading the page.
+ */
+const OTHER_GENDER_KEEPS = 0.3;
 
 /**
  * How much the budget counts, by who set it.
@@ -232,6 +244,153 @@ function colourSignal(
  * product: the only evidence is a merchandising title, which may be listing
  * every size the seller stocks.
  */
+// ── Gender ──────────────────────────────────────────────────────────────────
+
+/**
+ * Words that say who a listing is for. Whole words only, so "women" never
+ * finds "men". "Her" and "him" alone are left out — "Lord of the Rings: Return
+ * of Him" is not a men's product — and count only as "for her", "for him".
+ */
+const GENDER_WORDS: Record<TasteGender, ReadonlySet<string>> = {
+  female: new Set(['women', 'womens', 'woman', 'ladies', 'lady', 'girls', 'girl', 'female']),
+  male: new Set(['men', 'mens', 'man', 'gents', 'gentlemen', 'boys', 'boy', 'male']),
+};
+const GENDER_PHRASES: Record<TasteGender, RegExp> = {
+  female: /\bfor her\b/,
+  male: /\bfor him\b/,
+};
+
+/** Words that say "anybody" — a unisex listing is for them too. */
+const UNISEX_WORDS = new Set(['unisex']);
+
+function saysGender(title: Title, gender: TasteGender): boolean {
+  return (
+    title.words.some((w) => GENDER_WORDS[gender].has(w)) || GENDER_PHRASES[gender].test(title.text)
+  );
+}
+
+/**
+ * Whether the listing is made for them, 1; only for the other gender, -1;
+ * or says neither — or both, or "unisex" — 0.
+ *
+ * Nothing at all without a known gender: most people never said, and a title
+ * saying "for women" says nothing about whether it suits somebody who did not.
+ */
+export function genderSignal(title: Title, gender: TasteGender | null): number {
+  if (!gender) return 0;
+  if (title.words.some((w) => UNISEX_WORDS.has(w))) return 0;
+  const other: TasteGender = gender === 'female' ? 'male' : 'female';
+  const theirs = saysGender(title, gender);
+  const not = saysGender(title, other);
+  if (theirs && !not) return 1;
+  if (not && !theirs) return -1;
+  return 0;
+}
+
+/**
+ * The words that ask a shop for their section — "for women" — or null.
+ *
+ * For the per-person search, not for any shared query: added server-side, so
+ * the app is never handed it and a WishMate is never told.
+ */
+export function genderSearchPhrase(gender: TasteGender | null): string | null {
+  if (gender === 'female') return 'for women';
+  if (gender === 'male') return 'for men';
+  return null;
+}
+
+/**
+ * Shelves where the shop itself splits by gender, so asking for their
+ * section changes what comes back. Electronics or books do not, and a
+ * narrowed search there would only lose results.
+ */
+export const GENDERED_SHELVES: ReadonlySet<string> = new Set([
+  'fashion',
+  'beauty',
+  'jewellery',
+  'sports_gear',
+]);
+
+/**
+ * Things a shopper types that shops sell by gender — "watch", "perfume".
+ * A typed search for one of these is asked for in their section; "coffee
+ * maker for women" would only skew the page, so anything else is not.
+ */
+const GENDERED_THINGS = new Set([
+  'watch',
+  'watches',
+  'shoe',
+  'shoes',
+  'sneakers',
+  'sandals',
+  'heels',
+  'boots',
+  'perfume',
+  'perfumes',
+  'fragrance',
+  'deodorant',
+  'cologne',
+  'shirt',
+  'shirts',
+  'tshirt',
+  'dress',
+  'dresses',
+  'kurta',
+  'kurti',
+  'saree',
+  'lehenga',
+  'sherwani',
+  'jeans',
+  'jacket',
+  'hoodie',
+  'sweater',
+  'blazer',
+  'clothing',
+  'clothes',
+  'nightwear',
+  'innerwear',
+  'wallet',
+  'bag',
+  'handbag',
+  'purse',
+  'backpack',
+  'belt',
+  'sunglasses',
+  'tie',
+  'cufflinks',
+  'bracelet',
+  'ring',
+  'rings',
+  'necklace',
+  'earrings',
+  'jewellery',
+  'jewelry',
+  'makeup',
+  'skincare',
+  'grooming',
+  'trimmer',
+  'shaver',
+  'razor',
+]);
+
+/** Whether typed words ask for something a shop sells by gender. */
+export function typedIsGendered(typed: string): boolean {
+  // "T-shirt" normalises to "t shirt", which "shirt" already catches.
+  return normalise(typed)
+    .split(' ')
+    .some((w) => GENDERED_THINGS.has(w));
+}
+
+/** Whether typed words already say who it is for, so there is nothing to add. */
+export function typedSaysGender(typed: string): boolean {
+  const title = titleOf({ title: typed } as NormalizedProduct);
+  return (
+    saysGender(title, 'female') ||
+    saysGender(title, 'male') ||
+    title.words.some((w) => UNISEX_WORDS.has(w))
+  );
+}
+
 function sizeSignal(title: Title, taste: TasteProfile): { value: number; reason: string | null } {
   const { clothing, shoe, fit } = taste.sizes;
   if (fit && title.wordSet.has(normalise(fit))) {
@@ -364,6 +523,7 @@ export function rankForTaste(
       shelf: shelfSignal(foundIn.length > 0 ? foundIn : [2]),
       colour: colour.value,
       size: size.value,
+      gender: genderSignal(title, taste.gender),
     };
     const budgetWeight = WEIGHTS.budget * BUDGET_TRUST[taste.budget.source];
     let score =
@@ -372,7 +532,9 @@ export function rankForTaste(
       WEIGHTS.quality * signals.quality +
       WEIGHTS.shelf * signals.shelf +
       WEIGHTS.colour * signals.colour +
-      WEIGHTS.size * signals.size;
+      WEIGHTS.size * signals.size +
+      WEIGHTS.gender * Math.max(0, signals.gender);
+    if (signals.gender < 0) score *= OTHER_GENDER_KEEPS;
     if (product.inStock === false) score *= 0.2;
 
     const reasons: string[] = [];

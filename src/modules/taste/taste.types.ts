@@ -43,6 +43,16 @@ export interface TasteSizes {
   fit: string | null;
 }
 
+/**
+ * Who the gifts are for, when that is known: from the account, or from a
+ * saved date's relation ("Mom", "Brother").
+ *
+ * Only these two. "Other" and unset both mean nothing is assumed — there is no
+ * third section of a shop to steer toward, and a guess would be worse than
+ * none.
+ */
+export type TasteGender = 'female' | 'male';
+
 export interface TasteBudget {
   minMinor: number | null;
   maxMinor: number | null;
@@ -66,6 +76,8 @@ export interface TasteProfile {
   budget: TasteBudget;
   /** Occasion keys this person celebrates, when they said. */
   occasions: string[];
+  /** Null unless known — see [TasteGender]. Never shown as a reason. */
+  gender: TasteGender | null;
   /**
    * 0..1 — how much there is to go on.
    *
@@ -85,5 +97,6 @@ export const EMPTY_TASTE: TasteProfile = {
   sizes: { clothing: null, shoe: null, fit: null },
   budget: { minMinor: null, maxMinor: null, source: 'default' },
   occasions: [],
+  gender: null,
   completeness: 0,
 };

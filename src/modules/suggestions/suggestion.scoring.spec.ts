@@ -3,10 +3,14 @@ import { EMPTY_TASTE, type TasteProfile } from '../taste/taste.types';
 import {
   budgetSignal,
   colourSearchWord,
+  GENDERED_SHELVES,
+  genderSearchPhrase,
   MAX_PER_MERCHANT,
   qualitySignal,
   rankForTaste,
   searchableColour,
+  typedIsGendered,
+  typedSaysGender,
   type RetrievedRow,
 } from './suggestion.scoring';
 
@@ -499,5 +503,94 @@ describe('reordering one page of a search', () => {
     );
 
     expect(page[0].product.title).toBe('Running Shoes');
+  });
+});
+
+describe('gender', () => {
+  const ranked = (titles: string[], gender: TasteProfile['gender']) =>
+    rankForTaste(
+      titles.map((title, i) => row(product({ title, externalId: `g${i}` }))),
+      taste({ gender }),
+      { limit: titles.length, diverse: false },
+    ).map((s) => s.product.title);
+
+  it('puts what is made for them ahead of what is made for others', () => {
+    expect(ranked(["Men's Leather Wallet", "Women's Leather Wallet"], 'female')[0]).toBe(
+      "Women's Leather Wallet",
+    );
+    expect(ranked(["Women's Leather Wallet", "Men's Leather Wallet"], 'male')[0]).toBe(
+      "Men's Leather Wallet",
+    );
+  });
+
+  it('never reads "women" as "men"', () => {
+    // Whole words: the male signal must not fire inside "women".
+    expect(ranked(['Watch for Women', 'Plain Watch'], 'male')[0]).toBe('Plain Watch');
+  });
+
+  it('pushes the other section down without taking it off the page', () => {
+    const titles = ranked(['Watch for Men', 'Plain Watch'], 'female');
+    expect(titles).toEqual(['Plain Watch', 'Watch for Men']);
+  });
+
+  it('treats unisex, and both at once, as for anybody', () => {
+    const [a, b] = rankForTaste(
+      [
+        row(product({ title: 'Unisex Hoodie for Men and Women', externalId: 'u1' })),
+        row(product({ title: 'Plain Hoodie', externalId: 'u2' })),
+      ],
+      taste({ gender: 'female' }),
+      { limit: 2, diverse: false },
+    );
+    expect(a.signals.gender).toBe(0);
+    expect(b.signals.gender).toBe(0);
+  });
+
+  it('reads "for her" and "for him" as phrases', () => {
+    const [top] = rankForTaste(
+      [row(product({ title: 'Perfect Gift for Her' }))],
+      taste({ gender: 'female' }),
+      { limit: 1 },
+    );
+    expect(top.signals.gender).toBe(1);
+  });
+
+  it('does nothing without a known gender', () => {
+    const [top] = rankForTaste([row(product({ title: "Men's Watch" }))], taste({ gender: null }), {
+      limit: 1,
+    });
+    expect(top.signals.gender).toBe(0);
+  });
+
+  it('is never a reason — the app is not told', () => {
+    const [top] = rankForTaste(
+      [row(product({ title: "Women's Watch" }))],
+      taste({ gender: 'female' }),
+      { limit: 1 },
+    );
+    expect(top.reasons.join(' ')).not.toMatch(/women|female|her/i);
+  });
+});
+
+describe('asking for their section of the shop', () => {
+  it('names the section only for a known gender', () => {
+    expect(genderSearchPhrase('female')).toBe('for women');
+    expect(genderSearchPhrase('male')).toBe('for men');
+    expect(genderSearchPhrase(null)).toBeNull();
+  });
+
+  it('only for things shops sell by gender', () => {
+    expect(typedIsGendered('smart watch')).toBe(true);
+    expect(typedIsGendered('Graphic T-Shirt')).toBe(true);
+    expect(typedIsGendered('coffee maker')).toBe(false);
+    expect(GENDERED_SHELVES.has('fashion')).toBe(true);
+    expect(GENDERED_SHELVES.has('electronics')).toBe(false);
+  });
+
+  it('not when the words already say who it is for', () => {
+    expect(typedSaysGender('watch for women')).toBe(true);
+    expect(typedSaysGender("men's wallet")).toBe(true);
+    expect(typedSaysGender('unisex hoodie')).toBe(true);
+    expect(typedSaysGender('watch')).toBe(false);
   });
 });

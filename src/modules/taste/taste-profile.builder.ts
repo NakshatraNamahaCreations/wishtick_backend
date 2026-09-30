@@ -6,12 +6,14 @@ import {
   DEFAULT_SHELVES,
   LIFESTYLE_BUDGET,
   MAX_SHELVES,
+  genderForRelation,
   shelvesForRelation,
 } from './taste.curation';
 import { normalise, overrideTermsOf, termsOf, type TasteLexicon } from './taste.lexicon';
 import {
   EMPTY_TASTE,
   type TasteColour,
+  type TasteGender,
   type TasteProfile,
   type TasteSizes,
   type TasteToken,
@@ -41,6 +43,17 @@ export interface BuildTasteInput {
   /** A budget the caller asked for, which always wins. */
   minPriceMinor?: number | null;
   maxPriceMinor?: number | null;
+  /** The account's own gender, as stored: 'female', 'male', 'other' or null. */
+  gender?: string | null;
+}
+
+/**
+ * The gender to shop for: the account's own when it said, else what a saved
+ * date's relation names. Anything else — "other", unset — is null.
+ */
+function genderFor(input: BuildTasteInput): TasteGender | null {
+  if (input.gender === 'female' || input.gender === 'male') return input.gender;
+  return genderForRelation(input.relation);
 }
 
 /** What a match on this kind of term is worth. */
@@ -137,6 +150,7 @@ export function buildTasteProfile(input: BuildTasteInput, lexicon: TasteLexicon)
     sizes: sizesFor(preferences, lexicon),
     budget: budgetFor(input, preferences),
     occasions: preferences.occasions ?? [],
+    gender: genderFor(input),
     completeness: completenessOf(preferences),
   };
 }

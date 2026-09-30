@@ -113,10 +113,15 @@ export class TasteService {
   ): Promise<TasteProfile> {
     const { audience = 'others', ...rest } = opts;
     const lexicon = await this.lexicon();
-    const preferences = userId
-      ? shareablePreferences(await this.preferencesOf(userId), audience)
-      : {};
-    return buildTasteProfile({ userId, preferences, ...rest }, lexicon);
+    const profile = userId ? await this.profiles.getOrCreate(userId) : null;
+    const preferences = profile ? shareablePreferences(profile.preferences ?? {}, audience) : {};
+    // Gender shapes the search and the order, and nothing else: it is never
+    // a reason, never on the taste card, and never in a query handed back to
+    // the app — so a WishMate is not told it, only shown gifts that suit.
+    return buildTasteProfile(
+      { userId, preferences, gender: profile?.gender ?? null, ...rest },
+      lexicon,
+    );
   }
 
   /**

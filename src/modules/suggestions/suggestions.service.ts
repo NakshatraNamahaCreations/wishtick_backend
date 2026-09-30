@@ -8,7 +8,7 @@ import {
   type NormalizedProduct,
   type ProductSearchQuery,
 } from '../products/product.types';
-import { ProductsService } from '../products/products.service';
+import { ProductsService, type SearchResponse } from '../products/products.service';
 import { ProfileService } from '../profile/profile.service';
 import { SharedEventsService } from '../events/shared-events.service';
 import { TasteService } from '../taste/taste.service';
@@ -25,10 +25,14 @@ import {
 import { shelfForOccasionAndRelation } from '../taste/taste.curation';
 import { SearchAllowance, VendorBudgetService } from './vendor-budget.service';
 import {
+  GENDERED_SHELVES,
   MIN_SCORE_TO_SHOW,
   colourSearchWord,
+  genderSearchPhrase,
   rankForTaste,
   searchableColour,
+  typedIsGendered,
+  typedSaysGender,
   type RetrievedRow,
 } from './suggestion.scoring';
 import { inviteShelfTitle, occasionForEventType } from './invite.curation';
@@ -38,6 +42,12 @@ import {
   type InviteSuggestionsView,
   type RecipientSearchView,
 } from './suggestions.views';
+
+/**
+ * Fewer results than this from a search narrowed to someone's section, and
+ * the ordinary search is used instead.
+ */
+const MIN_SECTION_PAGE = 6;
 
 /** A ranked shelf is kept this long, per person and per taste. */
 const RESULT_CACHE_TTL_SECONDS = 900;
@@ -210,8 +220,7 @@ export class SuggestionsService {
       );
     }
 
-    const [result, taste, profile, allowance] = await Promise.all([
-      this.products.search(query),
+    const [taste, profile, allowance] = await Promise.all([
       this.taste.profileFor(targetId, {
         audience: relationship === WishmateRelationship.SELF ? 'self' : 'others',
         minPriceMinor: query.minPriceMinor ?? null,
@@ -221,9 +230,11 @@ export class SuggestionsService {
       this.budget.allowanceFor(viewerId),
     ]);
     const recipient = { userId: targetId, displayName: profile.displayName?.trim() || null };
+    const result = await this.searchTheirSection(query, taste);
 
-    // Nothing to rank by: the provider's own order, and an honest flag.
-    if (taste.completeness === 0) {
+    // Nothing to rank by: the provider's own order, and an honest flag. A
+    // known gender alone is something — it still orders the page.
+    if (taste.completeness === 0 && !taste.gender) {
       return {
         ...result,
         items: result.items.map((product) => ({ ...product, matchScore: 0, reasons: [] })),
@@ -261,6 +272,43 @@ export class SuggestionsService {
         (item) => item.signals.interest > 0 || item.signals.colour > 0 || item.signals.size > 0,
       ),
     };
+  }
+
+  /**
+   * The search, asked of their section of the shop when that means something.
+   *
+   * "Fashion accessories gift for women", "watch for men": only on a shelf the
+   * shop splits by gender, or a typed search for something it does, and never
+   * when the words already say who it is for. The phrase is added here, so it
+   * never reaches the app or the query it pages with. A narrowed page that
+   * comes back thin is traded for the ordinary one — a short page reads as the
+   * end of the results, and ranking still does the gender part on the full one.
+   */
+  private async searchTheirSection(
+    query: ProductSearchQuery,
+    taste: TasteProfile,
+  ): Promise<SearchResponse> {
+    const phrase = genderSearchPhrase(taste.gender);
+    const typed = query.q?.trim() ?? '';
+    const gendered = typed
+      ? typedIsGendered(typed) || GENDERED_SHELVES.has(query.category ?? '')
+      : GENDERED_SHELVES.has(query.category ?? '');
+    if (!phrase || !gendered || (typed && typedSaysGender(typed))) {
+      return this.products.search(query);
+    }
+
+    try {
+      const narrowed = await this.products.search({
+        ...query,
+        q: typed ? `${typed} ${phrase}` : phrase,
+      });
+      if (narrowed.items.length >= Math.min(MIN_SECTION_PAGE, query.pageSize)) {
+        return narrowed;
+      }
+    } catch (err) {
+      this.logger.debug(`Section search skipped: ${(err as Error).message}`);
+    }
+    return this.products.search(query);
   }
 
   /**
