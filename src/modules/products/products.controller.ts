@@ -46,6 +46,7 @@ export class ProductsController {
       maxPriceMinor: query.maxPriceMinor,
       page: query.page ?? 1,
       pageSize: query.pageSize ?? 20,
+      platform: query.platform,
     });
   }
 

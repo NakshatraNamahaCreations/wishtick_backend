@@ -9,6 +9,8 @@ import { AuthService } from 'src/modules/auth/auth.service';
 import { Event, type EventDocument } from 'src/modules/events/schemas/event.schema';
 import { GiftStatus } from 'src/modules/gifting/gift.types';
 import { Gift, type GiftDocument } from 'src/modules/gifting/schemas/gift.schema';
+import type { GiftListItemView } from 'src/modules/gifting/gift.views';
+import { DeliveryDateRegistrar } from 'src/modules/group-gifts/delivery-date.registrar';
 import { GroupGiftReconcileService } from 'src/modules/group-gifts/group-gift-reconcile.service';
 import { GroupGiftStatus, OverfundPolicy } from 'src/modules/group-gifts/group-gift.types';
 import {
@@ -386,13 +388,14 @@ describe('Group gifting (e2e)', () => {
         const { itemId } = await listForPuttu(owner);
         await createGroupGift(friend, itemId, {}).expect(201);
 
-        const given = (
+        // Still collecting, so it is held rather than given.
+        const held = (
           await request(app.getHttpServer())
-            .get(`${V1}/gifts/given`)
+            .get(`${V1}/gifts/on-hold`)
             .set(auth(friend.token))
             .expect(200)
         ).body as Envelope<{ counterpartyName: string | null }[]>;
-        expect(given.data.map((g) => g.counterpartyName)).toEqual(['Puttu']);
+        expect(held.data.map((g) => g.counterpartyName)).toEqual(['Puttu']);
 
         const received = (
           await request(app.getHttpServer())
@@ -718,6 +721,24 @@ describe('Group gifting (e2e)', () => {
   });
 
   // ── Exit criterion: anonymous contributors never appear by name ─────────────
+
+  describe('the UPI ID contributions are collected in', () => {
+    it('refuses one that is not a UPI ID', async () => {
+      const owner = await newUser();
+      const host = await newUser();
+      const { itemId } = await wishlistWithItem(owner);
+
+      await createGroupGift(host, itemId, { hostUpiId: 'xyz@sss@com' }).expect(400);
+    });
+
+    it('takes an ordinary one', async () => {
+      const owner = await newUser();
+      const host = await newUser();
+      const { itemId } = await wishlistWithItem(owner);
+
+      await createGroupGift(host, itemId, { hostUpiId: 'rohan.r@okaxis' }).expect(201);
+    });
+  });
 
   // ── Who may chip in, and when ─────────────────────────────────────────────
 
@@ -1055,13 +1076,16 @@ describe('Group gifting (e2e)', () => {
       });
     });
 
-    it('is the recipient’s alone to read', async () => {
-      const { initiator, giftId } = await delivered();
+    it('is for the recipient and the people who gave it, nobody else', async () => {
+      const { initiator, named, secret, giftId } = await delivered();
       const stranger = await newUser();
 
-      // Not even the people who organised and paid for it: this is the
-      // recipient's copy of the list, reached from their own received gift.
-      await contributors(initiator, giftId).expect(404);
+      // The host and each contributor reach it from their own Gifts Given.
+      for (const giver of [initiator, named, secret]) {
+        const view = (await contributors(giver, giftId).expect(200))
+          .body as Envelope<GiftContributorsView>;
+        expect(view.data.contributors.map((c) => c.userId)).toContain(named.userId);
+      }
       await contributors(stranger, giftId).expect(404);
     });
 
@@ -1100,6 +1124,81 @@ describe('Group gifting (e2e)', () => {
   });
 
   // ── Purchase / cancel ───────────────────────────────────────────────────────
+
+  describe('in Gifts Given, for everyone who gave', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+
+    const given = async (actor: Actor): Promise<GiftListItemView[]> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/gifts/given`)
+            .set(auth(actor.token))
+            .expect(200)
+        ).body as Envelope<GiftListItemView[]>
+      ).data;
+
+    const funded = async (): Promise<{ initiator: Actor; giver: Actor; ggId: string }> => {
+      const owner = await newUser();
+      const initiator = await newUser();
+      const giver = await newUser();
+      const { itemId } = await wishlistWithItem(owner);
+      const gg = (await createGroupGift(initiator, itemId, { targetAmountMinor: 2000 }).expect(201))
+        .body as Envelope<GroupGiftView>;
+      await contribute(giver, gg.data.id, { amountMinor: 2000 }).expect(201);
+      return { initiator, giver, ggId: gg.data.id };
+    };
+
+    it('reaches the host and each contributor once it is bought, not before', async () => {
+      const { initiator, giver, ggId } = await funded();
+      expect(await given(initiator)).toHaveLength(0);
+      expect(await given(giver)).toHaveLength(0);
+
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${ggId}/purchase`)
+        .set(auth(initiator.token))
+        .send({})
+        .expect(200);
+
+      const hosts = await given(initiator);
+      const theirs = await given(giver);
+      expect(hosts).toHaveLength(1);
+      expect(theirs).toHaveLength(1);
+      expect(theirs[0].id).toBe(hosts[0].id);
+      expect(theirs[0].isGroup).toBe(true);
+      // Only the host bought it, so only the host may say when it arrives.
+      expect(hosts[0].isGifter).toBe(true);
+      expect(theirs[0].isGifter).toBe(false);
+    });
+
+    it('keeps the delivery date the host gave and delivers the group on the day', async () => {
+      const { initiator, giver, ggId } = await funded();
+      const soon = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${ggId}/purchase`)
+        .set(auth(initiator.token))
+        .send({ deliveryDate: soon })
+        .expect(200);
+      expect(new Date((await given(giver))[0].expectedDeliveryAt!).toISOString()).toBe(soon);
+
+      await app.get(DeliveryDateRegistrar).sweep();
+
+      const group = await groupGiftModel.findById(ggId).exec();
+      expect(group!.status).toBe(GroupGiftStatus.FULFILLED);
+      expect((await given(giver))[0].status).toBe(GiftStatus.FULFILLED);
+    });
+
+    it('refuses a purchase date more than a year off', async () => {
+      const { initiator, ggId } = await funded();
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${ggId}/purchase`)
+        .set(auth(initiator.token))
+        .send({ deliveryDate: new Date(Date.now() + 400 * DAY).toISOString() })
+        .expect(400);
+      const group = await groupGiftModel.findById(ggId).exec();
+      expect(group!.status).toBe(GroupGiftStatus.FUNDED);
+    });
+  });
 
   describe('purchase & cancel', () => {
     it('lets only the initiator purchase a funded gift, marking the item purchased', async () => {

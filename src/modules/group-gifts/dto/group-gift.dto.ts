@@ -15,6 +15,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { IsUpiId } from 'src/common/validators/is-upi-id.validator';
 import { ContributionMode, GroupGiftVisibility, OverfundPolicy } from '../group-gift.types';
 
 const trim = ({ value }: { value: unknown }): unknown =>
@@ -63,6 +64,7 @@ export class CreateGroupGiftDto {
   @IsOptional()
   @IsString()
   @MaxLength(120)
+  @IsUpiId()
   @Transform(trim)
   hostUpiId?: string;
 
@@ -156,6 +158,15 @@ export class GroupGiftActionDto {
   @MaxLength(500)
   @Transform(trim)
   note?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'On purchase: when it will reach the recipient, as local midnight of that day. ' +
+      'It reads "Shipping" until then and is marked delivered from then on.',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  deliveryDate?: string;
 }
 
 export class ShareGroupGiftDto {
@@ -270,6 +281,7 @@ export class ShareUpiDto {
   @ApiProperty({ example: 'name@okhdfc' })
   @IsString()
   @MaxLength(120)
+  @IsUpiId()
   @Transform(trim)
   upiId!: string;
 

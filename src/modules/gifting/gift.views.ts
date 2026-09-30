@@ -89,8 +89,19 @@ export interface GiftListItemView {
    * and the recipient-side rule in gifting.service.
    */
   counterpartyName: string | null;
-  /** From the linked order, when there is one. */
+  /**
+   * When it arrived: the courier's word from the linked order when there is
+   * one, otherwise when the gift was marked delivered — by its gifter, or by
+   * its delivery date coming round.
+   */
   deliveredAt: Date | null;
+  /** When the gifter said it would arrive; "Shipping" until then. */
+  expectedDeliveryAt: Date | null;
+  /**
+   * Whether the viewer is the one who bought it, and so may set its delivery
+   * date. False for a contributor looking at a group gift the host bought.
+   */
+  isGifter: boolean;
   /** Where the reservation stands, for the "Held for 1d 3h" chip. */
   expiresAt: Date | null;
   /** Whether the recipient has already thanked the gifter (`324:1108`). */

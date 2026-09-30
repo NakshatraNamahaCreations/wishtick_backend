@@ -78,6 +78,20 @@ export class WishmatesController {
     return this.wishmates.suggestions(userId);
   }
 
+  @Get('people/:userId/mutuals')
+  @ApiOperation({
+    summary: 'Every WishMate you and this person have in common',
+    description:
+      'The full list behind a profile’s “N Mutual Friends” — the profile carries only the ' +
+      'few its avatar stack draws. Each one is already your own WishMate. Sorted by name.',
+  })
+  mutuals(
+    @CurrentUser('id') viewerId: string,
+    @Param('userId') targetId: string,
+  ): Promise<WishmateView[]> {
+    return this.wishmates.mutualsOf(viewerId, targetId);
+  }
+
   @Get('people/:userId')
   @ApiOperation({ summary: 'Someone’s public profile, with your relationship to them' })
   profile(

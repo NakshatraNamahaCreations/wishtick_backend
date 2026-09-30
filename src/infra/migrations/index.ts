@@ -35,6 +35,7 @@ import { migration033 } from './scripts/033-important-date-month-day';
 import { migration034 } from './scripts/034-item-active-gift-mirror';
 import { migration035 } from './scripts/035-cancelled-orders';
 import { migration036 } from './scripts/036-event-join-requests';
+import { migration037 } from './scripts/037-gift-delivery-date';
 
 /** Every migration must be registered here to run. Order comes from the id. */
 export const MIGRATIONS: Migration[] = [
@@ -74,6 +75,7 @@ export const MIGRATIONS: Migration[] = [
   migration034,
   migration035,
   migration036,
+  migration037,
 ];
 
 export { MigrationRunner } from './migration.runner';

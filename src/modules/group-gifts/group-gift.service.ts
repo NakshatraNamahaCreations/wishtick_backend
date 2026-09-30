@@ -22,6 +22,7 @@ import type { AppConfig } from 'src/config/configuration';
 import { LockService } from 'src/infra/redis/lock.service';
 import { EventStatus } from 'src/modules/events/event.types';
 import { Event, type EventDocument } from 'src/modules/events/schemas/event.schema';
+import { parseDeliveryDate } from 'src/modules/gifting/delivery-date';
 import { GiftStatusService } from 'src/modules/gifting/gift-status.service';
 import { GiftingService } from 'src/modules/gifting/gifting.service';
 import { GiftMode, GiftStatus, GiftType, GiftVisibility } from 'src/modules/gifting/gift.types';
@@ -197,18 +198,14 @@ export class GroupGiftService {
    * timeline); it no longer hides them from the recipient.
    */
   async contributorsForGift(giftId: string, userId: string): Promise<GiftContributorsView> {
-    // Not the recipient, not yet theirs to know about, or not a group gift at
-    // all: one 404 for every one of those, so probing this route tells a
+    // Not someone who gave it, not the recipient (or not yet theirs to know
+    // about), or not a group gift at all: one 404 for every one of those, so probing this route tells a
     // stranger nothing a wrong guess would not.
     const notFound = new AppException(ErrorCode.GIFT_NOT_FOUND, 'Gift not found', 404);
     if (!Types.ObjectId.isValid(giftId)) throw notFound;
 
     const gift = await this.giftModel.findById(giftId).exec();
-    if (!gift || gift.recipientId.toString() !== userId) throw notFound;
-    const knowable =
-      gift.visibility === GiftVisibility.VISIBLE ||
-      [GiftStatus.FULFILLED, GiftStatus.COMPLETED].includes(gift.status);
-    if (!knowable) throw notFound;
+    if (!gift) throw notFound;
 
     // The holder of the primary item, or of one of the extra lines — both are
     // gifts on the recipient's list and both belong to the same group.
@@ -223,6 +220,17 @@ export class GroupGiftService {
       .exec();
 
     const organiserId = group.initiatorId.toString();
+
+    // Who may look: the recipient once the gift is theirs to know about, and
+    // the people who gave it — the host and anyone whose share was confirmed,
+    // from their own Gifts Given.
+    const isRecipient = gift.recipientId.toString() === userId;
+    const gaveToIt =
+      organiserId === userId || contributions.some((c) => c.userId.toString() === userId);
+    const knowable =
+      gift.visibility === GiftVisibility.VISIBLE ||
+      [GiftStatus.FULFILLED, GiftStatus.COMPLETED].includes(gift.status);
+    if (!gaveToIt && !(isRecipient && knowable)) throw notFound;
 
     // One row per person however many times they chipped in: their total, and
     // whether every one of those contributions was marked anonymous.
@@ -738,11 +746,13 @@ export class GroupGiftService {
     userId: string,
     dto: GroupGiftActionDto,
   ): Promise<GroupGiftView> {
+    const expectedDeliveryAt = parseDeliveryDate(dto.deliveryDate);
     const view = await this.driveHolder(groupGiftId, userId, {
       requireStatus: GroupGiftStatus.FUNDED,
       toGroupStatus: GroupGiftStatus.PURCHASED,
       holderTo: GiftStatus.PURCHASED,
       note: dto.note ?? null,
+      expectedDeliveryAt,
     });
     this.emitter.emit(GROUP_GIFT_PURCHASED, {
       groupGiftId,
@@ -752,22 +762,67 @@ export class GroupGiftService {
     return view;
   }
 
+  /**
+   * [by] names who said so when it is not the host — the delivery-date sweep.
+   * The authority is still the host's: it is their gift either way.
+   */
   async fulfill(
     groupGiftId: string,
     userId: string,
     dto: GroupGiftActionDto,
+    by?: string,
   ): Promise<GroupGiftView> {
     const view = await this.driveHolder(groupGiftId, userId, {
       requireStatus: GroupGiftStatus.PURCHASED,
       toGroupStatus: GroupGiftStatus.FULFILLED,
       holderTo: GiftStatus.FULFILLED,
       note: dto.note ?? null,
+      by,
     });
     this.emitter.emit(GROUP_GIFT_FULFILLED, {
       groupGiftId,
       itemId: view.itemId,
     } satisfies GroupGiftFulfilledEvent);
     return view;
+  }
+
+  /**
+   * Marks delivered every bought group gift whose delivery date has come, the
+   * group and its holder together.
+   *
+   * Credited to the sweep in the history but carried out as the host, whose
+   * gift it is. One failure is logged and left for the next run.
+   */
+  async deliverDue(now = new Date()): Promise<number> {
+    const holders = await this.giftModel
+      .find({
+        status: GiftStatus.PURCHASED,
+        type: GiftType.GROUP,
+        expectedDeliveryAt: { $ne: null, $lte: now },
+      })
+      .select({ _id: 1 })
+      .limit(500)
+      .exec();
+    if (holders.length === 0) return 0;
+
+    const groups = await this.groupGiftModel
+      .find({ giftId: { $in: holders.map((h) => h._id) }, status: GroupGiftStatus.PURCHASED })
+      .exec();
+    let delivered = 0;
+    for (const group of groups) {
+      try {
+        await this.fulfill(
+          group._id.toString(),
+          group.initiatorId.toString(),
+          { note: 'Delivery date reached' },
+          'system:delivery-date',
+        );
+        delivered++;
+      } catch (err) {
+        this.logger.warn(`Could not deliver group gift ${group._id.toString()}: ${String(err)}`);
+      }
+    }
+    return delivered;
   }
 
   // ── Charges and extra gifts (Sprint 6b) ────────────────────────────────────
@@ -1428,8 +1483,13 @@ export class GroupGiftService {
       toGroupStatus: GroupGiftStatus;
       holderTo: GiftStatus;
       note: string | null;
+      /** Stamped on the holder alongside the move — see Gift.expectedDeliveryAt. */
+      expectedDeliveryAt?: Date | null;
+      /** Who the history credits; the caller by default. */
+      by?: string;
     },
   ): Promise<GroupGiftView> {
+    const by = opts.by ?? `user:${userId}`;
     const gift = await this.loadOrFail(groupGiftId);
     if (gift.initiatorId.toString() !== userId) {
       throw new AppException(ErrorCode.NOT_THE_INITIATOR, 'Only the initiator can do this', 403);
@@ -1451,11 +1511,15 @@ export class GroupGiftService {
                 409,
               );
             }
-            await this.status.transitionById(gg.giftId, opts.holderTo, `user:${userId}`, {
+            const holder = await this.status.transitionById(gg.giftId, opts.holderTo, by, {
               note: opts.note ?? undefined,
               session,
             });
-            this.pushStatus(gg, opts.toGroupStatus, `user:${userId}`, opts.note);
+            if (opts.expectedDeliveryAt) {
+              holder.expectedDeliveryAt = opts.expectedDeliveryAt;
+              await holder.save({ session });
+            }
+            this.pushStatus(gg, opts.toGroupStatus, by, opts.note);
             await gg.save({ session });
           });
         } finally {

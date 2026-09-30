@@ -353,6 +353,27 @@ export class WishmatesService {
       .exec();
   }
 
+  /**
+   * Every WishMate the viewer and [targetId] have in common, for the list a
+   * profile's "4 Mutual Friends" opens — the profile itself carries only the
+   * few its avatar stack draws.
+   *
+   * Nothing here is news to the viewer: each person returned is already one of
+   * their own WishMates. What it adds is only that they are the target's too,
+   * which the count on the profile has said already.
+   */
+  async mutualsOf(viewerId: string, targetId: string): Promise<WishmateView[]> {
+    await this.assertUserExists(targetId);
+    const ids = await this.mutualIds(viewerId, targetId);
+    if (ids.length === 0) return [];
+    const profiles = await this.profiles.find({ userId: { $in: ids } }).exec();
+    const views = await this.withPresence(profiles.map((p) => this.toView(p, 0)));
+    // By name, so a long list can be read down rather than searched.
+    return views.sort((a, b) =>
+      (a.displayName ?? a.username ?? '').localeCompare(b.displayName ?? b.username ?? ''),
+    );
+  }
+
   async profileOf(viewerId: string, targetId: string): Promise<WishmateProfileView> {
     const user = await this.assertUserExists(targetId);
     const profile = await this.profiles.findOne({ userId: new Types.ObjectId(targetId) }).exec();

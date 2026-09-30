@@ -16,6 +16,7 @@ import {
 import { WishlistsModule } from 'src/modules/wishlists/wishlists.module';
 import { WishmatesModule } from 'src/modules/wishmates/wishmates.module';
 import { GroupGiftCardRenderer } from './group-gift-card.renderer';
+import { DeliveryDateRegistrar } from './delivery-date.registrar';
 import { GroupGiftController } from './group-gift.controller';
 import { GroupGiftPreviewService } from './group-gift-preview.service';
 import { GroupGiftReconcileRegistrar } from './group-gift-reconcile.processor';
@@ -79,6 +80,7 @@ import { SettlementService } from './settlement.service';
     GroupGiftCardRenderer,
     GroupGiftReconcileService,
     GroupGiftReconcileRegistrar,
+    DeliveryDateRegistrar,
     SettlementService,
   ],
   exports: [GroupGiftService, SettlementService],

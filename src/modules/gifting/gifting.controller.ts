@@ -19,7 +19,13 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { Idempotent } from 'src/common/idempotency/idempotent.decorator';
-import { GiftActionDto, GiftOfflineDto, ReserveItemDto, SetShowNameDto } from './dto/gift.dto';
+import {
+  GiftActionDto,
+  GiftOfflineDto,
+  ReserveItemDto,
+  SetDeliveryDateDto,
+  SetShowNameDto,
+} from './dto/gift.dto';
 import { GiftListService } from './gift-list.service';
 import { GiftingService } from './gifting.service';
 import type { GiftListItemView, GiftView } from './gift.views';
@@ -134,6 +140,22 @@ export class GiftingController {
     @Body() dto: GiftActionDto,
   ): Promise<GiftView> {
     return this.gifting.purchase(giftId, userId, dto);
+  }
+
+  @Patch('gifts/:giftId/delivery-date')
+  @ApiOperation({
+    summary: 'Set when a bought gift will arrive',
+    description:
+      'Gifter only, while the gift is purchased. It reads "Shipping" until the date and is ' +
+      'marked delivered once it comes.',
+  })
+  @ApiResponseDoc({ status: 409, description: 'INVALID_GIFT_TRANSITION — not on its way' })
+  setDeliveryDate(
+    @CurrentUser('id') userId: string,
+    @Param('giftId') giftId: string,
+    @Body() dto: SetDeliveryDateDto,
+  ): Promise<GiftView> {
+    return this.gifting.setDeliveryDate(giftId, userId, dto);
   }
 
   @Post('gifts/:giftId/fulfill')

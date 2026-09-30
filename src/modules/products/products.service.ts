@@ -15,6 +15,7 @@ import type {
 } from './product.types';
 import { trustedFirst } from './merchant-trust';
 import { ResultFreshness } from './product.types';
+import { soldOn, type PlatformKey } from './platforms';
 import { PRODUCT_PROVIDER, type IProductProvider } from './providers/product-provider.port';
 import { ProviderGuard, ProviderUnavailableError } from './providers/provider-guard.service';
 import { Product, type ProductDocument } from './schemas/product.schema';
@@ -85,6 +86,7 @@ export class ProductsService {
     query: ProductSearchQuery,
     opts: { refresh?: boolean } = {},
   ): Promise<SearchResponse> {
+    if (query.platform) return this.searchOnPlatform(query, query.platform, opts);
     const key = ProductsService.searchKey(query);
     const cached = await this.cache.get<CacheEnvelope<ProductSearchResult>>(key);
 
@@ -140,7 +142,19 @@ export class ProductsService {
         };
       }
 
-      // Nothing cached to fall back on. 503 with a retry hint, not a 500: this
+      // No cached answer to this exact query — but every product anyone has
+      // been shown is kept, and a shelf of those that match the words beats a
+      // dead end. This is what keeps search working when the vendor's monthly
+      // quota runs out, which is not an outage that ends in minutes.
+      const saved = await this.catalogueSearch(query);
+      if (saved) {
+        this.logger.warn(
+          `${this.provider.name} unavailable (${err.reason}); serving ${saved.items.length} saved products`,
+        );
+        return { ...saved, freshness: ResultFreshness.STALE };
+      }
+
+      // Nothing saved matches either. 503 with a retry hint, not a 500: this
       // is a known, temporary condition, not a bug in our code.
       this.logger.error(`${this.provider.name} unavailable (${err.reason}) and no cached results`);
       throw new AppException(
@@ -394,6 +408,91 @@ export class ProductsService {
    * Hashes the whole query, so two callers asking the same thing share a cache
    * entry and a paging change is a different entry.
    */
+  /**
+   * [query] answered from the products we have already saved, or null when
+   * none match.
+   *
+   * Every word has to appear in the title, in any order and any case — "yoga
+   * mat" finds "Boldfit Yoga Mats for Women" — with the query's category and
+   * price range applied as the provider would. Only this provider's rows: a
+   * product from another is one whose links and ids nothing else here reads.
+   */
+  private async catalogueSearch(query: ProductSearchQuery): Promise<ProductSearchResult | null> {
+    const words = (query.q ?? '').trim().split(/\s+/).filter(Boolean).slice(0, 8);
+    if (words.length === 0 && !query.category) return null;
+
+    const price: Record<string, number> = {};
+    if (query.minPriceMinor !== undefined) price.$gte = query.minPriceMinor;
+    if (query.maxPriceMinor !== undefined) price.$lte = query.maxPriceMinor;
+
+    const filter = {
+      provider: this.provider.name,
+      ...(words.length > 0
+        ? {
+            $and: words.map((w) => ({
+              title: { $regex: w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' },
+            })),
+          }
+        : {}),
+      ...(query.category ? { category: query.category } : {}),
+      ...(Object.keys(price).length > 0 ? { amountMinor: price } : {}),
+    };
+
+    // One more than a page, to know whether there is another.
+    const rows = await this.model
+      .find(filter)
+      .sort({ reviewCount: -1, lastSyncedAt: -1, _id: 1 })
+      .skip((query.page - 1) * query.pageSize)
+      .limit(query.pageSize + 1)
+      .exec();
+    if (rows.length === 0) return null;
+
+    const items = rows.slice(0, query.pageSize).map((r) => ProductsService.toNormalized(r));
+    return {
+      items,
+      page: query.page,
+      pageSize: query.pageSize,
+      totalEstimate: null,
+      hasMore: rows.length > query.pageSize,
+    };
+  }
+
+  /**
+   * [query], only what [platform] sells.
+   *
+   * A store is a narrowing of the search, not a search of its own: every
+   * store's products come from the one set of results the provider returns
+   * (~40 for Google Shopping, which pages by nothing). So this fetches that
+   * whole set once — cached like any search — keeps the store's products and
+   * pages them. The first store tried for some words costs one search; every
+   * other store for the same words is free, and asking the provider per store
+   * would multiply a scarce monthly quota by ten.
+   */
+  private async searchOnPlatform(
+    query: ProductSearchQuery,
+    platform: PlatformKey,
+    opts: { refresh?: boolean },
+  ): Promise<SearchResponse> {
+    const all = await this.search(
+      { ...query, platform: undefined, page: 1, pageSize: ProductsService.WHOLE_ANSWER },
+      opts,
+    );
+    const matching = all.items.filter((p) => soldOn(p, platform));
+    const offset = (query.page - 1) * query.pageSize;
+    const items = matching.slice(offset, offset + query.pageSize);
+    return {
+      items,
+      page: query.page,
+      pageSize: query.pageSize,
+      totalEstimate: matching.length,
+      hasMore: offset + items.length < matching.length,
+      freshness: all.freshness,
+    };
+  }
+
+  /** More than any provider answers in one search, so it is all of it. */
+  private static readonly WHOLE_ANSWER = 100;
+
   private static searchKey(query: ProductSearchQuery): string {
     const canonical = JSON.stringify({
       q: query.q?.trim().toLowerCase() ?? '',

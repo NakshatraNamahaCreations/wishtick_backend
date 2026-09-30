@@ -125,6 +125,15 @@ export class Gift {
   @Prop({ type: Date, default: null })
   purchasedAt!: Date | null;
 
+  /**
+   * When the gifter says it will reach the recipient, asked the moment they
+   * confirm the purchase. Local midnight of the day they picked, so the
+   * delivery sweep turns it "delivered" as that day begins where they are.
+   * Null on a gift the store reported bought before anyone was asked.
+   */
+  @Prop({ type: Date, default: null })
+  expectedDeliveryAt!: Date | null;
+
   @Prop({ type: Date, default: null })
   fulfilledAt!: Date | null;
 
@@ -164,3 +173,5 @@ GiftSchema.index({ recipientId: 1, createdAt: -1 });
 GiftSchema.index({ orderRef: 1 }, { sparse: true });
 // Drives the reservation-expiry sweeper.
 GiftSchema.index({ status: 1, expiresAt: 1 });
+// Drives the delivery-date sweeper.
+GiftSchema.index({ status: 1, expectedDeliveryAt: 1 });

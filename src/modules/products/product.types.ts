@@ -1,3 +1,5 @@
+import type { PlatformKey } from './platforms';
+
 /**
  * One spec line — "Noise Cancelling: Yes".
  *
@@ -112,6 +114,8 @@ export interface ProductSearchQuery {
   category?: string;
   minPriceMinor?: number;
   maxPriceMinor?: number;
+  /** Only products sold on this store — see platforms.ts. */
+  platform?: PlatformKey;
   page: number;
   pageSize: number;
 }

@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { PLATFORM_KEYS, type PlatformKey } from '../platforms';
 
 export class SearchProductsQueryDto {
   @ApiPropertyOptional({ example: 'headphones' })
@@ -46,6 +47,16 @@ export class SearchProductsQueryDto {
   // and serialize a megabyte per request.
   @Max(50)
   pageSize?: number;
+
+  @ApiPropertyOptional({
+    enum: PLATFORM_KEYS,
+    description:
+      'Only products sold on this store. Filters the same ~40 results the plain search ' +
+      'fetches, so switching stores does not cost another vendor search.',
+  })
+  @IsOptional()
+  @IsIn(PLATFORM_KEYS)
+  platform?: PlatformKey;
 }
 
 export class ResolveUrlDto {

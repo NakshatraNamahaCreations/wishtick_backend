@@ -195,7 +195,7 @@ describe('Memories (e2e)', () => {
 
       // Size and length are independent: a well-compressed five-minute clip
       // slips under 10 MB, so the byte cap alone would not hold this.
-      expect(body.data[MediaPurpose.MEMORY_WISH].maxDurationSeconds).toBe(20);
+      expect(body.data[MediaPurpose.MEMORY_WISH].maxDurationSeconds).toBe(15);
       // A still has nothing to measure.
       expect(body.data[MediaPurpose.WISHLIST_COVER].maxDurationSeconds).toBeNull();
     });
@@ -216,9 +216,9 @@ describe('Memories (e2e)', () => {
 
       // A video wish is watched one after another in a story viewer, so its
       // length compounds across a capsule; a spoken message is listened to on
-      // its own and twenty seconds is not enough to say much.
+      // its own and fifteen seconds is not enough to say much.
       for (const purpose of [MediaPurpose.MEMORY_WISH, MediaPurpose.MEMORY_REPLY]) {
-        expect(body.data[purpose].maxDurationSeconds).toBe(20);
+        expect(body.data[purpose].maxDurationSeconds).toBe(15);
         expect(body.data[purpose].maxAudioDurationSeconds).toBe(30);
       }
 

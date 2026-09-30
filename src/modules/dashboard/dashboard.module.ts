@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ChatModule } from 'src/modules/chat/chat.module';
+import { GiftingModule } from 'src/modules/gifting/gifting.module';
 import { NotificationsModule } from 'src/modules/notifications/notifications.module';
 import { UsersModule } from 'src/modules/users/users.module';
 import { DashboardController } from './dashboard.controller';
@@ -9,7 +10,9 @@ import { DashboardService } from './dashboard.service';
   // UsersModule re-exports MongooseModule, so the User model (which the
   // aggregation starts from) is available here. ChatModule and NotificationsModule
   // supply the unread counts for the chat and notification sections.
-  imports: [UsersModule, ChatModule, NotificationsModule],
+  // GiftingModule for the Given and On Hold counts, taken from the lists
+  // themselves so a tile and its screen cannot disagree.
+  imports: [UsersModule, ChatModule, NotificationsModule, GiftingModule],
   controllers: [DashboardController],
   providers: [DashboardService],
   exports: [DashboardService],

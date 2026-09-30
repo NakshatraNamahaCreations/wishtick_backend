@@ -364,7 +364,7 @@ describe('Orders (e2e)', () => {
       expect(after.deliveredAt).toBeNull();
     });
 
-    it('is left off the gifts list as delivered, whatever the courier said', async () => {
+    it('is left off the gifts list, whatever the courier said', async () => {
       const owner = await newUser();
       const gifter = await newUser();
       const itemId = await wishlistWithItem(owner);
@@ -381,10 +381,9 @@ describe('Orders (e2e)', () => {
           .get(`${V1}/gifts/given`)
           .set(auth(gifter.token))
           .expect(200)
-      ).body as Envelope<{ status: string; deliveredAt: string | null }[]>;
-      const row = given.data.find((g) => g.status === 'cancelled');
-      expect(row).toBeDefined();
-      expect(row!.deliveredAt).toBeNull();
+      ).body as Envelope<{ id: string }[]>;
+      // Withdrawn is not given — not even as a row that reads "Delivered".
+      expect(given.data.map((g) => g.id)).not.toContain(giftId);
     });
 
     it('never comes back on a sale the network reports afterwards', async () => {

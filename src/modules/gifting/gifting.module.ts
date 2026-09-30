@@ -2,6 +2,10 @@ import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { QUEUE } from 'src/infra/queue/queue.constants';
+import {
+  Contribution,
+  ContributionSchema,
+} from 'src/modules/group-gifts/schemas/contribution.schema';
 import { GroupGift, GroupGiftSchema } from 'src/modules/group-gifts/schemas/group-gift.schema';
 import {
   ThankYouNote,
@@ -39,6 +43,8 @@ import { WebhookService } from './webhook.service';
       // the lists project across these, they do not depend on those features.
       { name: Order.name, schema: OrderSchema },
       { name: GroupGift.name, schema: GroupGiftSchema },
+      // Read-only: a group gift you chipped in on is one you gave.
+      { name: Contribution.name, schema: ContributionSchema },
       { name: ThankYouNote.name, schema: ThankYouNoteSchema },
       // Read (and marked reconciled) by ConversionReconcileService. A schema
       // rather than the products module: gifting asks what the network

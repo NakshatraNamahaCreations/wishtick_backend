@@ -27,7 +27,14 @@ import {
 } from 'src/modules/wishlists/reservation-window.service';
 import { WishlistItemStatus } from 'src/modules/wishlists/wishlist.types';
 import { WishlistsService } from 'src/modules/wishlists/wishlists.service';
-import type { GiftActionDto, GiftOfflineDto, ReserveItemDto, SetShowNameDto } from './dto/gift.dto';
+import type {
+  GiftActionDto,
+  GiftOfflineDto,
+  ReserveItemDto,
+  SetDeliveryDateDto,
+  SetShowNameDto,
+} from './dto/gift.dto';
+import { parseDeliveryDate } from './delivery-date';
 import { GiftStatusService } from './gift-status.service';
 import { GiftMode, GiftStatus, GiftType, GiftVisibility } from './gift.types';
 import { toGifterView, type GiftView } from './gift.views';
@@ -171,6 +178,7 @@ export class GiftingService {
    * Either way the item is bought from here on and greys out for everyone.
    */
   async giftOffline(itemId: string, userId: string, dto: GiftOfflineDto): Promise<GiftView> {
+    const deliveryAt = parseDeliveryDate(dto.deliveryDate);
     const item = await this.loadGiftableItem(itemId, userId);
 
     const gift = await this.locks.withBestEffortLock(
@@ -233,6 +241,10 @@ export class GiftingService {
       { ttlMs: 5_000, retries: 5, retryDelayMs: 60 },
     );
 
+    if (deliveryAt) {
+      gift.expectedDeliveryAt = deliveryAt;
+      await gift.save();
+    }
     await this.wishlists.recount(gift.wishlistId);
     // An offline gift has no reservation to expire — it is already bought. A
     // converted hold had one, and it must not release a purchase.
@@ -418,8 +430,10 @@ export class GiftingService {
     dto: GiftActionDto,
     opts: { by?: string; orderRef?: string } = {},
   ): Promise<GiftView> {
+    const deliveryAt = parseDeliveryDate(dto.deliveryDate);
     const gift = await this.loadOwnGift(giftId, userId);
     if (dto.deliveryNotes) gift.deliveryNotes = dto.deliveryNotes;
+    if (deliveryAt) gift.expectedDeliveryAt = deliveryAt;
     await this.status.transition(gift, GiftStatus.PURCHASED, opts.by ?? userId, {
       note: dto.note,
       orderRef: opts.orderRef,
@@ -433,6 +447,65 @@ export class GiftingService {
     }
     this.emitter.emit(GIFT_PURCHASED, GiftingService.lifecyclePayload(gift));
     return toGifterView(gift);
+  }
+
+  /**
+   * Sets or moves when a bought gift will arrive — for a gift the store
+   * reported bought before anyone was asked, or a courier running late.
+   *
+   * Only while it is still on its way: once delivered, the date is history.
+   */
+  async setDeliveryDate(
+    giftId: string,
+    userId: string,
+    dto: SetDeliveryDateDto,
+  ): Promise<GiftView> {
+    const deliveryAt = parseDeliveryDate(dto.deliveryDate);
+    const gift = await this.loadOwnGift(giftId, userId);
+    if (gift.status !== GiftStatus.PURCHASED) {
+      throw new AppException(
+        ErrorCode.INVALID_GIFT_TRANSITION,
+        'A delivery date can only be set on a gift that is bought and on its way',
+        409,
+      );
+    }
+    gift.expectedDeliveryAt = deliveryAt;
+    await gift.save();
+    return toGifterView(gift);
+  }
+
+  /**
+   * Marks delivered every single gift whose delivery date has come.
+   *
+   * Group gifts are left to GroupGiftService, which moves the group with its
+   * holder. Each gift is tried on its own, so one that fails — cancelled a
+   * moment ago, say — does not hold up the rest; it is logged and the next run
+   * tries again.
+   */
+  async deliverDue(now = new Date()): Promise<number> {
+    const due = await this.giftModel
+      .find({
+        status: GiftStatus.PURCHASED,
+        type: GiftType.SINGLE,
+        expectedDeliveryAt: { $ne: null, $lte: now },
+      })
+      .limit(500)
+      .exec();
+    let delivered = 0;
+    for (const gift of due) {
+      try {
+        await this.status.transition(gift, GiftStatus.FULFILLED, 'system:delivery-date', {
+          note: 'Delivery date reached',
+        });
+        // Same news as the gifter marking it themselves: it has arrived, and
+        // the recipient's thank-you can begin.
+        this.emitter.emit(GIFT_FULFILLED, GiftingService.lifecyclePayload(gift));
+        delivered++;
+      } catch (err) {
+        this.logger.warn(`Could not deliver gift ${gift._id.toString()}: ${String(err)}`);
+      }
+    }
+    return delivered;
   }
 
   async fulfill(giftId: string, userId: string, dto: GiftActionDto): Promise<GiftView> {

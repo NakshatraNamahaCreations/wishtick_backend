@@ -443,6 +443,17 @@ describe('Group-gift settle-up (e2e)', () => {
         .expect(403);
     });
 
+    it('refuses something that is not a UPI ID', async () => {
+      const { receiver, settlement } = await givenOpenReturn();
+
+      // Every member would be sent to pay an address no UPI app accepts.
+      await http()
+        .post(`${V1}/settlements/${settlement.id}/upi`)
+        .set(auth(receiver.token))
+        .send({ upiId: 'xyz@sss@com' })
+        .expect(400);
+    });
+
     it('runs share → sent → received, and only the receiver closes it', async () => {
       const { host, receiver, settlement } = await givenOpenReturn();
 

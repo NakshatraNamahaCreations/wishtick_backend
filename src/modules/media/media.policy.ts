@@ -80,9 +80,9 @@ export const MEDIA_RULES: Record<MediaPurpose, PurposeRule> = {
   // A wish may be a photo, a video or a voice note (`2073:55`, `2074:129`,
   // `2074:152`). Roomier than a cover and tighter than a reel clip.
   //
-  // 20 seconds because a wish is a greeting, not a film: it is watched in a
+  // 15 seconds because a wish is a greeting, not a film: it is watched in a
   // story viewer, one wish after another, and a capsule of twenty of them is
-  // already seven minutes. The cap applies to what is uploaded — a video wish
+  // already five minutes. The cap applies to what is uploaded — a video wish
   // IS re-encoded when a Stream driver is configured, but that happens after
   // the phone has sent the whole file, so it does nothing for the upload.
   [MediaPurpose.MEMORY_WISH]: {
@@ -96,9 +96,9 @@ export const MEDIA_RULES: Record<MediaPurpose, PurposeRule> = {
       'audio/wav',
     ],
     maxBytes: 50 * MB,
-    maxDurationSeconds: 20,
+    maxDurationSeconds: 15,
     // Longer than the video cap on purpose: a voice note is a message, and
-    // twenty seconds is not enough to say much. It costs nothing the video
+    // fifteen seconds is not enough to say much. It costs nothing the video
     // cap is protecting — audio is not transcoded, and thirty seconds of it
     // is a rounding error against a 50 MB ceiling.
     maxAudioDurationSeconds: 30,
@@ -127,9 +127,9 @@ export const MEDIA_RULES: Record<MediaPurpose, PurposeRule> = {
       'audio/wav',
     ],
     maxBytes: 50 * MB,
-    maxDurationSeconds: 20,
+    maxDurationSeconds: 15,
     // Longer than the video cap on purpose: a voice note is a message, and
-    // twenty seconds is not enough to say much. It costs nothing the video
+    // fifteen seconds is not enough to say much. It costs nothing the video
     // cap is protecting — audio is not transcoded, and thirty seconds of it
     // is a rounding error against a 50 MB ceiling.
     maxAudioDurationSeconds: 30,

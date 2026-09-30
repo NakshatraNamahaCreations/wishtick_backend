@@ -164,6 +164,81 @@ describe('Products & affiliate (e2e)', () => {
 
   // ── Exit criterion: a provider outage degrades, never 5xx ─────────────────
 
+  describe('narrowed to one store', () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    /** A provider answer with the stores people know in it. */
+    const sellers = (): void => {
+      const row = (id: string, merchant: string) => ({
+        provider: 'fixture',
+        externalId: id,
+        title: `Yoga mat ${id}`,
+        description: null,
+        imageUrls: [],
+        productUrl: `https://shop.example.test/p/${id}`,
+        affiliateUrl: null,
+        amountMinor: 99900,
+        listPriceMinor: null,
+        currency: 'INR',
+        merchant,
+        category: null,
+        inStock: true,
+        rating: null,
+        reviewCount: null,
+        deliveryNote: null,
+        brand: null,
+        features: [],
+        offers: [],
+        affiliateMeta: {},
+      });
+      jest.spyOn(fixture, 'search').mockResolvedValue({
+        items: [
+          row('a1', 'Amazon.in'),
+          row('f1', 'Flipkart'),
+          row('a2', 'Amazon.in - Seller'),
+          row('d1', 'Decathlon Sports India'),
+        ],
+        page: 1,
+        pageSize: 100,
+        totalEstimate: 4,
+        hasMore: false,
+      });
+    };
+
+    const searchOn = (token: string, platform: string) =>
+      request(app.getHttpServer())
+        .get(`${V1}/products/search?q=${encodeURIComponent('yoga mat')}&platform=${platform}`)
+        .set(auth(token));
+
+    it('keeps only what that store sells', async () => {
+      const { token } = await newUser();
+      sellers();
+
+      const amazon = (await searchOn(token, 'amazon').expect(200)).body as Envelope<SearchBody>;
+      expect(amazon.data.items.map((i) => i.externalId).sort()).toEqual(['a1', 'a2']);
+
+      const flipkart = (await searchOn(token, 'flipkart').expect(200)).body as Envelope<SearchBody>;
+      expect(flipkart.data.items.map((i) => i.externalId)).toEqual(['f1']);
+    });
+
+    it('asks the provider once, whichever stores are tried after', async () => {
+      const { token } = await newUser();
+      sellers();
+      const vendor = jest.spyOn(fixture, 'search');
+
+      await searchOn(token, 'amazon').expect(200);
+      await searchOn(token, 'flipkart').expect(200);
+      await searchOn(token, 'myntra').expect(200);
+
+      expect(vendor).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses a store it does not know', async () => {
+      const { token } = await newUser();
+      await searchOn(token, 'ebay').expect(400);
+    });
+  });
+
   describe('provider outage', () => {
     it('serves stale results instead of an error when the provider fails', async () => {
       const { token } = await newUser();
@@ -197,6 +272,27 @@ describe('Products & affiliate (e2e)', () => {
       // The whole point: an upstream outage is not a 5xx for our users.
       expect(body.data.freshness).toBe(ResultFreshness.STALE);
       expect(body.data.items[0].title).toContain('Headphones');
+    });
+
+    it('falls back to saved products that match, when this query was never cached', async () => {
+      const { token } = await newUser();
+
+      // Seen once while the provider was healthy, so it is saved.
+      await request(app.getHttpServer())
+        .get(`${V1}/products/search?q=headphones`)
+        .set(auth(token))
+        .expect(200);
+
+      // Then the quota runs out, and a query nobody has asked before comes in.
+      fixture.faults = { fail: true };
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/products/search?q=${encodeURIComponent('CANCELLING headphones')}`)
+        .set(auth(token))
+        .expect(200);
+
+      const body = res.body as Envelope<SearchBody>;
+      expect(body.data.freshness).toBe(ResultFreshness.STALE);
+      expect(body.data.items.map((i) => i.title)).toContain('Noise-cancelling Headphones');
     });
 
     it('serves a 503 with a reason — never a 500 — when there is nothing cached', async () => {

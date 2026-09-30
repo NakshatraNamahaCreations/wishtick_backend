@@ -9,6 +9,11 @@ import {
 } from 'src/modules/profile/schemas/user-profile.schema';
 import { User, type UserDocument } from 'src/modules/users/schemas/user.schema';
 import { PresenceService } from 'src/modules/wishmates/presence.service';
+import {
+  WishLink,
+  WishLinkStatus,
+  type WishLinkDocument,
+} from 'src/modules/wishmates/schemas/wish-link.schema';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
 const PASSWORD = 'correct-horse-battery-staple';
@@ -462,6 +467,59 @@ describe('WishMates (e2e)', () => {
       expect(profile.body.data.person.mutualCount).toBe(1);
       expect(profile.body.data.mutuals).toHaveLength(1);
       expect(profile.body.data.mutuals[0].username).toBe(mutualUsername);
+    });
+
+    /**
+     * The profile carries only the few its avatar stack draws; tapping
+     * "N Mutual Friends" opens everyone, from here.
+     */
+    it('lists every mutual WishMate, beyond the few the profile carries', async () => {
+      const tag = `t${++seq}`;
+      const a = await someone(`${tag}_a`);
+      const b = await someone(`${tag}_b`);
+      // Linked straight in the database: a dozen requests through the API
+      // would trip its rate limit, and asking is not what this is about.
+      const links = app.get<Model<WishLinkDocument>>(getModelToken(WishLink.name));
+      const connect = (x: Actor, y: Actor) =>
+        links.create({
+          requesterId: new Types.ObjectId(x.userId),
+          addresseeId: new Types.ObjectId(y.userId),
+          status: WishLinkStatus.ACCEPTED,
+          respondedAt: new Date(),
+        });
+      const shared: Actor[] = [];
+      // One more than the profile's avatar stack holds.
+      for (let i = 0; i < 5; i++) {
+        // Eight sign-ups in one test would trip the sign-up rate limit; the
+        // reset clears its counters, and nothing else this test relies on.
+        await ctx.reset();
+        const m = await someone(`${tag}_m${i}`);
+        shared.push(m);
+        await connect(a, m);
+        await connect(b, m);
+      }
+      // Someone only a knows is nobody's mutual.
+      await ctx.reset();
+      const onlyA = await someone(`${tag}_only`);
+      await connect(a, onlyA);
+
+      const profile = await get(a, `/people/${b.userId}`).expect(200);
+      expect(profile.body.data.person.mutualCount).toBe(5);
+      expect(profile.body.data.mutuals.length).toBeLessThan(5);
+
+      const res = await get(a, `/people/${b.userId}/mutuals`).expect(200);
+      const ids = res.body.data.map((p: { userId: string }) => p.userId).sort();
+      expect(ids).toEqual(shared.map((m) => m.userId).sort());
+      expect(ids).not.toContain(onlyA.userId);
+    });
+
+    it('has nobody to list for two people with nobody in common', async () => {
+      const tag = `t${++seq}`;
+      const a = await someone(`${tag}_a`);
+      const b = await someone(`${tag}_b`);
+
+      const res = await get(a, `/people/${b.userId}/mutuals`).expect(200);
+      expect(res.body.data).toEqual([]);
     });
 
     it('suggests a friend-of-a-friend, and never someone already linked', async () => {

@@ -6,6 +6,7 @@ import { ErrorCode } from 'src/common/errors/error-codes';
 import { CacheService } from 'src/infra/redis/cache.service';
 import { ChatService } from 'src/modules/chat/chat.service';
 import { ChatType } from 'src/modules/chat/chat.types';
+import { GiftListService } from 'src/modules/gifting/gift-list.service';
 import { NotificationService } from 'src/modules/notifications/notification.service';
 import { User, type UserDocument } from 'src/modules/users/schemas/user.schema';
 import { DashboardSection, type DashboardSummary, type SectionSummary } from './dashboard.types';
@@ -45,9 +46,6 @@ interface AggregatedRow {
   giftCategories: string[];
   favouriteColors: string[];
   clothingSize: string | null;
-  giftsGiven: number;
-  giftsOnHold: number;
-  giftsReceived: number;
 }
 
 /** Fields that make gifting suggestions work. Weighted equally, deliberately. */
@@ -68,6 +66,7 @@ export class DashboardService {
     private readonly cache: CacheService,
     private readonly chat: ChatService,
     private readonly notifications: NotificationService,
+    private readonly giftLists: GiftListService,
   ) {}
 
   static cacheKey(userId: string): string {
@@ -91,14 +90,22 @@ export class DashboardService {
   }
 
   private async build(userId: string): Promise<DashboardSummary> {
-    // The gift/profile aggregation, plus a second read for chat unread counts —
+    // The profile aggregation, plus a second read for chat unread counts —
     // the unread rule lives in ChatService and does not translate cleanly into a
     // nested $lookup, so it is deliberately its own round trip.
-    const [row, chatCounts, notifCounts] = await Promise.all([
-      this.aggregate(userId),
-      this.chat.sectionCounts(userId),
-      this.notifications.sectionCounts(userId),
-    ]);
+    //
+    // Given, On Hold and Received are counted by the lists' own rules rather than
+    // re-stated here: the tile once said 3 over a list of 2, because this
+    // pipeline counted reservations and the list did not.
+    const [row, chatCounts, notifCounts, giftsGiven, giftsOnHold, giftsReceived] =
+      await Promise.all([
+        this.aggregate(userId),
+        this.chat.sectionCounts(userId),
+        this.notifications.sectionCounts(userId),
+        this.giftLists.countGiven(userId),
+        this.giftLists.countOnHold(userId),
+        this.giftLists.countReceived(userId),
+      ]);
 
     const sections = Object.values(DashboardSection).reduce<
       Record<DashboardSection, SectionSummary>
@@ -110,11 +117,11 @@ export class DashboardService {
       {} as Record<DashboardSection, SectionSummary>,
     );
 
-    // Gift sections, from the same single aggregation.
-    sections[DashboardSection.GIFTS_GIVEN].count = row.giftsGiven;
-    sections[DashboardSection.GIFTS_ON_HOLD].count = row.giftsOnHold;
-    sections[DashboardSection.GIFTS_ON_HOLD].badge = row.giftsOnHold;
-    sections[DashboardSection.GIFTS_RECEIVED].count = row.giftsReceived;
+    // Gift sections, counted by the lists' own rules.
+    sections[DashboardSection.GIFTS_GIVEN].count = giftsGiven;
+    sections[DashboardSection.GIFTS_ON_HOLD].count = giftsOnHold;
+    sections[DashboardSection.GIFTS_ON_HOLD].badge = giftsOnHold;
+    sections[DashboardSection.GIFTS_RECEIVED].count = giftsReceived;
 
     // Chat sections: count of chats, badge = chats with unread messages.
     sections[DashboardSection.WISHLIST_CHATS].count = chatCounts[ChatType.WISHLIST].count;
@@ -164,56 +171,6 @@ export class DashboardService {
         // preserveNull: the profile is created lazily, so a brand-new user has
         // no profile row yet and must still get a dashboard.
         { $unwind: { path: '$profile', preserveNullAndEmptyArrays: true } },
-        // Gifts I'm giving. A pipeline $lookup so the counts are computed in the
-        // same round trip rather than as separate queries.
-        {
-          $lookup: {
-            from: 'gifts',
-            let: { uid: '$_id' },
-            pipeline: [
-              { $match: { $expr: { $eq: ['$gifterId', '$$uid'] } } },
-              {
-                $group: {
-                  _id: null,
-                  given: { $sum: 1 },
-                  onHold: {
-                    $sum: {
-                      $cond: [{ $in: ['$status', ['reserved', 'purchased', 'fulfilled']] }, 1, 0],
-                    },
-                  },
-                },
-              },
-            ],
-            as: 'giftsGivenAgg',
-          },
-        },
-        // Gifts I've received — surprises in progress excluded, matching
-        // GiftingService.listReceived.
-        {
-          $lookup: {
-            from: 'gifts',
-            let: { uid: '$_id' },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $and: [
-                      { $eq: ['$recipientId', '$$uid'] },
-                      {
-                        $or: [
-                          { $eq: ['$visibility', 'visible'] },
-                          { $in: ['$status', ['fulfilled', 'completed']] },
-                        ],
-                      },
-                    ],
-                  },
-                },
-              },
-              { $count: 'received' },
-            ],
-            as: 'giftsReceivedAgg',
-          },
-        },
         {
           $project: {
             _id: 0,
@@ -226,9 +183,6 @@ export class DashboardService {
             giftCategories: { $ifNull: ['$profile.preferences.giftCategories', []] },
             favouriteColors: { $ifNull: ['$profile.preferences.favouriteColors', []] },
             clothingSize: { $ifNull: ['$profile.preferences.clothingSize', null] },
-            giftsGiven: { $ifNull: [{ $arrayElemAt: ['$giftsGivenAgg.given', 0] }, 0] },
-            giftsOnHold: { $ifNull: [{ $arrayElemAt: ['$giftsGivenAgg.onHold', 0] }, 0] },
-            giftsReceived: { $ifNull: [{ $arrayElemAt: ['$giftsReceivedAgg.received', 0] }, 0] },
           },
         },
       ])

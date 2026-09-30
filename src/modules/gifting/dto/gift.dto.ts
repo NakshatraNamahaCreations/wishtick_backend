@@ -5,6 +5,13 @@ import { IsBoolean, IsDateString, IsOptional, IsString, MaxLength } from 'class-
 const trim = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim() : value;
 
+/** Shared by every way of saying "I bought it". */
+const DELIVERY_DATE_DOC = {
+  description:
+    'When it will reach the recipient: local midnight of that day, as an ISO instant. ' +
+    'The gift reads "Shipping" until then and "Delivered" from then on.',
+};
+
 export class ReserveItemDto {
   @ApiPropertyOptional({
     default: true,
@@ -27,6 +34,11 @@ export class GiftOfflineDto {
   @IsOptional()
   @IsDateString({ strict: true })
   confirmedAt?: string;
+
+  @ApiPropertyOptional(DELIVERY_DATE_DOC)
+  @IsOptional()
+  @IsDateString({ strict: true })
+  deliveryDate?: string;
 
   @ApiPropertyOptional({ default: true })
   @IsOptional()
@@ -59,6 +71,11 @@ export class GiftActionDto {
   @Transform(trim)
   deliveryNotes?: string;
 
+  @ApiPropertyOptional(DELIVERY_DATE_DOC)
+  @IsOptional()
+  @IsDateString({ strict: true })
+  deliveryDate?: string;
+
   @ApiPropertyOptional({
     default: false,
     description:
@@ -68,6 +85,12 @@ export class GiftActionDto {
   @IsOptional()
   @IsBoolean()
   showName?: boolean;
+}
+
+export class SetDeliveryDateDto {
+  @ApiProperty(DELIVERY_DATE_DOC)
+  @IsDateString({ strict: true })
+  deliveryDate!: string;
 }
 
 export class SetShowNameDto {
