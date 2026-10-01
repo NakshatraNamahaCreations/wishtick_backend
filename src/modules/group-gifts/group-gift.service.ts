@@ -60,9 +60,11 @@ import {
   type ItemGroupGiftView,
   toPublicGroupGiftView,
   type GroupGiftShareView,
+  type EqualSplitView,
   type GroupGiftView,
   type PublicGroupGiftView,
 } from './group-gift.views';
+import { GroupGiftShareService, HOST_SHARE_KEY } from './group-gift-share.service';
 import {
   CONTRIBUTABLE_GROUP_GIFT_STATUSES,
   ContributionMode,
@@ -133,6 +135,8 @@ export class GroupGiftService {
     private readonly imports: ProductImportService,
     private readonly emitter: EventEmitter2,
     private readonly config: ConfigService<AppConfig, true>,
+    // "Split equally": the host's share, kept in step with the group.
+    private readonly shares: GroupGiftShareService,
   ) {
     this.shareBaseUrl = this.config.get('app.webAppUrl', { infer: true }).replace(/\/$/, '');
   }
@@ -452,6 +456,8 @@ export class GroupGiftService {
         userId,
       } satisfies GroupGiftJoinedEvent);
     }
+    // One more person to share with: the host's share comes down.
+    await this.shares.sync(groupGiftId);
     const refreshed = await this.loadOrFail(groupGiftId);
     return this.assembleView(refreshed, userId);
   }
@@ -654,6 +660,10 @@ export class GroupGiftService {
       }
     }
 
+    // A new payer is somebody new to share with, and the host paying in
+    // themselves stands in for part of their share. Outside the lock above,
+    // which this takes again.
+    await this.shares.sync(groupGiftId);
     const refreshed = await this.loadOrFail(groupGiftId);
     return this.assembleView(refreshed, userId);
   }
@@ -735,6 +745,7 @@ export class GroupGiftService {
       { ttlMs: 5_000, retries: 10, retryDelayMs: 40 },
     );
 
+    await this.shares.sync(groupGiftId);
     const refreshed = await this.loadOrFail(groupGiftId);
     return this.assembleView(refreshed, userId);
   }
@@ -863,7 +874,7 @@ export class GroupGiftService {
    * committed against the old number. A cost discovered later is a *shortfall*,
    * resolved by a contribution request, not by a silent re-target.
    */
-  private assertBillEditable(gift: GroupGiftDocument): void {
+  private async assertBillEditable(gift: GroupGiftDocument): Promise<void> {
     if (INACTIVE_GROUP_GIFT_STATUSES.includes(gift.status)) {
       throw new AppException(
         ErrorCode.GROUP_GIFT_NOT_OPEN,
@@ -871,7 +882,17 @@ export class GroupGiftService {
         409,
       );
     }
-    if (gift.contributorCount > 0 || gift.collectedAmountMinor > 0) {
+    // The host's own share of an equal split is on record from the moment
+    // anybody is invited. It is not somebody else committing against the old
+    // total, so it does not lock the bill — money from anyone else does.
+    const hostShare = await this.contributionModel
+      .findOne({
+        groupGiftId: gift._id,
+        idempotencyKey: HOST_SHARE_KEY,
+        status: ContributionStatus.CONFIRMED,
+      })
+      .exec();
+    if (gift.collectedAmountMinor - (hostShare?.amountMinor ?? 0) > 0) {
       throw new AppException(
         ErrorCode.GROUP_GIFT_BILL_LOCKED,
         'The bill is fixed once people start contributing — raise a contribution request instead',
@@ -890,7 +911,7 @@ export class GroupGiftService {
     if (gift.initiatorId.toString() !== userId) {
       throw new AppException(ErrorCode.FORBIDDEN, 'Only the initiator can add a charge', 403);
     }
-    this.assertBillEditable(gift);
+    await this.assertBillEditable(gift);
     const primary = GroupGiftService.primaryItemMinor(gift);
 
     gift.charges.push({
@@ -902,7 +923,7 @@ export class GroupGiftService {
     });
     GroupGiftService.recomputeTarget(gift, primary);
     await gift.save();
-    return this.assembleView(gift, userId);
+    return this.afterTargetChange(gift, userId);
   }
 
   /**
@@ -956,7 +977,7 @@ export class GroupGiftService {
     if (gift.initiatorId.toString() !== userId) {
       throw new AppException(ErrorCode.FORBIDDEN, 'Only the initiator can edit a charge', 403);
     }
-    this.assertBillEditable(gift);
+    await this.assertBillEditable(gift);
     const primary = GroupGiftService.primaryItemMinor(gift);
 
     const charge = gift.charges.find((c) => c._id.toString() === chargeId);
@@ -968,7 +989,7 @@ export class GroupGiftService {
     gift.markModified('charges');
     GroupGiftService.recomputeTarget(gift, primary);
     await gift.save();
-    return this.assembleView(gift, userId);
+    return this.afterTargetChange(gift, userId);
   }
 
   async removeCharge(
@@ -980,7 +1001,7 @@ export class GroupGiftService {
     if (gift.initiatorId.toString() !== userId) {
       throw new AppException(ErrorCode.FORBIDDEN, 'Only the initiator can remove a charge', 403);
     }
-    this.assertBillEditable(gift);
+    await this.assertBillEditable(gift);
     const primary = GroupGiftService.primaryItemMinor(gift);
 
     const before = gift.charges.length;
@@ -990,7 +1011,7 @@ export class GroupGiftService {
     }
     GroupGiftService.recomputeTarget(gift, primary);
     await gift.save();
-    return this.assembleView(gift, userId);
+    return this.afterTargetChange(gift, userId);
   }
 
   /**
@@ -1024,7 +1045,7 @@ export class GroupGiftService {
     if (gift.initiatorId.toString() !== userId) {
       throw new AppException(ErrorCode.FORBIDDEN, 'Only the initiator can add a gift', 403);
     }
-    this.assertBillEditable(gift);
+    await this.assertBillEditable(gift);
 
     const wishlist = await this.wishlists.findOrFail(gift.wishlistId.toString());
     const item = await this.imports.importForWishlist(wishlist, dto, {
@@ -1050,7 +1071,7 @@ export class GroupGiftService {
     if (gift.initiatorId.toString() !== userId) {
       throw new AppException(ErrorCode.FORBIDDEN, 'Only the initiator can add a gift', 403);
     }
-    this.assertBillEditable(gift);
+    await this.assertBillEditable(gift);
     if (
       gift.itemId.toString() === itemId ||
       gift.lines.some((l) => l.itemId.toString() === itemId)
@@ -1141,7 +1162,7 @@ export class GroupGiftService {
     );
 
     await this.wishlists.recount(updated.wishlistId);
-    return this.assembleView(updated, userId);
+    return this.afterTargetChange(updated, userId);
   }
 
   /**
@@ -1162,7 +1183,7 @@ export class GroupGiftService {
     if (gift.initiatorId.toString() !== userId) {
       throw new AppException(ErrorCode.FORBIDDEN, 'Only the initiator can remove a gift', 403);
     }
-    this.assertBillEditable(gift);
+    await this.assertBillEditable(gift);
 
     const line = gift.lines.find((l) => l._id.toString() === lineId);
     if (!line) {
@@ -1179,7 +1200,7 @@ export class GroupGiftService {
     await gift.save();
 
     await this.wishlists.recount(gift.wishlistId);
-    return this.assembleView(gift, userId);
+    return this.afterTargetChange(gift, userId);
   }
 
   /**
@@ -1756,6 +1777,12 @@ export class GroupGiftService {
     return names;
   }
 
+  /** A new total is a new share for everybody, the host included. */
+  private async afterTargetChange(gift: GroupGiftDocument, userId: string): Promise<GroupGiftView> {
+    await this.shares.sync(gift._id);
+    return this.assembleView(await this.loadOrFail(gift._id.toString()), userId);
+  }
+
   private async assembleView(gift: GroupGiftDocument, userId: string): Promise<GroupGiftView> {
     const { names, items, recentContributions } = await this.resolveViewData(gift);
     const mine = await this.contributionModel
@@ -1770,7 +1797,7 @@ export class GroupGiftService {
         { $group: { _id: null, total: { $sum: '$amountMinor' } } },
       ])
       .exec();
-    return toGroupGiftView({
+    const view = toGroupGiftView({
       gift,
       names,
       items,
@@ -1779,6 +1806,29 @@ export class GroupGiftService {
       canManage: gift.initiatorId.toString() === userId,
       shareBaseUrl: this.shareBaseUrl,
     });
+    view.split = await this.splitView(gift, userId, names);
+    return view;
+  }
+
+  /**
+   * Who owes what, named. Invitees who have not answered yet are not in the
+   * names the rest of the view resolves, so the missing ones are looked up.
+   */
+  private async splitView(
+    gift: GroupGiftDocument,
+    userId: string,
+    known: Map<string, string>,
+  ): Promise<EqualSplitView | null> {
+    const others = await this.shares.othersIn(gift);
+    const ids = [gift.initiatorId.toString(), ...others];
+    const missing = ids.filter((id) => !known.has(id));
+    const names = missing.length
+      ? new Map([
+          ...known,
+          ...(await this.resolveNames(missing, await this.users.findManyByIds(missing))),
+        ])
+      : known;
+    return this.shares.viewFor(gift, userId, (id) => displayNameOf(names, id));
   }
 
   private static isDuplicateKey(err: unknown): boolean {

@@ -117,6 +117,11 @@ export interface GroupGiftView {
   myContributionMinor: number;
   /** Present only for the initiator/manager. */
   share?: GroupGiftShareView;
+  /**
+   * Who owes what, for a gift split equally among more than the host. Null
+   * for a custom-amount gift, or one the host has not invited anybody to.
+   */
+  split?: EqualSplitView | null;
 }
 
 /** The redacted public share view — no owner PII, no wishlist internals. */
@@ -257,6 +262,32 @@ export interface ItemGroupGiftView {
   collectedAmountMinor: number;
   percentFunded: number;
   contributorCount: number;
+}
+
+/**
+ * "Split equally", as each member sees it: everybody's share, what they have
+ * paid, and what is still to come from them.
+ *
+ * The host is always first, and always paid: they collect the money, so their
+ * share is in hand from the start. A share moves when somebody pays more than
+ * theirs — what is left is split again among the people still to pay.
+ */
+export interface EqualSplitView {
+  /** Everybody the total is divided among, the host included. */
+  memberCount: number;
+  /** The total divided evenly. */
+  baseShareMinor: number;
+  members: {
+    userId: string;
+    name: string;
+    host: boolean;
+    shareMinor: number;
+    paidMinor: number;
+    owesMinor: number;
+  }[];
+  /** The viewer's own share and what they still owe; null if not a member. */
+  myShareMinor: number | null;
+  myOwesMinor: number | null;
 }
 
 export function toGroupGiftView(input: {

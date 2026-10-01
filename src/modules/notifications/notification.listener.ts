@@ -20,6 +20,7 @@ import {
   GROUP_GIFT_FULFILLED,
   GROUP_GIFT_FUNDED,
   GROUP_GIFT_INVITED,
+  GROUP_GIFT_SHARE_REMINDER_DUE,
   GROUP_GIFT_JOINED,
   GROUP_GIFT_PURCHASED,
   MEMORY_REPLY_SENT,
@@ -43,6 +44,7 @@ import {
   type GroupGiftFulfilledEvent,
   type GroupGiftFundedEvent,
   type GroupGiftInvitedEvent,
+  type GroupGiftShareReminderDueEvent,
   type GroupGiftJoinedEvent,
   type GroupGiftPurchasedEvent,
   type MemoryReplySentEvent,
@@ -215,6 +217,31 @@ export class NotificationListener {
           amountMinor: e.amountMinor,
           collectedAmountMinor: e.collectedAmountMinor,
           targetAmountMinor: e.targetAmountMinor,
+        },
+      });
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_SHARE_REMINDER_DUE)
+  async onGroupGiftShareReminderDue(e: GroupGiftShareReminderDueEvent): Promise<void> {
+    await this.guard('group-gift-share-reminder', async () => {
+      await this.notifications.enqueue({
+        userId: e.userId,
+        // Somebody still only invited is led to the invitation; a member, to
+        // the group gift itself.
+        type: e.invited
+          ? NotificationType.GROUP_GIFT_INVITE_REMINDER
+          : NotificationType.GROUP_GIFT_SHARE_REMINDER,
+        // The gift first, which is what the app opens; then the person and the
+        // day, so each day is its own reminder — dedupe is permanent per ref,
+        // and keyed on the gift alone the second day's would be dropped.
+        refId: `${e.groupGiftId}:${e.userId}:${e.day}`,
+        payload: {
+          title: e.title,
+          owesMinor: e.owesMinor,
+          shareMinor: e.shareMinor,
+          paidMinor: e.paidMinor,
+          currency: e.currency,
         },
       });
     });

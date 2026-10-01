@@ -97,6 +97,26 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     lines: [`${who(p, 'inviterName')} invited you to chip in for ${s(p, 'itemTitle', 'a gift')}.`],
     cta: { label: 'See the invitation', url: s(p, 'url') },
   }),
+  [NotificationType.GROUP_GIFT_SHARE_REMINDER]: (p) => ({
+    subject: `Your share for ${s(p, 'title', 'the group gift')}`,
+    title: `${money(p, 'owesMinor')} left to chip in`,
+    lines: [
+      Number(p.paidMinor ?? 0) > 0
+        ? `You've paid ${money(p, 'paidMinor')} of your ${money(p, 'shareMinor')} share for ${s(p, 'title', 'the group gift')}.`
+        : `Your share for ${s(p, 'title', 'the group gift')} is ${money(p, 'shareMinor')}.`,
+      'Chip in today so the gift can be bought in time.',
+    ],
+    cta: { label: 'Chip in', url: s(p, 'url') },
+  }),
+  [NotificationType.GROUP_GIFT_INVITE_REMINDER]: (p) => ({
+    subject: `You're invited to chip in for ${s(p, 'title', 'a group gift')}`,
+    title: `Your share is ${money(p, 'owesMinor')}`,
+    lines: [
+      `Split equally, your share for ${s(p, 'title', 'the group gift')} is ${money(p, 'shareMinor')}.`,
+      'Chip in to join the group.',
+    ],
+    cta: { label: 'See the invitation', url: s(p, 'url') },
+  }),
   [NotificationType.GROUP_GIFT_JOINED]: (p) => ({
     subject: `A new member joined`,
     title: 'Someone joined the group gift',

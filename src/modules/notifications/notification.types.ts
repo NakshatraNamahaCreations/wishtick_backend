@@ -47,6 +47,8 @@ export enum NotificationType {
   GROUP_GIFT_CONTRIBUTION = 'group_gift_contribution',
   GROUP_GIFT_JOINED = 'group_gift_joined',
   GROUP_GIFT_INVITE = 'group_gift_invite',
+  GROUP_GIFT_SHARE_REMINDER = 'group_gift_share_reminder',
+  GROUP_GIFT_INVITE_REMINDER = 'group_gift_invite_reminder',
   GROUP_GIFT_PURCHASED = 'group_gift_purchased',
   GROUP_GIFT_FULFILLED = 'group_gift_fulfilled',
   EVENT_REMINDER = 'event_reminder',
@@ -139,6 +141,23 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.DIGEST,
     category: NotificationCategory.GROUP_GIFTS,
     template: 'group-gift-contribution',
+  },
+  [NotificationType.GROUP_GIFT_SHARE_REMINDER]: {
+    // Daily, to each member of an evenly split gift who still owes, until they
+    // have paid. Push as well as in-app: a reminder only in the app reaches
+    // exactly the people who already opened it. Quiet hours still hold it.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-share-reminder',
+  },
+  [NotificationType.GROUP_GIFT_INVITE_REMINDER]: {
+    // The same daily reminder, for somebody still only invited: it leads to
+    // the invitation, the one part of the group they are allowed to open.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-invite-reminder',
   },
   [NotificationType.GROUP_GIFT_INVITE]: {
     // Not DIGEST, unlike the rest of this category: an invitation is a

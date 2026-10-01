@@ -14,6 +14,8 @@ import {
 } from 'src/modules/wishlists/schemas/wishlist-item.schema';
 import { WishmatesService } from 'src/modules/wishmates/wishmates.service';
 import { WishmateRelationship } from 'src/modules/wishmates/wishmates.views';
+import type { EqualSplitView } from './group-gift.views';
+import { GroupGiftShareService } from './group-gift-share.service';
 import { GroupGiftService } from './group-gift.service';
 import { CLOSED_GROUP_GIFT_STATUSES, ContributionStatus } from './group-gift.types';
 import {
@@ -75,6 +77,11 @@ export interface GroupGiftInviteDetailView extends GroupGiftInviteView {
   suggestedAmountsMinor: number[];
   hostName: string;
   hostUpiId: string | null;
+  /**
+   * For a gift split equally: everybody's share, and the invitee's own — what
+   * they are being asked for, before they have said yes.
+   */
+  split: EqualSplitView | null;
 }
 
 const toView = (
@@ -119,6 +126,7 @@ export class GroupGiftInvitesService {
     private readonly wishmates: WishmatesService,
     private readonly participants: ParticipantsService,
     private readonly emitter: EventEmitter2,
+    private readonly shares: GroupGiftShareService,
   ) {}
 
   /**
@@ -188,6 +196,9 @@ export class GroupGiftInvitesService {
     }
 
     this.logger.log(`Group gift ${groupGiftId}: ${invited} invited, ${skipped} skipped`);
+    // Everybody asked is somebody to share an equal split with — the host's
+    // share comes down from the moment they are invited.
+    if (invited > 0) await this.shares.sync(groupGiftId);
     return { invited, skipped };
   }
 
@@ -241,8 +252,13 @@ export class GroupGiftInvitesService {
       ...contributions.filter((c) => !c.anonymous).map((c) => c.userId.toString()),
     ]);
 
+    const others = await this.shares.othersIn(gift);
+    const splitNames = await this.resolveNames([gift.initiatorId.toString(), ...others]);
+    const split = await this.shares.viewFor(gift, userId, (id) => splitNames.get(id) ?? 'A friend');
+
     return {
       ...toView(invite, gift, names),
+      split,
       itemTitle: item?.title ?? gift.title,
       imageUrl: item?.imageUrls?.[0] ?? null,
       currency: gift.currency,
@@ -306,6 +322,8 @@ export class GroupGiftInvitesService {
       invite.status = GroupGiftInviteStatus.DECLINED;
       invite.respondedAt = new Date();
       await invite.save();
+      // One fewer to share with.
+      await this.shares.sync(invite.groupGiftId);
       return toView(invite, gift, names);
     }
 

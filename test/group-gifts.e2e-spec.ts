@@ -12,6 +12,7 @@ import { Gift, type GiftDocument } from 'src/modules/gifting/schemas/gift.schema
 import type { GiftListItemView } from 'src/modules/gifting/gift.views';
 import { DeliveryDateRegistrar } from 'src/modules/group-gifts/delivery-date.registrar';
 import { GroupGiftReconcileService } from 'src/modules/group-gifts/group-gift-reconcile.service';
+import { GroupGiftShareService } from 'src/modules/group-gifts/group-gift-share.service';
 import { GroupGiftStatus, OverfundPolicy } from 'src/modules/group-gifts/group-gift.types';
 import {
   GroupGift,
@@ -138,7 +139,10 @@ describe('Group gifting (e2e)', () => {
       .set(idem())
       // Group Title is required (`299:1658` marks it with a red asterisk);
       // every case here is about funding, so a default keeps them readable.
-      .send({ title: 'Group gift', ...body });
+      // Custom amounts unless a case asks otherwise: an equal split credits
+      // the host's share as members arrive, and these cases are about the
+      // money mechanics underneath it — the split has cases of its own.
+      .send({ title: 'Group gift', contributionMode: 'custom', ...body });
 
   const contribute = (user: Actor, ggId: string, body: Record<string, unknown>): request.Test =>
     request(app.getHttpServer())
@@ -2080,6 +2084,250 @@ describe('Group gifting (e2e)', () => {
       await createGroupGift(initiator, itemId, { targetAmountMinor: 500000 }).expect(201);
 
       await forItem(owner, itemId).expect(403);
+    });
+  });
+
+  describe('split equally', () => {
+    interface SplitView {
+      memberCount: number;
+      baseShareMinor: number;
+      members: {
+        userId: string;
+        host: boolean;
+        shareMinor: number;
+        paidMinor: number;
+        owesMinor: number;
+      }[];
+      myShareMinor: number | null;
+      myOwesMinor: number | null;
+    }
+    interface WithSplit {
+      id: string;
+      collectedAmountMinor: number;
+      split: SplitView | null;
+    }
+
+    const wishmates = async (a: Actor, b: Actor): Promise<void> => {
+      await request(app.getHttpServer())
+        .post(`${V1}/people/${b.userId}/request`)
+        .set(auth(a.token))
+        .expect(201);
+      const received = await request(app.getHttpServer())
+        .get(`${V1}/wishlinks/received`)
+        .set(auth(b.token))
+        .expect(200);
+      const linkId = (received.body as Envelope<{ linkId: string }[]>).data[0].linkId;
+      await request(app.getHttpServer())
+        .post(`${V1}/wishlinks/${linkId}/accept`)
+        .set(auth(b.token))
+        .expect(201);
+    };
+
+    /** ₹1,000 among the host and four WishMates they invited. */
+    const fiveWays = async (): Promise<{ host: Actor; friends: Actor[]; ggId: string }> => {
+      const owner = await newUserDirect();
+      const host = await newUserDirect();
+      const friends = [
+        await newUserDirect(),
+        await newUserDirect(),
+        await newUserDirect(),
+        await newUserDirect(),
+      ];
+      for (const f of friends) await wishmates(host, f);
+      const { itemId } = await wishlistWithItem(owner);
+      const gg = (
+        await createGroupGift(host, itemId, {
+          contributionMode: 'equal',
+          targetAmountMinor: 100_000,
+        }).expect(201)
+      ).body as Envelope<{ id: string }>;
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${gg.data.id}/invites`)
+        .set(auth(host.token))
+        .send({ userIds: friends.map((f) => f.userId) })
+        .expect(200);
+      return { host, friends, ggId: gg.data.id };
+    };
+
+    const view = async (who: Actor, ggId: string): Promise<WithSplit> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/group-gifts/${ggId}`)
+            .set(auth(who.token))
+            .expect(200)
+        ).body as Envelope<WithSplit>
+      ).data;
+
+    const owesOf = (split: SplitView, friends: Actor[]) =>
+      friends.map((f) => split.members.find((m) => m.userId === f.userId)!.owesMinor);
+
+    it('counts the host as paid their share from the start', async () => {
+      const { host, friends, ggId } = await fiveWays();
+
+      const gg = await view(host, ggId);
+
+      expect(gg.split!.memberCount).toBe(5);
+      expect(gg.split!.baseShareMinor).toBe(20_000);
+      const hostRow = gg.split!.members.find((m) => m.host)!;
+      expect(hostRow.userId).toBe(host.userId);
+      expect(hostRow.paidMinor).toBe(20_000);
+      expect(hostRow.owesMinor).toBe(0);
+      expect(owesOf(gg.split!, friends)).toEqual([20_000, 20_000, 20_000, 20_000]);
+      // Real money on the record, so the progress bar already shows it.
+      expect(gg.collectedAmountMinor).toBe(20_000);
+    });
+
+    it('tells each member their own share', async () => {
+      const { friends, ggId } = await fiveWays();
+
+      const gg = await view(friends[0], ggId);
+
+      expect(gg.split!.myShareMinor).toBe(20_000);
+      expect(gg.split!.myOwesMinor).toBe(20_000);
+    });
+
+    it('shares what is left again when somebody pays more', async () => {
+      const { host, friends, ggId } = await fiveWays();
+
+      await contribute(friends[0], ggId, { amountMinor: 40_000 }).expect(201);
+
+      const gg = await view(host, ggId);
+      expect(owesOf(gg.split!, friends)).toEqual([0, 13_334, 13_334, 13_334]);
+      expect(gg.collectedAmountMinor).toBe(60_000);
+    });
+
+    it('keeps asking somebody who paid less for the rest', async () => {
+      const { host, friends, ggId } = await fiveWays();
+
+      await contribute(friends[0], ggId, { amountMinor: 5_000 }).expect(201);
+
+      const gg = await view(host, ggId);
+      expect(owesOf(gg.split!, friends)).toEqual([15_000, 20_000, 20_000, 20_000]);
+    });
+
+    it('funds the gift once the others have paid their shares', async () => {
+      const { host, friends, ggId } = await fiveWays();
+
+      for (const f of friends) {
+        await contribute(f, ggId, { amountMinor: 20_000 }).expect(201);
+      }
+
+      const doc = await groupGiftModel.findById(ggId).exec();
+      expect(doc!.collectedAmountMinor).toBe(100_000);
+      expect(doc!.status).toBe(GroupGiftStatus.FUNDED);
+      expect((await view(host, ggId)).split!.members.every((m) => m.owesMinor === 0)).toBe(true);
+    });
+
+    it('gives the host a bigger share when somebody declines', async () => {
+      const { host, friends, ggId } = await fiveWays();
+      const invites = (
+        await request(app.getHttpServer())
+          .get(`${V1}/group-gift-invites/mine`)
+          .set(auth(friends[3].token))
+          .expect(200)
+      ).body as Envelope<{ id: string }[]>;
+
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gift-invites/${invites.data[0].id}/decline`)
+        .set(auth(friends[3].token))
+        .expect(200);
+
+      const gg = await view(host, ggId);
+      expect(gg.split!.memberCount).toBe(4);
+      expect(gg.split!.members.find((m) => m.host)!.paidMinor).toBe(25_000);
+      expect(gg.collectedAmountMinor).toBe(25_000);
+    });
+
+    it('does not lock the bill with only the share of the host in', async () => {
+      const { host, ggId } = await fiveWays();
+
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${ggId}/charges`)
+        .set(auth(host.token))
+        .send({ label: 'Delivery', amountMinor: 5_000 })
+        .expect(201);
+
+      // A new total, a new share: ₹1,050 among five.
+      const gg = await view(host, ggId);
+      expect(gg.split!.members.find((m) => m.host)!.paidMinor).toBe(21_000);
+    });
+
+    it('reminds everybody who still owes, every day, and not the host', async () => {
+      const { host, friends, ggId } = await fiveWays();
+      await contribute(friends[0], ggId, { amountMinor: 20_000 }).expect(201);
+      await contribute(friends[1], ggId, { amountMinor: 5_000 }).expect(201);
+      const shares = app.get(GroupGiftShareService);
+
+      await shares.remindOwing(new Date('2026-10-01T05:00:00Z'));
+      await shares.remindOwing(new Date('2026-10-02T05:00:00Z'));
+      await ctx.drainNotifications();
+      const inbox = async (who: Actor) =>
+        (
+          (
+            await request(app.getHttpServer())
+              .get(`${V1}/notifications`)
+              .set(auth(who.token))
+              .expect(200)
+          ).body as Envelope<{ type: string; refId: string }[]>
+        ).data.filter(
+          (n) =>
+            ['group_gift_share_reminder', 'group_gift_invite_reminder'].includes(n.type) &&
+            n.refId.startsWith(ggId),
+        );
+
+      // Each day is its own reminder, for everybody still owing — the one who
+      // paid part as much as the ones who paid nothing.
+      expect(await inbox(friends[1])).toHaveLength(2);
+      expect(await inbox(friends[2])).toHaveLength(2);
+      expect(await inbox(friends[3])).toHaveLength(2);
+      // Paid in full, and the host: nothing.
+      expect(await inbox(friends[0])).toHaveLength(0);
+      expect(await inbox(host)).toHaveLength(0);
+      // Paying made friends[1] a member, so theirs opens the group; friends[2]
+      // never answered the invitation, so theirs opens that instead.
+      expect((await inbox(friends[1])).every((n) => n.type === 'group_gift_share_reminder')).toBe(
+        true,
+      );
+      expect((await inbox(friends[2])).every((n) => n.type === 'group_gift_invite_reminder')).toBe(
+        true,
+      );
+    });
+
+    it('shows an invitee their share before they have said yes', async () => {
+      const { friends } = await fiveWays();
+      const mine = (
+        await request(app.getHttpServer())
+          .get(`${V1}/group-gift-invites/mine`)
+          .set(auth(friends[2].token))
+          .expect(200)
+      ).body as Envelope<{ id: string }[]>;
+
+      const detail = (
+        await request(app.getHttpServer())
+          .get(`${V1}/group-gift-invites/${mine.data[0].id}`)
+          .set(auth(friends[2].token))
+          .expect(200)
+      ).body as Envelope<{ split: SplitView | null }>;
+
+      expect(detail.data.split!.myOwesMinor).toBe(20_000);
+      expect(detail.data.split!.memberCount).toBe(5);
+    });
+
+    it('has no split for custom amounts', async () => {
+      const owner = await newUserDirect();
+      const host = await newUserDirect();
+      const { itemId } = await wishlistWithItem(owner);
+      const gg = (await createGroupGift(host, itemId, { targetAmountMinor: 100_000 }).expect(201))
+        .body as Envelope<{ id: string }>;
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${gg.data.id}/join`)
+        .set(auth((await newUserDirect()).token))
+        .expect(200);
+
+      const got = await view(host, gg.data.id);
+      expect(got.split).toBeNull();
+      expect(got.collectedAmountMinor).toBe(0);
     });
   });
 });

@@ -24,6 +24,32 @@ export interface UserRegisteredEvent {
  * Sprint 9 (notifications) fans out to the participants — both subscribe here
  * rather than coupling to the gifting module.
  */
+/**
+ * A member of an evenly split group gift still owes part of their share.
+ *
+ * Emitted once a day per person who owes, until they have paid. [day] is in
+ * the notification's reference, so each day is a fresh reminder and not a
+ * repeat of yesterday's that the dedupe would drop.
+ */
+export const GROUP_GIFT_SHARE_REMINDER_DUE = 'group_gift.share_reminder_due';
+
+export interface GroupGiftShareReminderDueEvent {
+  groupGiftId: string;
+  userId: string;
+  title: string;
+  owesMinor: number;
+  shareMinor: number;
+  paidMinor: number;
+  currency: string;
+  /** YYYY-MM-DD, UTC — which day's reminder this is. */
+  day: string;
+  /**
+   * Still only invited — not yet in the group. They cannot open the group
+   * itself, so their reminder leads to the invitation instead.
+   */
+  invited: boolean;
+}
+
 export const GROUP_GIFT_FUNDED = 'group_gift.funded';
 
 export interface GroupGiftFundedEvent {

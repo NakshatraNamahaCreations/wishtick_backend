@@ -228,6 +228,19 @@ See the invitation: https://app.wishtick.test/x",
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_invite_reminder 1`] = `
+{
+  "sms": "Your share is  — https://app.wishtick.test/x",
+  "subject": "You're invited to chip in for Password changed",
+  "text": "Split equally, your share for Password changed is .
+
+Chip in to join the group.
+
+See the invitation: https://app.wishtick.test/x",
+  "title": "Your share is ",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_joined 1`] = `
 {
   "sms": "Someone joined the group gift",
@@ -245,6 +258,19 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 
 View the group gift: https://app.wishtick.test/x",
   "title": "Group gift purchased",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_share_reminder 1`] = `
+{
+  "sms": " left to chip in — https://app.wishtick.test/x",
+  "subject": "Your share for Password changed",
+  "text": "Your share for Password changed is .
+
+Chip in today so the gift can be bought in time.
+
+Chip in: https://app.wishtick.test/x",
+  "title": " left to chip in",
 }
 `;
 
