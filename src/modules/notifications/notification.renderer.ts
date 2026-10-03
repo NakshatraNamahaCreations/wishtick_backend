@@ -131,6 +131,22 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     ],
     cta: { label: 'See the invitation', url: s(p, 'url') },
   }),
+  [NotificationType.GROUP_GIFT_CANCELLED]: (p) => ({
+    subject: `${who(p, 'hostName')} cancelled the group gift`,
+    title: `${s(p, 'title', 'A group gift')} was cancelled`,
+    // One line: in-app and push show only the first, and the reason and the
+    // money are the two things each person needs to read.
+    lines: [
+      [
+        `${who(p, 'hostName')} cancelled the group gift for ${s(p, 'title', 'a gift')}.`,
+        ...(s(p, 'reason') ? [`Reason: ${s(p, 'reason')}.`] : []),
+        Number(p.refundedMinor ?? 0) > 0
+          ? `Your ${money(p, 'refundedMinor')} is counted as refunded to you.`
+          : "You don't owe anything for it now.",
+      ].join(' '),
+    ],
+    cta: { label: 'See the group gift', url: s(p, 'url') },
+  }),
   [NotificationType.GROUP_GIFT_JOINED]: (p) => ({
     subject: `A new member joined`,
     title: 'Someone joined the group gift',

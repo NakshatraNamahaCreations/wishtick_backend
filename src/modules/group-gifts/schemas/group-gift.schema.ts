@@ -218,6 +218,13 @@ export class GroupGift {
   @Prop({ type: Date, default: null })
   thankYouAt!: Date | null;
 
+  /**
+   * Why the host called it off, in their words, when they gave a reason. Told
+   * to everybody in the group and shown on the cancelled gift.
+   */
+  @Prop({ type: String, default: null, trim: true, maxlength: 500 })
+  cancelReason!: string | null;
+
   /** Split equally, or let people give what they like. Advisory. */
   @Prop({
     type: String,

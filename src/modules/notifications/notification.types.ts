@@ -49,6 +49,7 @@ export enum NotificationType {
   GROUP_GIFT_INVITE = 'group_gift_invite',
   GROUP_GIFT_SHARE_REMINDER = 'group_gift_share_reminder',
   GROUP_GIFT_INVITE_REMINDER = 'group_gift_invite_reminder',
+  GROUP_GIFT_CANCELLED = 'group_gift_cancelled',
   GROUP_GIFT_PURCHASED = 'group_gift_purchased',
   GROUP_GIFT_FULFILLED = 'group_gift_fulfilled',
   EVENT_REMINDER = 'event_reminder',
@@ -158,6 +159,14 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.GROUP_GIFTS,
     template: 'group-gift-invite-reminder',
+  },
+  [NotificationType.GROUP_GIFT_CANCELLED]: {
+    // Push too: people who paid need to hear their money is coming back, and
+    // the rest that they no longer owe anything.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-cancelled',
   },
   [NotificationType.GROUP_GIFT_INVITE]: {
     // Not DIGEST, unlike the rest of this category: an invitation is a

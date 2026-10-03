@@ -14,7 +14,15 @@ import { DeliveryDateRegistrar } from 'src/modules/group-gifts/delivery-date.reg
 import { GroupGiftReconcileService } from 'src/modules/group-gifts/group-gift-reconcile.service';
 import { GroupGiftShareService } from 'src/modules/group-gifts/group-gift-share.service';
 import { GroupGiftInvite } from 'src/modules/group-gifts/schemas/group-gift-invite.schema';
-import { GroupGiftStatus, OverfundPolicy } from 'src/modules/group-gifts/group-gift.types';
+import {
+  ContributionStatus,
+  GroupGiftStatus,
+  OverfundPolicy,
+} from 'src/modules/group-gifts/group-gift.types';
+import {
+  Contribution,
+  type ContributionDocument,
+} from 'src/modules/group-gifts/schemas/contribution.schema';
 import {
   GroupGift,
   type GroupGiftDocument,
@@ -2158,6 +2166,89 @@ describe('Group gifting (e2e)', () => {
       expect((await inbox(friends[2])).every((n) => n.type === 'group_gift_share_reminder')).toBe(
         true,
       );
+    });
+
+    it('cancelled with a reason: everybody told, payers refunded', async () => {
+      const { host, friends, ggId } = await fiveWays();
+      await contribute(friends[0], ggId, { amountMinor: 20_000 }).expect(201);
+      await ctx.drainNotifications();
+
+      // Only the host may call it off.
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${ggId}/cancel`)
+        .set(auth(friends[0].token))
+        .send({ note: 'Nope' })
+        .expect(403);
+
+      const cancelled = (
+        await request(app.getHttpServer())
+          .post(`${V1}/group-gifts/${ggId}/cancel`)
+          .set(auth(host.token))
+          .send({ note: '  The money never reached me  ' })
+          .expect(200)
+      ).body as Envelope<{ status: string; cancelReason: string | null }>;
+      expect(cancelled.data.status).toBe('cancelled');
+      expect(cancelled.data.cancelReason).toBe('The money never reached me');
+
+      // Every contribution, the host's own share included, counted as refunded.
+      const contributions = app.get<Model<ContributionDocument>>(getModelToken(Contribution.name));
+      expect(
+        await contributions.countDocuments({
+          groupGiftId: new Types.ObjectId(ggId),
+          status: ContributionStatus.CONFIRMED,
+        }),
+      ).toBe(0);
+      const payerView = (
+        await request(app.getHttpServer())
+          .get(`${V1}/group-gifts/${ggId}`)
+          .set(auth(friends[0].token))
+          .expect(200)
+      ).body as Envelope<{ myRefundedMinor: number; cancelReason: string | null }>;
+      expect(payerView.data.myRefundedMinor).toBe(20_000);
+      expect(payerView.data.cancelReason).toBe('The money never reached me');
+
+      await ctx.drainNotifications();
+      const told = async (who: Actor) =>
+        (
+          (
+            await request(app.getHttpServer())
+              .get(`${V1}/notifications`)
+              .set(auth(who.token))
+              .expect(200)
+          ).body as Envelope<{ type: string; refId: string; title: string; body: string }[]>
+        ).data.filter((n) => n.type === 'group_gift_cancelled' && n.refId.startsWith(ggId));
+
+      const payer = await told(friends[0]);
+      expect(payer).toHaveLength(1);
+      expect(payer[0].body).toContain('Reason: The money never reached me.');
+      expect(payer[0].body).toContain('200.00 is counted as refunded');
+      const unpaid = await told(friends[3]);
+      expect(unpaid).toHaveLength(1);
+      expect(unpaid[0].body).toContain("You don't owe anything");
+      // Not the host, who did it.
+      expect(await told(host)).toHaveLength(0);
+    });
+
+    it('cancelled without a reason says nothing about one', async () => {
+      const { host, friends, ggId } = await fiveWays();
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${ggId}/cancel`)
+        .set(auth(host.token))
+        .send({})
+        .expect(200);
+      await ctx.drainNotifications();
+
+      const inbox = (
+        await request(app.getHttpServer())
+          .get(`${V1}/notifications`)
+          .set(auth(friends[1].token))
+          .expect(200)
+      ).body as Envelope<{ type: string; refId: string; body: string }[]>;
+      const note = inbox.data.find(
+        (n) => n.type === 'group_gift_cancelled' && n.refId.startsWith(ggId),
+      );
+      expect(note).toBeDefined();
+      expect(note!.body).not.toContain('Reason');
     });
 
     it('tells everybody added what their share is', async () => {

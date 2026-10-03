@@ -121,6 +121,13 @@ export interface GroupGiftView {
   /** The recipient's thank-you note (`2219:603`), once they have written it. */
   thankYouNote: string | null;
   thankYouAt: Date | null;
+  /** Why the host cancelled it, when they said; null otherwise. */
+  cancelReason: string | null;
+  /**
+   * What the viewer had put in before the host cancelled, now counted as
+   * refunded. Zero unless cancelled.
+   */
+  myRefundedMinor: number;
   createdAt: Date;
   participants: ParticipantView[];
   recentContributions: ContributionView[];
@@ -373,6 +380,8 @@ export function toGroupGiftView(input: {
         : null),
     thankYouNote: gift.thankYouNote,
     thankYouAt: gift.thankYouAt,
+    cancelReason: gift.cancelReason ?? null,
+    myRefundedMinor: 0,
     createdAt: gift.createdAt,
     participants: toParticipants(gift, names),
     recentContributions: recentContributions.map((c) => toContributionView(c, names)),

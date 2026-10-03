@@ -182,6 +182,17 @@ View your gift: https://app.wishtick.test/x",
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_cancelled 1`] = `
+{
+  "sms": "Password changed was cancelled — https://app.wishtick.test/x",
+  "subject": "Someone cancelled the group gift",
+  "text": "Someone cancelled the group gift for Password changed. You don't owe anything for it now.
+
+See the group gift: https://app.wishtick.test/x",
+  "title": "Password changed was cancelled",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_contribution 1`] = `
 {
   "sms": "Someone chipped in",

@@ -9,11 +9,13 @@ import { ErrorCode } from 'src/common/errors/error-codes';
 import {
   GROUP_GIFT_CONTRIBUTION_RECEIVED,
   GROUP_GIFT_FULFILLED,
+  GROUP_GIFT_CANCELLED,
   GROUP_GIFT_FUNDED,
   GROUP_GIFT_JOINED,
   GROUP_GIFT_PURCHASED,
   type GroupGiftContributionReceivedEvent,
   type GroupGiftFulfilledEvent,
+  type GroupGiftCancelledEvent,
   type GroupGiftFundedEvent,
   type GroupGiftJoinedEvent,
   type GroupGiftPurchasedEvent,
@@ -1208,6 +1210,9 @@ export class GroupGiftService {
    * collected, routes through `refunding`: every confirmed contribution is
    * marked refunded with an immutable audit reference. Real PSP settlement is a
    * later sprint; here the refund is recorded, not charged back.
+   *
+   * The host's reason, when they give one, is kept on the gift, and everybody
+   * in the group is told — with what they had paid, now counted as refunded.
    */
   async cancel(
     groupGiftId: string,
@@ -1230,6 +1235,12 @@ export class GroupGiftService {
       );
     }
 
+    const reason = dto.note?.trim() || null;
+    // Who to tell, worked out before the invitations and payments it reads
+    // stop meaning anything.
+    const others = await this.shares.othersIn(gift);
+    let refunded = new Map<string, number>();
+
     await this.locks.withBestEffortLock(
       `group-gift:${groupGiftId}`,
       async () => {
@@ -1239,6 +1250,20 @@ export class GroupGiftService {
             const gg = await this.groupGiftModel.findById(gift._id).session(session).exec();
             if (!gg)
               throw new AppException(ErrorCode.GROUP_GIFT_NOT_FOUND, 'Group gift not found', 404);
+
+            // What each person had in, before it is marked refunded. Rebuilt on
+            // a transaction retry rather than added to.
+            refunded = new Map();
+            const paid = await this.contributionModel
+              .find({ groupGiftId: gg._id, status: ContributionStatus.CONFIRMED })
+              .select('userId amountMinor')
+              .session(session)
+              .exec();
+            for (const c of paid) {
+              const id = c.userId.toString();
+              refunded.set(id, (refunded.get(id) ?? 0) + c.amountMinor);
+            }
+            gg.cancelReason = reason;
 
             // Free the item.
             await this.status.transitionById(gg.giftId, GiftStatus.CANCELLED, `user:${userId}`, {
@@ -1269,9 +1294,14 @@ export class GroupGiftService {
                 `user:${userId}`,
                 'cancelled with contributions',
               );
-              this.pushStatus(gg, GroupGiftStatus.CANCELLED, 'system:refunded', 'refunds recorded');
+              this.pushStatus(
+                gg,
+                GroupGiftStatus.CANCELLED,
+                'system:refunded',
+                reason ? `refunds recorded: ${reason}` : 'refunds recorded',
+              );
             } else {
-              this.pushStatus(gg, GroupGiftStatus.CANCELLED, `user:${userId}`, dto.note ?? null);
+              this.pushStatus(gg, GroupGiftStatus.CANCELLED, `user:${userId}`, reason);
             }
             await gg.save({ session });
           });
@@ -1283,6 +1313,22 @@ export class GroupGiftService {
     );
 
     await this.wishlists.recount(gift.wishlistId);
+
+    // Everybody but the host: the members, whoever was still only invited,
+    // and anybody who paid without joining. Never the recipient.
+    const hostId = gift.initiatorId.toString();
+    const told = new Set([...others, ...refunded.keys()]);
+    told.delete(hostId);
+    told.delete(gift.recipientId.toString());
+    this.emitter.emit(GROUP_GIFT_CANCELLED, {
+      groupGiftId,
+      title: gift.title,
+      hostId,
+      reason,
+      currency: gift.currency,
+      members: [...told].map((id) => ({ userId: id, refundedMinor: refunded.get(id) ?? 0 })),
+    } satisfies GroupGiftCancelledEvent);
+
     const refreshed = await this.loadOrFail(groupGiftId);
     return this.assembleView(refreshed, userId);
   }
@@ -1818,6 +1864,24 @@ export class GroupGiftService {
       canManage: gift.initiatorId.toString() === userId,
       shareBaseUrl: this.shareBaseUrl,
     });
+    if (gift.status === GroupGiftStatus.CANCELLED) {
+      // What the cancellation counted as refunded to the viewer — not what
+      // they withdrew themselves earlier, which was theirs to take back.
+      const back = await this.contributionModel
+        .aggregate<{ total: number }>([
+          {
+            $match: {
+              groupGiftId: gift._id,
+              userId: new Types.ObjectId(userId),
+              status: ContributionStatus.REFUNDED,
+              refundRef: `cancel-${gift._id.toString()}`,
+            },
+          },
+          { $group: { _id: null, total: { $sum: '$amountMinor' } } },
+        ])
+        .exec();
+      view.myRefundedMinor = back[0]?.total ?? 0;
+    }
     view.split = await this.splitView(gift, userId, names);
     return view;
   }

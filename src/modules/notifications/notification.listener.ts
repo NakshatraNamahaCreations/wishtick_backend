@@ -16,6 +16,7 @@ import {
   GIFT_FULFILLED,
   GIFT_PURCHASED,
   GIFT_RESERVED,
+  GROUP_GIFT_CANCELLED,
   GROUP_GIFT_CONTRIBUTION_RECEIVED,
   GROUP_GIFT_FULFILLED,
   GROUP_GIFT_FUNDED,
@@ -40,6 +41,7 @@ import {
   type EventWishlistAnsweredEvent,
   type EventWishlistOfferedEvent,
   type GiftLifecycleEvent,
+  type GroupGiftCancelledEvent,
   type GroupGiftContributionReceivedEvent,
   type GroupGiftFulfilledEvent,
   type GroupGiftFundedEvent,
@@ -244,6 +246,29 @@ export class NotificationListener {
           currency: e.currency,
         },
       });
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_CANCELLED)
+  async onGroupGiftCancelled(e: GroupGiftCancelledEvent): Promise<void> {
+    await this.guard('group-gift-cancelled', async () => {
+      const hostName = await this.userName(e.hostId);
+      for (const member of e.members) {
+        await this.notifications.enqueue({
+          userId: member.userId,
+          type: NotificationType.GROUP_GIFT_CANCELLED,
+          // A gift is cancelled once, so one per person.
+          refId: `${e.groupGiftId}:${member.userId}`,
+          payload: {
+            title: e.title,
+            hostName,
+            reason: e.reason,
+            refundedMinor: member.refundedMinor,
+            currency: e.currency,
+            url: `${this.web}/group-gifts/${e.groupGiftId}`,
+          },
+        });
+      }
     });
   }
 

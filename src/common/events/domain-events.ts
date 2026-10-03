@@ -50,6 +50,23 @@ export interface GroupGiftShareReminderDueEvent {
   invited: boolean;
 }
 
+/**
+ * The host called a group gift off. Every member is told, with the host's
+ * reason when they gave one; whoever had paid is told their money is counted
+ * as refunded. The recipient is never among them — it was a surprise.
+ */
+export const GROUP_GIFT_CANCELLED = 'group_gift.cancelled';
+
+export interface GroupGiftCancelledEvent {
+  groupGiftId: string;
+  title: string;
+  hostId: string;
+  reason: string | null;
+  currency: string;
+  /** Everybody but the host, with what each had paid in (0 if nothing). */
+  members: { userId: string; refundedMinor: number }[];
+}
+
 export const GROUP_GIFT_FUNDED = 'group_gift.funded';
 
 export interface GroupGiftFundedEvent {
