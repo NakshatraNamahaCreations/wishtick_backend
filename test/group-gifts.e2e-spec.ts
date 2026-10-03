@@ -2176,6 +2176,30 @@ describe('Group gifting (e2e)', () => {
       expect(added?.title).toMatch(/200/);
     });
 
+    it('carries what the group needs to look the gift over', async () => {
+      const { host, ggId } = await fiveWays();
+
+      const gg = (
+        await request(app.getHttpServer())
+          .get(`${V1}/group-gifts/${ggId}`)
+          .set(auth(host.token))
+          .expect(200)
+      ).body as Envelope<{
+        items: {
+          imageUrls: string[];
+          sourceProductId: string | null;
+          productLink: string | null;
+          preferences: { color: string | null; size: string | null };
+        }[];
+      }>;
+
+      const item = gg.data.items[0];
+      expect(Array.isArray(item.imageUrls)).toBe(true);
+      expect(item).toHaveProperty('sourceProductId');
+      expect(item).toHaveProperty('productLink');
+      expect(item.preferences).toEqual({ color: null, size: null, variantNotes: null });
+    });
+
     it('has no split for custom amounts', async () => {
       const owner = await newUserDirect();
       const host = await newUserDirect();

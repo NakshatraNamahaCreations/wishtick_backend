@@ -64,6 +64,16 @@ export interface GroupGiftItemView {
    * extras only).
    */
   removable: boolean;
+  /**
+   * Enough for the group to look the gift over before paying for it: every
+   * picture, the catalogue product it came from (the app fetches the seller,
+   * rating and specifications by it), the page it is sold on, and the
+   * colour or size the person asked for.
+   */
+  imageUrls: string[];
+  sourceProductId: string | null;
+  productLink: string | null;
+  preferences: { color: string | null; size: string | null; variantNotes: string | null };
 }
 
 export interface GroupGiftView {
@@ -240,6 +250,14 @@ const toItemViews = (
       imageUrl: item?.imageUrls?.[0] ?? null,
       amountMinor: amountMinor ?? item?.price?.amountMinor ?? null,
       removable: lineId !== null,
+      imageUrls: item?.imageUrls ?? [],
+      sourceProductId: item?.sourceProductId ? item.sourceProductId.toString() : null,
+      productLink: item?.productLink ?? null,
+      preferences: {
+        color: item?.giftPreferences?.color ?? null,
+        size: item?.giftPreferences?.size ?? null,
+        variantNotes: item?.giftPreferences?.variantNotes ?? null,
+      },
     };
   };
   return [
