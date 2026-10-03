@@ -1548,7 +1548,11 @@ describe('Group gifting (e2e)', () => {
         .set(auth(member.token))
         .send({ userIds });
 
-    it('accepting joins the group and grants the access joining needs', async () => {
+    const leave = (who: Actor, ggId: string) =>
+      request(app.getHttpServer()).post(`${V1}/group-gifts/${ggId}/leave`).set(auth(who.token));
+
+    // In by default: an invitation is a place in the group, not a question.
+    it('adds them to the group straight away, with the access that needs', async () => {
       const owner = await newUser();
       const initiator = await newUser();
       const friend = await newUser();
@@ -1568,22 +1572,8 @@ describe('Group gifting (e2e)', () => {
       const res = await inviteTo(initiator, gg.data.id, [friend.userId]).expect(200);
       expect((res.body as Envelope<{ invited: number }>).data.invited).toBe(1);
 
-      const mine = (
-        await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
-          .set(auth(friend.token))
-          .expect(200)
-      ).body as Envelope<{ id: string; groupGiftId: string; status: string }[]>;
-      expect(mine.data).toHaveLength(1);
-      expect(mine.data[0].groupGiftId).toBe(gg.data.id);
-      expect(mine.data[0].status).toBe('pending');
-
-      await request(app.getHttpServer())
-        .post(`${V1}/group-gift-invites/${mine.data[0].id}/accept`)
-        .set(auth(friend.token))
-        .expect(200);
-
-      // A member now, and able to put money in — which is the whole point.
+      // A member at once — nothing to accept, so nothing waits on the list
+      // of invitations that ask.
       const view = (
         await request(app.getHttpServer())
           .get(`${V1}/group-gifts/${gg.data.id}`)
@@ -1591,100 +1581,74 @@ describe('Group gifting (e2e)', () => {
           .expect(200)
       ).body as Envelope<{ participants: { userId: string }[] }>;
       expect(view.data.participants.map((p) => p.userId)).toContain(friend.userId);
+      const mine = (
+        await request(app.getHttpServer())
+          .get(`${V1}/group-gift-invites/mine`)
+          .set(auth(friend.token))
+          .expect(200)
+      ).body as Envelope<unknown[]>;
+      expect(mine.data).toHaveLength(0);
 
+      // And able to put money in — which is the whole point.
       await contribute(friend, gg.data.id, { amountMinor: 10000 }).expect(201);
     });
 
-    it('shows the invitee the gift they are being asked to fund', async () => {
+    it('shows them the gift they have been added to', async () => {
       const owner = await newUser();
       const initiator = await newUser();
       const backer = await newUser();
       const friend = await newUser();
       await becomeWishmates(initiator, friend);
       await becomeWishmates(initiator, backer);
-      const { wishlistId, itemId } = await privateListSharedWith(owner, initiator);
+      const { itemId } = await privateListSharedWith(owner, initiator);
       const gg = (
         await createGroupGift(initiator, itemId, { targetAmountMinor: 500000 }).expect(201)
       ).body as Envelope<{ id: string }>;
 
-      // Someone already in, so "who has chipped in" has something to say.
       await inviteTo(initiator, gg.data.id, [backer.userId]).expect(200);
-      const backerInvites = (
-        await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
-          .set(auth(backer.token))
-          .expect(200)
-      ).body as Envelope<{ id: string }[]>;
-      await request(app.getHttpServer())
-        .post(`${V1}/group-gift-invites/${backerInvites.data[0].id}/accept`)
-        .set(auth(backer.token))
-        .expect(200);
       await contribute(backer, gg.data.id, { amountMinor: 125000 }).expect(201);
-
       await inviteTo(initiator, gg.data.id, [friend.userId]).expect(200);
-      const mine = (
-        await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
-          .set(auth(friend.token))
-          .expect(200)
-      ).body as Envelope<{ id: string; inviterName: string }[]>;
-      // Who asked — an invitation from nobody in particular is one people ignore.
-      expect(mine.data[0].inviterName).toMatch(/^Friend /);
 
-      const detail = (
+      const view = (
         await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/${mine.data[0].id}`)
+          .get(`${V1}/group-gifts/${gg.data.id}`)
           .set(auth(friend.token))
           .expect(200)
       ).body as Envelope<{
-        itemTitle: string;
         targetAmountMinor: number;
         collectedAmountMinor: number;
         percentFunded: number;
-        inviterName: string;
-        contributors: { name: string; amountMinor: number }[];
       }>;
-
-      expect(detail.data.itemTitle).toBe('Espresso machine');
-      expect(detail.data.targetAmountMinor).toBe(500000);
-      expect(detail.data.collectedAmountMinor).toBe(125000);
-      expect(detail.data.percentFunded).toBe(25);
-      expect(detail.data.inviterName).toMatch(/^Friend /);
-      expect(detail.data.contributors).toHaveLength(1);
-      expect(detail.data.contributors[0].amountMinor).toBe(125000);
-
-      // And none of that gave them the private list itself.
-      await request(app.getHttpServer())
-        .get(`${V1}/wishlists/${wishlistId}`)
-        .set(auth(friend.token))
-        .expect(404);
+      expect(view.data.targetAmountMinor).toBe(500000);
+      expect(view.data.collectedAmountMinor).toBe(125000);
+      expect(view.data.percentFunded).toBe(25);
     });
 
-    it('an invitation addressed to somebody else shows nothing', async () => {
+    it('tells them they were added, by whom', async () => {
       const owner = await newUser();
       const initiator = await newUser();
       const friend = await newUser();
-      const nosy = await newUser();
       await becomeWishmates(initiator, friend);
       const { itemId } = await privateListSharedWith(owner, initiator);
       const gg = (
         await createGroupGift(initiator, itemId, { targetAmountMinor: 500000 }).expect(201)
       ).body as Envelope<{ id: string }>;
+
       await inviteTo(initiator, gg.data.id, [friend.userId]).expect(200);
-      const mine = (
+      await ctx.drainNotifications();
+
+      const inbox = (
         await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
+          .get(`${V1}/notifications`)
           .set(auth(friend.token))
           .expect(200)
-      ).body as Envelope<{ id: string }[]>;
-
-      await request(app.getHttpServer())
-        .get(`${V1}/group-gift-invites/${mine.data[0].id}`)
-        .set(auth(nosy.token))
-        .expect(404);
+      ).body as Envelope<{ type: string; refId: string }[]>;
+      expect(
+        inbox.data.filter((n) => n.type === 'group_gift_invite' && n.refId.startsWith(gg.data.id)),
+      ).toHaveLength(1);
     });
 
-    it('declining leaves them out, and out of the wishlist too', async () => {
+    it('"not interested" takes them out, and out of the wishlist too', async () => {
       const owner = await newUser();
       const initiator = await newUser();
       const friend = await newUser();
@@ -1694,25 +1658,16 @@ describe('Group gifting (e2e)', () => {
         await createGroupGift(initiator, itemId, { targetAmountMinor: 500000 }).expect(201)
       ).body as Envelope<{ id: string }>;
       await inviteTo(initiator, gg.data.id, [friend.userId]).expect(200);
-      const mine = (
-        await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
-          .set(auth(friend.token))
-          .expect(200)
-      ).body as Envelope<{ id: string }[]>;
 
-      await request(app.getHttpServer())
-        .post(`${V1}/group-gift-invites/${mine.data[0].id}/decline`)
-        .set(auth(friend.token))
-        .expect(200);
+      await leave(friend, gg.data.id).expect(200);
 
-      // Saying no must not have handed them the owner's private list.
+      // Saying no must not leave them holding the owner's private list.
       await request(app.getHttpServer())
         .get(`${V1}/wishlists/${wishlistId}`)
         .set(auth(friend.token))
         .expect(404);
       await request(app.getHttpServer())
-        .post(`${V1}/group-gifts/${gg.data.id}/join`)
+        .get(`${V1}/group-gifts/${gg.data.id}`)
         .set(auth(friend.token))
         .expect(404);
     });
@@ -1726,10 +1681,7 @@ describe('Group gifting (e2e)', () => {
       return (res.body as Envelope<{ id: string }[]>).data.map((g) => g.id);
     };
 
-    // Being asked is the whole point: the invitee sees the same chip-in card
-    // the members see, from the moment they are invited. Saying no takes it
-    // away — an unanswered ask and a refused one must not look the same.
-    it('puts the gift on the invitee’s Home until they decline it', async () => {
+    it('puts the gift on their Home until they opt out', async () => {
       const owner = await newUser();
       const initiator = await newUser();
       const friend = await newUser();
@@ -1745,69 +1697,11 @@ describe('Group gifting (e2e)', () => {
       await inviteTo(initiator, gg.data.id, [friend.userId]).expect(200);
       expect(await homeGiftIds(friend)).toContain(gg.data.id);
 
-      const mine = (
-        await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
-          .set(auth(friend.token))
-          .expect(200)
-      ).body as Envelope<{ id: string }[]>;
-      await request(app.getHttpServer())
-        .post(`${V1}/group-gift-invites/${mine.data[0].id}/decline`)
-        .set(auth(friend.token))
-        .expect(200);
-
+      await leave(friend, gg.data.id).expect(200);
       expect(await homeGiftIds(friend)).not.toContain(gg.data.id);
     });
 
-    // "Contribute to Gift" is the accept button on the invitation screen, so
-    // paying has to answer the invitation by itself — including the access
-    // grant, without which the payment could not go through at all.
-    it('treats contributing as accepting, on a list they could not gift from', async () => {
-      const owner = await newUser();
-      const initiator = await newUser();
-      const friend = await newUser();
-      await becomeWishmates(initiator, friend);
-      const { wishlistId, itemId } = await privateListSharedWith(owner, initiator);
-      const gg = (
-        await createGroupGift(initiator, itemId, { targetAmountMinor: 500000 }).expect(201)
-      ).body as Envelope<{ id: string }>;
-      await inviteTo(initiator, gg.data.id, [friend.userId]).expect(200);
-      const pending = (
-        await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
-          .set(auth(friend.token))
-          .expect(200)
-      ).body as Envelope<{ id: string }[]>;
-      const inviteId = pending.data[0].id;
-
-      // Straight to paying — no accept call in between. It goes through, which
-      // it could not if the access grant had not come with it.
-      await contribute(friend, gg.data.id, { amountMinor: 10000 }).expect(201);
-
-      // Off the pending list, which is the list that asks.
-      const after = (
-        await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
-          .set(auth(friend.token))
-          .expect(200)
-      ).body as Envelope<{ id: string }[]>;
-      expect(after.data).toHaveLength(0);
-
-      // Answered, not merely hidden: there is nothing left to say yes to.
-      await request(app.getHttpServer())
-        .post(`${V1}/group-gift-invites/${inviteId}/accept`)
-        .set(auth(friend.token))
-        .expect(409);
-
-      // And the access the acceptance carries is real.
-      await request(app.getHttpServer())
-        .get(`${V1}/wishlists/${wishlistId}`)
-        .set(auth(friend.token))
-        .expect(200);
-      expect(await homeGiftIds(friend)).toContain(gg.data.id);
-    });
-
-    it('answering twice is refused rather than silently re-run', async () => {
+    it('cannot opt out once they have chipped in', async () => {
       const owner = await newUser();
       const initiator = await newUser();
       const friend = await newUser();
@@ -1817,21 +1711,33 @@ describe('Group gifting (e2e)', () => {
         await createGroupGift(initiator, itemId, { targetAmountMinor: 500000 }).expect(201)
       ).body as Envelope<{ id: string }>;
       await inviteTo(initiator, gg.data.id, [friend.userId]).expect(200);
-      const mine = (
-        await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
-          .set(auth(friend.token))
-          .expect(200)
-      ).body as Envelope<{ id: string }[]>;
+      await contribute(friend, gg.data.id, { amountMinor: 10000 }).expect(201);
 
-      await request(app.getHttpServer())
-        .post(`${V1}/group-gift-invites/${mine.data[0].id}/accept`)
-        .set(auth(friend.token))
-        .expect(200);
-      await request(app.getHttpServer())
-        .post(`${V1}/group-gift-invites/${mine.data[0].id}/decline`)
-        .set(auth(friend.token))
-        .expect(409);
+      // Money in is a commitment the rest are counting on.
+      await leave(friend, gg.data.id).expect(409);
+    });
+
+    it('the host cannot opt out of their own group gift', async () => {
+      const owner = await newUser();
+      const initiator = await newUser();
+      const { itemId } = await privateListSharedWith(owner, initiator);
+      const gg = (
+        await createGroupGift(initiator, itemId, { targetAmountMinor: 500000 }).expect(201)
+      ).body as Envelope<{ id: string }>;
+
+      await leave(initiator, gg.data.id).expect(403);
+    });
+
+    it('somebody never in it cannot opt out of it', async () => {
+      const owner = await newUser();
+      const initiator = await newUser();
+      const nosy = await newUser();
+      const { itemId } = await privateListSharedWith(owner, initiator);
+      const gg = (
+        await createGroupGift(initiator, itemId, { targetAmountMinor: 500000 }).expect(201)
+      ).body as Envelope<{ id: string }>;
+
+      await leave(nosy, gg.data.id).expect(404);
     });
 
     it('skips who it cannot invite instead of failing the whole batch', async () => {
@@ -1877,14 +1783,6 @@ describe('Group gifting (e2e)', () => {
       const again = await inviteTo(initiator, gg.data.id, [friend.userId]).expect(200);
 
       expect((again.body as Envelope<{ invited: number }>).data.invited).toBe(0);
-      const mine = (
-        await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
-          .set(auth(friend.token))
-          .expect(200)
-      ).body as Envelope<unknown[]>;
-      // One row, one notification — not two of each.
-      expect(mine.data).toHaveLength(1);
     });
 
     it('someone outside the group cannot invite to it', async () => {
@@ -1900,30 +1798,6 @@ describe('Group gifting (e2e)', () => {
 
       // 404, not 403 — someone outside has no business learning it exists.
       await inviteTo(outsider, gg.data.id, [friend.userId]).expect(404);
-    });
-
-    it('an invitation addressed to somebody else cannot be answered', async () => {
-      const owner = await newUser();
-      const initiator = await newUser();
-      const friend = await newUser();
-      const nosy = await newUser();
-      await becomeWishmates(initiator, friend);
-      const { itemId } = await privateListSharedWith(owner, initiator);
-      const gg = (
-        await createGroupGift(initiator, itemId, { targetAmountMinor: 500000 }).expect(201)
-      ).body as Envelope<{ id: string }>;
-      await inviteTo(initiator, gg.data.id, [friend.userId]).expect(200);
-      const mine = (
-        await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
-          .set(auth(friend.token))
-          .expect(200)
-      ).body as Envelope<{ id: string }[]>;
-
-      await request(app.getHttpServer())
-        .post(`${V1}/group-gift-invites/${mine.data[0].id}/accept`)
-        .set(auth(nosy.token))
-        .expect(404);
     });
   });
 
@@ -2221,15 +2095,10 @@ describe('Group gifting (e2e)', () => {
 
     it('gives the host a bigger share when somebody declines', async () => {
       const { host, friends, ggId } = await fiveWays();
-      const invites = (
-        await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
-          .set(auth(friends[3].token))
-          .expect(200)
-      ).body as Envelope<{ id: string }[]>;
 
+      // "Not interested".
       await request(app.getHttpServer())
-        .post(`${V1}/group-gift-invites/${invites.data[0].id}/decline`)
+        .post(`${V1}/group-gifts/${ggId}/leave`)
         .set(auth(friends[3].token))
         .expect(200);
 
@@ -2284,34 +2153,27 @@ describe('Group gifting (e2e)', () => {
       // Paid in full, and the host: nothing.
       expect(await inbox(friends[0])).toHaveLength(0);
       expect(await inbox(host)).toHaveLength(0);
-      // Paying made friends[1] a member, so theirs opens the group; friends[2]
-      // never answered the invitation, so theirs opens that instead.
-      expect((await inbox(friends[1])).every((n) => n.type === 'group_gift_share_reminder')).toBe(
-        true,
-      );
-      expect((await inbox(friends[2])).every((n) => n.type === 'group_gift_invite_reminder')).toBe(
+      // Added means in: every reminder opens the group itself.
+      expect((await inbox(friends[2])).every((n) => n.type === 'group_gift_share_reminder')).toBe(
         true,
       );
     });
 
-    it('shows an invitee their share before they have said yes', async () => {
-      const { friends } = await fiveWays();
-      const mine = (
+    it('tells everybody added what their share is', async () => {
+      const { friends, ggId } = await fiveWays();
+      await ctx.drainNotifications();
+
+      const inbox = (
         await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/mine`)
+          .get(`${V1}/notifications`)
           .set(auth(friends[2].token))
           .expect(200)
-      ).body as Envelope<{ id: string }[]>;
-
-      const detail = (
-        await request(app.getHttpServer())
-          .get(`${V1}/group-gift-invites/${mine.data[0].id}`)
-          .set(auth(friends[2].token))
-          .expect(200)
-      ).body as Envelope<{ split: SplitView | null }>;
-
-      expect(detail.data.split!.myOwesMinor).toBe(20_000);
-      expect(detail.data.split!.memberCount).toBe(5);
+      ).body as Envelope<{ type: string; refId: string; title: string }[]>;
+      const added = inbox.data.find(
+        (n) => n.type === 'group_gift_invite' && n.refId.startsWith(ggId),
+      );
+      // ₹1,000 among five.
+      expect(added?.title).toMatch(/200/);
     });
 
     it('has no split for custom amounts', async () => {

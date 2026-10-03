@@ -151,6 +151,7 @@ export class GroupGiftInvitesService {
 
     let invited = 0;
     let skipped = 0;
+    const added: string[] = [];
 
     for (const raw of userIds) {
       if (!Types.ObjectId.isValid(raw) || raw === userId) {
@@ -177,29 +178,108 @@ export class GroupGiftInvitesService {
       }
 
       try {
+        // In by default: an invitation is a place in the group, not a
+        // question. The one thing left to the invitee is to say they are
+        // not interested — see [leave] — which takes them out again.
         await this.model.create({
           groupGiftId: gift._id,
           invitedUserId: new Types.ObjectId(raw),
           invitedById: new Types.ObjectId(userId),
-          status: GroupGiftInviteStatus.PENDING,
+          status: GroupGiftInviteStatus.ACCEPTED,
+          respondedAt: new Date(),
         });
-        invited++;
-        this.emitter.emit(GROUP_GIFT_INVITED, {
-          groupGiftId,
-          invitedUserId: raw,
-          invitedById: userId,
-        } satisfies GroupGiftInvitedEvent);
       } catch {
         // The unique index caught a duplicate — someone already asked them.
         skipped++;
+        continue;
       }
+      // What accepting used to grant: enough of the list to see the gift.
+      await this.participants.addForInvite(gift.wishlistId.toString(), raw, ParticipantRole.VIEWER);
+      await this.giftModel
+        .updateOne({ _id: gift._id }, { $addToSet: { participantIds: new Types.ObjectId(raw) } })
+        .exec();
+      added.push(raw);
+      invited++;
     }
 
     this.logger.log(`Group gift ${groupGiftId}: ${invited} invited, ${skipped} skipped`);
-    // Everybody asked is somebody to share an equal split with — the host's
-    // share comes down from the moment they are invited.
-    if (invited > 0) await this.shares.sync(groupGiftId);
+    if (invited === 0) return { invited, skipped };
+
+    // Everybody added is somebody to share an equal split with: the host's
+    // share comes down, and each newcomer's share is what they are told.
+    await this.shares.sync(groupGiftId);
+    const fresh = await this.giftModel.findById(gift._id).exec();
+    const split = fresh ? await this.shares.splitOf(fresh) : null;
+    for (const raw of added) {
+      this.emitter.emit(GROUP_GIFT_INVITED, {
+        groupGiftId,
+        invitedUserId: raw,
+        invitedById: userId,
+        shareMinor: split?.others.find((m) => m.userId === raw)?.shareMinor ?? null,
+      } satisfies GroupGiftInvitedEvent);
+    }
     return { invited, skipped };
+  }
+
+  /**
+   * "Not interested": out of a group gift the caller was added to.
+   *
+   * Only before they have paid anything — money in is a commitment the rest
+   * of the group is counting on, and the way out of that is withdrawing it,
+   * which has its own rules. Never the host: it is theirs to cancel, not
+   * leave. The invitation, if there was one, is marked declined so it is not
+   * offered again, and an equal split is shared again without them.
+   */
+  async leave(groupGiftId: string, userId: string): Promise<{ left: true }> {
+    const gift = await this.loadOpenOrFail(groupGiftId);
+    if (gift.initiatorId.toString() === userId) {
+      throw new AppException(
+        ErrorCode.FORBIDDEN,
+        'The host cannot leave their own group gift — cancel it instead',
+        403,
+      );
+    }
+    // Only somebody in it can leave it. 404 rather than 403, as everywhere a
+    // stranger asks about a group gift: they need not learn it exists.
+    const invited = await this.model
+      .exists({
+        groupGiftId: gift._id,
+        invitedUserId: new Types.ObjectId(userId),
+        status: { $ne: GroupGiftInviteStatus.DECLINED },
+      })
+      .exec();
+    if (!invited && !gift.participantIds.some((id) => id.toString() === userId)) {
+      throw new AppException(ErrorCode.GROUP_GIFT_NOT_FOUND, 'Group gift not found', 404);
+    }
+    const paid = await this.contributionModel
+      .countDocuments({
+        groupGiftId: gift._id,
+        userId: new Types.ObjectId(userId),
+        status: ContributionStatus.CONFIRMED,
+      })
+      .exec();
+    if (paid > 0) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        'You have already chipped in, so you are part of this one',
+        409,
+      );
+    }
+
+    await this.model
+      .updateOne(
+        { groupGiftId: gift._id, invitedUserId: new Types.ObjectId(userId) },
+        { $set: { status: GroupGiftInviteStatus.DECLINED, respondedAt: new Date() } },
+      )
+      .exec();
+    await this.giftModel
+      .updateOne({ _id: gift._id }, { $pull: { participantIds: new Types.ObjectId(userId) } })
+      .exec();
+    // The list access came with the invitation; saying no takes it back, so
+    // "not interested" never leaves them holding somebody's private list.
+    await this.participants.removeForInvite(gift.wishlistId.toString(), userId);
+    await this.shares.sync(groupGiftId);
+    return { left: true };
   }
 
   /** The caller's own pending invitations, newest first. */

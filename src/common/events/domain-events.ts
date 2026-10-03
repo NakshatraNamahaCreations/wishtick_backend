@@ -103,6 +103,11 @@ export interface GroupGiftInvitedEvent {
   groupGiftId: string;
   invitedUserId: string;
   invitedById: string;
+  /**
+   * Their share of an equal split, so the notification can say it. Null for
+   * a custom-amount gift, or a split that could not be worked out.
+   */
+  shareMinor?: number | null;
 }
 
 export interface GroupGiftJoinedEvent {

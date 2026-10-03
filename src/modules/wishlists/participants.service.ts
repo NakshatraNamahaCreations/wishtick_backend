@@ -118,6 +118,34 @@ export class ParticipantsService {
     });
   }
 
+  /**
+   * Takes back what [addForInvite] gave, and nothing else.
+   *
+   * For somebody added to a group gift who then says they are not interested:
+   * the access came with the invitation, so it goes with it. Only a row the
+   * invitation made — which names the invitee as its own `invitedBy` — is
+   * touched; access the list's owner granted is the owner's to take away.
+   */
+  async removeForInvite(wishlistId: string, userId: string): Promise<void> {
+    const uid = new Types.ObjectId(userId);
+    const row = await this.model
+      .findOne({
+        wishlistId: new Types.ObjectId(wishlistId),
+        userId: uid,
+        invitedBy: uid,
+        revokedAt: null,
+      })
+      .exec();
+    if (!row) return;
+    row.revokedAt = new Date();
+    row.state = ParticipantState.REVOKED;
+    await row.save();
+    this.emitter.emit(WISHLIST_PARTICIPANT_REVOKED, {
+      wishlistId,
+      userId,
+    } satisfies WishlistParticipantRevokedEvent);
+  }
+
   async add(
     wishlistId: string,
     ctx: AccessContext,

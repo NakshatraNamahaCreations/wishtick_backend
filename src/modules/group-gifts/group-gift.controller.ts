@@ -399,6 +399,19 @@ export class GroupGiftController {
     return this.invites.respond(inviteId, userId, true);
   }
 
+  @Post('group-gifts/:id/leave')
+  @HttpCode(HttpStatus.OK)
+  @Throttle(GROUP_GIFT_THROTTLE)
+  @ApiOperation({
+    summary: 'Not interested: leave a group gift before paying',
+    description:
+      'For somebody added to a group gift who has not paid anything. Not the host. ' +
+      'An equal split is shared again without them.',
+  })
+  leave(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<{ left: true }> {
+    return this.invites.leave(id, userId);
+  }
+
   @Post('group-gift-invites/:inviteId/decline')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()

@@ -91,12 +91,26 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
       `Collected so far: ${money(p, 'collectedAmountMinor')} of ${money(p, 'targetAmountMinor')}.`,
     ],
   }),
-  [NotificationType.GROUP_GIFT_INVITE]: (p) => ({
-    subject: `${who(p, 'inviterName')} asked you to chip in`,
-    title: 'Join a group gift',
-    lines: [`${who(p, 'inviterName')} invited you to chip in for ${s(p, 'itemTitle', 'a gift')}.`],
-    cta: { label: 'See the invitation', url: s(p, 'url') },
-  }),
+  [NotificationType.GROUP_GIFT_INVITE]: (p) =>
+    // Added, with a share: say what it is, and that they can opt out.
+    Number(p.shareMinor ?? 0) > 0
+      ? {
+          subject: `${who(p, 'inviterName')} added you to a group gift`,
+          title: `Your share is ${money(p, 'shareMinor')}`,
+          lines: [
+            `${who(p, 'inviterName')} added you to the group gift for ${s(p, 'itemTitle', 'a gift')}, split equally.`,
+            'Not interested? You can opt out, and the shares are worked out again.',
+          ],
+          cta: { label: 'See the group gift', url: s(p, 'url') },
+        }
+      : {
+          subject: `${who(p, 'inviterName')} asked you to chip in`,
+          title: 'Join a group gift',
+          lines: [
+            `${who(p, 'inviterName')} invited you to chip in for ${s(p, 'itemTitle', 'a gift')}.`,
+          ],
+          cta: { label: 'See the invitation', url: s(p, 'url') },
+        },
   [NotificationType.GROUP_GIFT_SHARE_REMINDER]: (p) => ({
     subject: `Your share for ${s(p, 'title', 'the group gift')}`,
     title: `${money(p, 'owesMinor')} left to chip in`,

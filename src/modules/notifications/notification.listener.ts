@@ -261,6 +261,8 @@ export class NotificationListener {
         payload: {
           itemTitle: await this.itemTitle(gg.itemId.toString()),
           inviterName: await this.userName(e.invitedById),
+          shareMinor: e.shareMinor ?? null,
+          currency: gg.currency,
         },
       });
     });
