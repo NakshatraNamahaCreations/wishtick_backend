@@ -1,6 +1,5 @@
 import {
   Controller,
-  Get,
   Headers,
   HttpCode,
   HttpStatus,
@@ -9,12 +8,10 @@ import {
   Req,
   type RawBodyRequest,
 } from '@nestjs/common';
-import { ApiExcludeEndpoint, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import { Public } from 'src/common/decorators/public.decorator';
-import { Roles } from 'src/common/decorators/roles.decorator';
-import { UserRole } from 'src/common/enums/user-role.enum';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { WebhookService, type NormalizedWebhookEvent, type WebhookResult } from './webhook.service';
@@ -68,13 +65,5 @@ export class WebhookController {
     }
 
     return this.webhooks.process(provider, event);
-  }
-
-  @Get('affiliate/dead-letter')
-  @Roles(UserRole.ADMIN)
-  @ApiOperation({ summary: 'Signature-valid webhooks that matched no gift (admin)' })
-  async deadLetter(): Promise<{ events: unknown[] }> {
-    const events = await this.webhooks.listDeadLettered();
-    return { events };
   }
 }

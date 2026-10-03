@@ -4,7 +4,7 @@ import { Throttle } from '@nestjs/throttler';
 import { Public } from 'src/common/decorators/public.decorator';
 import { AdminService, type AdminView } from './admin.service';
 import { AdminGuard } from './admin.guard';
-import { CurrentAdmin } from './admin.decorators';
+import { AllowWithoutTotp, CurrentAdmin } from './admin.decorators';
 import type { AuthenticatedAdmin } from './admin.types';
 import { AdminLoginDto, TotpTokenDto } from './dto/admin.dto';
 
@@ -35,6 +35,7 @@ export class AdminAuthController {
 
   @Post('logout')
   @UseGuards(AdminGuard)
+  @AllowWithoutTotp()
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'End this admin session' })
@@ -45,6 +46,7 @@ export class AdminAuthController {
 
   @Get('me')
   @UseGuards(AdminGuard)
+  @AllowWithoutTotp()
   @ApiBearerAuth()
   @ApiOperation({ summary: 'The authenticated admin' })
   me(@CurrentAdmin() admin: AuthenticatedAdmin): AuthenticatedAdmin {
@@ -53,6 +55,7 @@ export class AdminAuthController {
 
   @Post('totp/setup')
   @UseGuards(AdminGuard)
+  @AllowWithoutTotp()
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Begin 2FA enrollment — returns a secret + otpauth URI' })
@@ -62,6 +65,7 @@ export class AdminAuthController {
 
   @Post('totp/enable')
   @UseGuards(AdminGuard)
+  @AllowWithoutTotp()
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Confirm the code to enable 2FA' })

@@ -133,6 +133,11 @@ export class ModerationService {
     return report;
   }
 
+  /** One report, for its own page — rather than finding it by paging the queue. */
+  async getReport(reportId: string): Promise<ReportDocument> {
+    return this.loadReport(reportId);
+  }
+
   /**
    * The report queue, worst-first.
    *

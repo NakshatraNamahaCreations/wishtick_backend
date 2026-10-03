@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  ArrayNotEmpty,
   IsArray,
   IsBoolean,
   IsEnum,
@@ -88,6 +90,19 @@ export class RegisterDeviceDto {
   @MaxLength(120)
   @Transform(trim)
   deviceName?: string;
+}
+
+export class DeleteNotificationsDto {
+  @ApiProperty({
+    type: [String],
+    description: 'Your notifications to delete — one from a swipe, several from a selection.',
+  })
+  @IsArray()
+  @ArrayNotEmpty()
+  // The centre lists 100 at most, so a selection can never be bigger.
+  @ArrayMaxSize(100)
+  @IsMongoId({ each: true })
+  ids!: string[];
 }
 
 export class UnsubscribeQueryDto {

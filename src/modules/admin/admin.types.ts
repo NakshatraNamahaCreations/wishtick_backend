@@ -17,6 +17,30 @@ export enum AdminPermission {
   MODERATION_ACT = 'moderation:act',
   ANALYTICS_VIEW = 'analytics:view',
   AUDIT_VIEW = 'audit:view',
+  /** Wishlists, events, memories, reels, chats, media — read. */
+  CONTENT_VIEW = 'content:view',
+  /** …and archive, cancel, remove, restore. */
+  CONTENT_MANAGE = 'content:manage',
+  /** Gifts, orders, group gifts, settlements, affiliate — read. */
+  MONEY_VIEW = 'money:view',
+  /** …and the manual overrides, each with a reason. */
+  MONEY_MANAGE = 'money:manage',
+  NOTIFICATIONS_VIEW = 'notifications:view',
+  NOTIFICATIONS_SEND = 'notifications:send',
+  /** Queues, health, provider quota, cache. */
+  OPS_VIEW = 'ops:view',
+  OPS_MANAGE = 'ops:manage',
+  /** Taxonomy and the product catalogue. */
+  CATALOG_MANAGE = 'catalog:manage',
+  /**
+   * Reveal what is masked by default — private chats and memories, addresses,
+   * UPI IDs, full phone and email. Every reveal is audited with a reason.
+   */
+  SENSITIVE_VIEW = 'sensitive:view',
+  /** The raw stored document, for debugging. */
+  DEBUG_VIEW = 'debug:view',
+  /** Server-side CSV exports. */
+  EXPORT_DATA = 'export:data',
 }
 
 /**
@@ -30,14 +54,26 @@ export const ROLE_PERMISSIONS: Record<AdminRole, AdminPermission[]> = {
     AdminPermission.MODERATION_ACT,
     AdminPermission.USERS_VIEW,
     AdminPermission.AUDIT_VIEW,
+    AdminPermission.CONTENT_VIEW,
+    AdminPermission.CONTENT_MANAGE,
+    AdminPermission.SENSITIVE_VIEW,
   ],
   [AdminRole.SUPPORT]: [
     AdminPermission.USERS_VIEW,
     AdminPermission.USERS_MANAGE,
     AdminPermission.MODERATION_VIEW,
     AdminPermission.AUDIT_VIEW,
+    AdminPermission.CONTENT_VIEW,
+    AdminPermission.MONEY_VIEW,
+    AdminPermission.NOTIFICATIONS_VIEW,
+    AdminPermission.SENSITIVE_VIEW,
   ],
-  [AdminRole.ANALYST]: [AdminPermission.ANALYTICS_VIEW, AdminPermission.USERS_VIEW],
+  [AdminRole.ANALYST]: [
+    AdminPermission.ANALYTICS_VIEW,
+    AdminPermission.USERS_VIEW,
+    AdminPermission.MONEY_VIEW,
+    AdminPermission.EXPORT_DATA,
+  ],
 };
 
 /** The union of permissions granted by a set of roles. */
@@ -58,6 +94,9 @@ export enum AdminStatus {
 export interface AuthenticatedAdmin {
   id: string;
   email: string;
+  name: string;
+  /** False until two-factor sign-in is set up — see AdminGuard. */
+  totpEnabled: boolean;
   roles: AdminRole[];
   permissions: AdminPermission[];
   jti: string;

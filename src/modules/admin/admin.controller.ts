@@ -18,6 +18,10 @@ import { AdminGuard } from './admin.guard';
 import { CurrentAdmin, RequirePermission } from './admin.decorators';
 import { AdminService, type AdminView } from './admin.service';
 import { AdminUsersService, type UserAdminView } from './admin-users.service';
+import { AdminWebhooksService, type WebhookEventAdminView } from './admin-webhooks.service';
+import { AdminSearchService, type SearchHit } from './admin-search.service';
+import { AdminDashboardService, type DashboardView } from './admin-dashboard.service';
+import type { AdminPage } from './admin-query.util';
 import { AdminPermission, type AuthenticatedAdmin } from './admin.types';
 import { AuditService } from './audit.service';
 import { ModerationService } from './moderation.service';
@@ -27,7 +31,9 @@ import {
   CreateAdminDto,
   ListUsersQueryDto,
   ModerationActionDto,
+  AdminSearchQueryDto,
   ModerationQueueQueryDto,
+  PageQueryDto,
   ResetAdminPasswordDto,
   SuspendUserDto,
   UpdateAdminDto,
@@ -49,6 +55,9 @@ export class AdminController {
     private readonly moderation: ModerationService,
     private readonly analytics: AnalyticsService,
     private readonly audit: AuditService,
+    private readonly webhooks: AdminWebhooksService,
+    private readonly searcher: AdminSearchService,
+    private readonly dashboard: AdminDashboardService,
   ) {}
 
   // ── Admin management (super admin) ──────────────────────────────────────────
@@ -196,6 +205,13 @@ export class AdminController {
     });
   }
 
+  @Get('moderation/reports/:id')
+  @RequirePermission(AdminPermission.MODERATION_VIEW)
+  @ApiOperation({ summary: 'One report' })
+  moderationReport(@Param('id') id: string): Promise<unknown> {
+    return this.moderation.getReport(id);
+  }
+
   @Get('moderation/reports/:id/target')
   @RequirePermission(AdminPermission.MODERATION_VIEW)
   @ApiOperation({ summary: 'The reported content itself, normalized across types' })
@@ -214,6 +230,42 @@ export class AdminController {
     @Ip() ip: string,
   ): Promise<unknown> {
     return this.moderation.act(id, dto.action, actor, ip ?? null, dto.reason ?? null);
+  }
+
+  // ── Dashboard ────────────────────────────────────────────────────────────────
+
+  @Get('dashboard')
+  @ApiOperation({
+    summary: 'The admin home page: key numbers, what needs attention, 30-day trends',
+    description:
+      'Counted live, cached 60s. Every admin may call it; each section is included only ' +
+      'for the permission it belongs to.',
+  })
+  getDashboard(@CurrentAdmin() admin: AuthenticatedAdmin): Promise<DashboardView> {
+    return this.dashboard.forAdmin(admin.permissions);
+  }
+
+  // ── Search ───────────────────────────────────────────────────────────────────
+
+  @Get('search')
+  @ApiOperation({
+    summary: 'Find users, wishlists, events, group gifts and orders',
+    description: 'Only the kinds the admin may see are searched; 5 of each at most.',
+  })
+  search(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Query() query: AdminSearchQueryDto,
+  ): Promise<SearchHit[]> {
+    return this.searcher.search(query.q, admin.permissions);
+  }
+
+  // ── Webhooks ─────────────────────────────────────────────────────────────────
+
+  @Get('webhooks/dead-letter')
+  @RequirePermission(AdminPermission.MONEY_VIEW)
+  @ApiOperation({ summary: 'Signature-valid webhooks that matched no gift, newest first' })
+  deadLetter(@Query() query: PageQueryDto): Promise<AdminPage<WebhookEventAdminView>> {
+    return this.webhooks.deadLetter(query.page, query.limit);
   }
 
   // ── Analytics ────────────────────────────────────────────────────────────────

@@ -52,6 +52,15 @@ export class Notification {
   @Prop({ type: String, required: true })
   dedupeKey!: string;
 
+  /**
+   * When its owner deleted it from the centre. The row is kept, hidden, rather
+   * than removed: it holds the [dedupeKey] claim, and without it a retried
+   * dispatch would bring the deleted notification back. The retention TTL
+   * removes it in time like any other.
+   */
+  @Prop({ type: Date, default: null })
+  deletedAt!: Date | null;
+
   createdAt!: Date;
   updatedAt!: Date;
 }

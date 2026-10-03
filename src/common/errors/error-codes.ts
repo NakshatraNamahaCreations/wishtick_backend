@@ -160,6 +160,11 @@ export enum ErrorCode {
   ADMIN_NOT_FOUND = 'ADMIN_NOT_FOUND',
   ADMIN_CREDENTIALS_INVALID = 'ADMIN_CREDENTIALS_INVALID',
   ADMIN_TOTP_REQUIRED = 'ADMIN_TOTP_REQUIRED',
+  /**
+   * Signed in, but two-factor sign-in is not set up yet. Nothing but enrolling
+   * (and `me` / logout) is allowed until it is.
+   */
+  ADMIN_TOTP_SETUP_REQUIRED = 'ADMIN_TOTP_SETUP_REQUIRED',
   ADMIN_TOTP_INVALID = 'ADMIN_TOTP_INVALID',
   ADMIN_TOTP_ALREADY_ENABLED = 'ADMIN_TOTP_ALREADY_ENABLED',
   ADMIN_IP_NOT_ALLOWED = 'ADMIN_IP_NOT_ALLOWED',

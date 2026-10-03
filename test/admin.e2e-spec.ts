@@ -112,7 +112,43 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
     return (res.body as Envelope<{ accessToken: string; setupRequired: boolean }>).data;
   };
 
-  const adminToken = async (): Promise<string> => (await adminLogin()).accessToken;
+  /**
+   * Each admin's two-factor secret, once set up. Kept for the whole file: the
+   * reset between tests clears Redis, not the database, so an admin who set it
+   * up once still has it on.
+   */
+  const totpSecrets = new Map<string, string>();
+
+  const totpCode = async (secret: string): Promise<string> =>
+    app.get((await import('src/modules/admin/totp.service')).TotpService).current(secret);
+
+  /**
+   * A token that can use the panel. Two-factor sign-in is mandatory, so an
+   * admin signing in for the first time sets it up on the way — as the panel
+   * makes them — and signs in with a code from then on.
+   */
+  const signIn = async (email = ADMIN_EMAIL, password = ADMIN_PASSWORD): Promise<string> => {
+    const known = totpSecrets.get(email);
+    if (known) return (await adminLogin(email, password, await totpCode(known))).accessToken;
+
+    const first = await adminLogin(email, password);
+    if (!first.setupRequired) return first.accessToken;
+    const setup = (
+      await request(server())
+        .post(`${V1}/admin/auth/totp/setup`)
+        .set(auth(first.accessToken))
+        .expect(200)
+    ).body as Envelope<{ secret: string }>;
+    await request(server())
+      .post(`${V1}/admin/auth/totp/enable`)
+      .set(auth(first.accessToken))
+      .send({ token: await totpCode(setup.data.secret) })
+      .expect(200);
+    totpSecrets.set(email, setup.data.secret);
+    return first.accessToken;
+  };
+
+  const adminToken = (): Promise<string> => signIn();
 
   const connect = (token: string): Promise<Socket> =>
     new Promise((resolve, reject) => {
@@ -198,6 +234,224 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
 
     it('rejects a completely unauthenticated request too', async () => {
       await request(server()).get(`${V1}/admin/users`).expect(401);
+    });
+
+    // A password alone used to open every route the admin's role allowed; the
+    // `setupRequired` flag at login was advice nothing enforced.
+    it('lets an admin without two-factor do nothing but set it up', async () => {
+      // A new admin, who has never set it up — whatever order the tests run in.
+      const email = `no2fa-${Date.now()}@wishtick.test`;
+      const password = 'a-long-enough-password';
+      await request(server())
+        .post(`${V1}/admin/admins`)
+        .set(auth(await adminToken()))
+        .send({ email, password, name: 'No 2FA', roles: ['support'] })
+        .expect(201);
+      const { accessToken } = await adminLogin(email, password);
+
+      const refused = await request(server())
+        .get(`${V1}/admin/users`)
+        .set(auth(accessToken))
+        .expect(403);
+      expect((refused.body as Envelope<never>).error?.code).toBe('ADMIN_TOTP_SETUP_REQUIRED');
+
+      // Who they are, and the way to set it up, stay open.
+      const me = (
+        await request(server()).get(`${V1}/admin/auth/me`).set(auth(accessToken)).expect(200)
+      ).body as Envelope<{ totpEnabled: boolean; name: string }>;
+      expect(me.data.totpEnabled).toBe(false);
+      expect(typeof me.data.name).toBe('string');
+      await request(server())
+        .post(`${V1}/admin/auth/totp/setup`)
+        .set(auth(accessToken))
+        .expect(200);
+    });
+
+    it('once two-factor is on, the same session can use the panel', async () => {
+      const token = await adminToken();
+      await request(server()).get(`${V1}/admin/users`).set(auth(token)).expect(200);
+      const me = (await request(server()).get(`${V1}/admin/auth/me`).set(auth(token)).expect(200))
+        .body as Envelope<{ totpEnabled: boolean }>;
+      expect(me.data.totpEnabled).toBe(true);
+    });
+  });
+
+  // ── Webhooks that matched no gift ────────────────────────────────────────────
+
+  describe('dashboard', () => {
+    interface Dashboard {
+      generatedAt: string;
+      users?: { total: number; newToday: number };
+      content?: { wishlists: number };
+      money?: { giftsReserved: number };
+      attention: { key: string; count: number }[];
+      series: { signups?: { day: string; signups: number }[]; gifts?: unknown[] };
+    }
+
+    const dashboardAs = async (token: string): Promise<Dashboard> =>
+      (
+        (await request(server()).get(`${V1}/admin/dashboard`).set(auth(token)).expect(200))
+          .body as Envelope<Dashboard>
+      ).data;
+
+    it('counts the platform live, and calls out an open report', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const reporter = await newUser();
+      const wl = (
+        await request(server())
+          .post(`${V1}/wishlists`)
+          .set(auth(owner.token))
+          .send({ title: 'Dashboard list', visibility: WishlistVisibility.PUBLIC })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      await request(server())
+        .post(`${V1}/reports`)
+        .set(auth(reporter.token))
+        .send({ targetType: 'wishlist', targetId: wl.data.id, reason: 'spam' })
+        .expect(201);
+
+      const data = await dashboardAs(token);
+
+      // Today's signups are counted from the accounts, not the nightly rollup.
+      expect(data.users!.newToday).toBeGreaterThanOrEqual(2);
+      expect(data.content!.wishlists).toBeGreaterThanOrEqual(1);
+      expect(data.money).toBeDefined();
+      expect(data.attention.find((a) => a.key === 'reports-open')?.count).toBeGreaterThanOrEqual(1);
+
+      // Thirty days, today last, zero-filled.
+      expect(data.series.signups).toHaveLength(30);
+      const today = new Date().toISOString().slice(0, 10);
+      const last = data.series.signups!.at(-1)!;
+      expect(last.day).toBe(today);
+      expect(last.signups).toBeGreaterThanOrEqual(2);
+    });
+
+    // Sections an analyst may not see are left out, not sent and hidden.
+    it('gives each admin only the sections their role covers', async () => {
+      const owner = await newUser();
+      const reporter = await newUser();
+      const wl = (
+        await request(server())
+          .post(`${V1}/wishlists`)
+          .set(auth(owner.token))
+          .send({ title: 'Reported', visibility: WishlistVisibility.PUBLIC })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      await request(server())
+        .post(`${V1}/reports`)
+        .set(auth(reporter.token))
+        .send({ targetType: 'wishlist', targetId: wl.data.id, reason: 'spam' })
+        .expect(201);
+
+      const email = `dash-analyst-${Date.now()}@wishtick.test`;
+      const password = 'a-long-enough-password';
+      await request(server())
+        .post(`${V1}/admin/admins`)
+        .set(auth(await adminToken()))
+        .send({ email, password, name: 'Analyst', roles: ['analyst'] })
+        .expect(201);
+
+      const data = await dashboardAs(await signIn(email, password));
+      expect(data.users).toBeDefined();
+      expect(data.money).toBeDefined();
+      expect(data.content).toBeUndefined();
+      // Moderation is not theirs.
+      expect(data.attention.some((a) => a.key.startsWith('reports'))).toBe(false);
+    });
+  });
+
+  describe('search', () => {
+    type Hit = { kind: string; id: string; label: string; sub: string | null };
+
+    const searchAs = async (token: string, q: string): Promise<Hit[]> =>
+      (
+        (
+          await request(server())
+            .get(`${V1}/admin/search`)
+            .query({ q })
+            .set(auth(token))
+            .expect(200)
+        ).body as Envelope<Hit[]>
+      ).data;
+
+    it('finds a user by email, and by username on their profile', async () => {
+      const token = await adminToken();
+      const user = await newUser();
+      const handle = `findme${Date.now().toString(36)}`;
+      await request(server())
+        .post(`${V1}/me/username`)
+        .set(auth(user.token))
+        .send({ username: handle })
+        .expect(201);
+
+      const byHandle = await searchAs(token, handle);
+      expect(byHandle.some((h) => h.kind === 'user' && h.id === user.userId)).toBe(true);
+      expect(byHandle.find((h) => h.id === user.userId)?.sub).toContain(`@${handle}`);
+
+      // By id too — what support is usually pasted.
+      const byId = await searchAs(token, user.userId);
+      expect(byId.map((h) => h.id)).toContain(user.userId);
+    });
+
+    it('finds a wishlist by its title', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const title = `Search target ${Date.now()}`;
+      await request(server())
+        .post(`${V1}/wishlists`)
+        .set(auth(owner.token))
+        .send({ title, visibility: WishlistVisibility.PUBLIC })
+        .expect(201);
+
+      const hits = await searchAs(token, title);
+      expect(hits.some((h) => h.kind === 'wishlist' && h.label === title)).toBe(true);
+    });
+
+    // An analyst may look up users and money, not wishlists or events.
+    it('searches only the kinds the admin may see', async () => {
+      const owner = await newUser();
+      const title = `Hidden from analysts ${Date.now()}`;
+      await request(server())
+        .post(`${V1}/wishlists`)
+        .set(auth(owner.token))
+        .send({ title, visibility: WishlistVisibility.PUBLIC })
+        .expect(201);
+
+      const email = `analyst-${Date.now()}@wishtick.test`;
+      const password = 'a-long-enough-password';
+      await request(server())
+        .post(`${V1}/admin/admins`)
+        .set(auth(await adminToken()))
+        .send({ email, password, name: 'Analyst', roles: ['analyst'] })
+        .expect(201);
+
+      const hits = await searchAs(await signIn(email, password), title);
+      expect(hits.filter((h) => h.kind === 'wishlist')).toEqual([]);
+    });
+
+    it('needs at least two characters', async () => {
+      await request(server())
+        .get(`${V1}/admin/search`)
+        .query({ q: 'a' })
+        .set(auth(await adminToken()))
+        .expect(400);
+    });
+  });
+
+  describe('webhook dead-letter', () => {
+    // It lived at /webhooks/affiliate/dead-letter behind a user role no account
+    // is ever given, so nobody could open it.
+    it('is listed under /admin, paged, for those who can see money', async () => {
+      const token = await adminToken();
+      const page = (
+        await request(server())
+          .get(`${V1}/admin/webhooks/dead-letter`)
+          .query({ page: 1, limit: 10 })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: unknown[]; total: number; page: number; limit: number }>;
+      expect(page.data).toEqual({ items: [], total: 0, page: 1, limit: 10 });
     });
   });
 
@@ -530,6 +784,20 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
 
       // The queue is paginated, not a bare array — a backlog must be reachable.
       expect(typeof queue.data.total).toBe('number');
+
+      // The report opens on its own — not by paging the queue until it turns up.
+      const one = (
+        await request(server())
+          .get(`${V1}/admin/moderation/reports/${first.data.id}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ status: string; targetType: string }>;
+      expect(one.data.status).toBe('open');
+      expect(one.data.targetType).toBe('wishlist');
+      await request(server())
+        .get(`${V1}/admin/moderation/reports/${DUMMY_ID}`)
+        .set(auth(token))
+        .expect(404);
 
       // And the reported content itself resolves, so the moderator can judge it
       // rather than acting on an opaque id.

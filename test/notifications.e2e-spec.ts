@@ -439,4 +439,90 @@ describe('Notifications (e2e)', () => {
       expect(after.data.every((n) => n.read)).toBe(true);
     });
   });
+
+  describe('deleting', () => {
+    type Row = { id: string; type: string; read: boolean };
+
+    const rows = async (actor: Actor): Promise<Row[]> =>
+      ((await notifications(actor).expect(200)).body as Envelope<Row[]>).data;
+
+    const remove = (actor: Actor, ids: string[]) =>
+      request(app.getHttpServer())
+        .post(`${V1}/notifications/delete`)
+        .set(auth(actor.token))
+        .send({ ids });
+
+    /** An owner with a welcome and a gift-fulfilled notification, both unread. */
+    const ownerWithTwo = async (): Promise<{ owner: Actor; event: GiftLifecycleEvent }> => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const event = await fulfilledGift(owner, gifter);
+      await settle();
+      return { owner, event };
+    };
+
+    it('deletes one, and it leaves the list and the badge', async () => {
+      const { owner } = await ownerWithTwo();
+      const before = await rows(owner);
+      expect(before.length).toBeGreaterThanOrEqual(2);
+      const gone = before[0];
+
+      const res = await remove(owner, [gone.id]).expect(200);
+      expect((res.body as Envelope<{ deleted: number }>).data.deleted).toBe(1);
+
+      const after = await rows(owner);
+      expect(after.map((n) => n.id)).not.toContain(gone.id);
+      expect(after).toHaveLength(before.length - 1);
+
+      await ctx.redis.flushall(); // bust the 60s dashboard cache
+      const dash = (
+        await request(app.getHttpServer())
+          .get(`${V1}/dashboard/summary`)
+          .set(auth(owner.token))
+          .expect(200)
+      ).body as Envelope<{ sections: Record<string, { count: number; badge: number }> }>;
+      // Both were unread; the deleted one no longer counts in either number.
+      expect(dash.data.sections.notifications.count).toBe(before.length - 1);
+      expect(dash.data.sections.notifications.badge).toBe(before.length - 1);
+    });
+
+    it('deletes a selection in one go', async () => {
+      const { owner } = await ownerWithTwo();
+      const ids = (await rows(owner)).map((n) => n.id);
+
+      const res = await remove(owner, ids).expect(200);
+      expect((res.body as Envelope<{ deleted: number }>).data.deleted).toBe(ids.length);
+      expect(await rows(owner)).toHaveLength(0);
+    });
+
+    it("cannot touch someone else's", async () => {
+      const { owner } = await ownerWithTwo();
+      const stranger = await newUser();
+      const ids = (await rows(owner)).map((n) => n.id);
+
+      const res = await remove(stranger, ids).expect(200);
+      expect((res.body as Envelope<{ deleted: number }>).data.deleted).toBe(0);
+      expect(await rows(owner)).toHaveLength(ids.length);
+    });
+
+    it('stays deleted when the same event is sent again', async () => {
+      const { owner, event } = await ownerWithTwo();
+      const fulfilled = (await rows(owner)).find((n) => n.type === 'gift_fulfilled');
+      expect(fulfilled).toBeDefined();
+      await remove(owner, [fulfilled!.id]).expect(200);
+
+      // A retried dispatch — the row it would collide with is still there,
+      // hidden, so nothing is created again.
+      app.get(EventEmitter2).emit(GIFT_FULFILLED, event);
+      await settle();
+
+      expect((await rows(owner)).some((n) => n.type === 'gift_fulfilled')).toBe(false);
+    });
+
+    it('refuses an empty selection or an id that is not one', async () => {
+      const owner = await newUser();
+      await remove(owner, []).expect(400);
+      await remove(owner, ['not-an-id']).expect(400);
+    });
+  });
 });

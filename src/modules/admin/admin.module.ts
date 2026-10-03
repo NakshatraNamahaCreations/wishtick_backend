@@ -8,6 +8,26 @@ import { AnalyticsModule } from 'src/modules/analytics/analytics.module';
 import { AuthModule } from 'src/modules/auth/auth.module';
 import { Message, MessageSchema } from 'src/modules/chat/schemas/message.schema';
 import { Event, EventSchema } from 'src/modules/events/schemas/event.schema';
+import { WebhookEvent, WebhookEventSchema } from 'src/modules/gifting/schemas/webhook-event.schema';
+import { GroupGift, GroupGiftSchema } from 'src/modules/group-gifts/schemas/group-gift.schema';
+import { Order, OrderSchema } from 'src/modules/orders/schemas/order.schema';
+import { Gift, GiftSchema } from 'src/modules/gifting/schemas/gift.schema';
+import { Media, MediaSchema } from 'src/modules/media/schemas/media.schema';
+import {
+  MemoryCapsule,
+  MemoryCapsuleSchema,
+} from 'src/modules/memories/schemas/memory-capsule.schema';
+import {
+  DeliveryLog,
+  DeliveryLogSchema,
+} from 'src/modules/notifications/schemas/delivery-log.schema';
+import { ClickEvent, ClickEventSchema } from 'src/modules/products/schemas/click-event.schema';
+import { Conversion, ConversionSchema } from 'src/modules/products/schemas/conversion.schema';
+import {
+  WishlistItem,
+  WishlistItemSchema,
+} from 'src/modules/wishlists/schemas/wishlist-item.schema';
+import { UserProfile, UserProfileSchema } from 'src/modules/profile/schemas/user-profile.schema';
 import { NotificationsModule } from 'src/modules/notifications/notifications.module';
 import {
   ReelCollection,
@@ -19,6 +39,9 @@ import { Wishlist, WishlistSchema } from 'src/modules/wishlists/schemas/wishlist
 import { AdminAuthController } from './admin-auth.controller';
 import { AdminTokenService } from './admin-token.service';
 import { AdminUsersService } from './admin-users.service';
+import { AdminWebhooksService } from './admin-webhooks.service';
+import { AdminSearchService } from './admin-search.service';
+import { AdminDashboardService } from './admin-dashboard.service';
 import { AdminController } from './admin.controller';
 import { AdminGuard } from './admin.guard';
 import { AdminService } from './admin.service';
@@ -52,13 +75,26 @@ import { TotpService } from './totp.service';
       { name: ReelCollection.name, schema: ReelCollectionSchema },
       { name: Wishlist.name, schema: WishlistSchema },
       { name: Event.name, schema: EventSchema },
+      { name: WebhookEvent.name, schema: WebhookEventSchema },
+      { name: UserProfile.name, schema: UserProfileSchema },
+      { name: GroupGift.name, schema: GroupGiftSchema },
+      { name: Order.name, schema: OrderSchema },
+      { name: Gift.name, schema: GiftSchema },
+      { name: WishlistItem.name, schema: WishlistItemSchema },
+      { name: MemoryCapsule.name, schema: MemoryCapsuleSchema },
+      { name: ClickEvent.name, schema: ClickEventSchema },
+      { name: Conversion.name, schema: ConversionSchema },
+      { name: DeliveryLog.name, schema: DeliveryLogSchema },
+      { name: Media.name, schema: MediaSchema },
     ]),
     // Admin tokens are signed per-call with the admin secret + audience; the
     // module-level default stays empty so a user secret can never leak in.
     JwtModule.register({}),
     PassportModule,
     // Moderation re-enqueues a reel compile when a released wish is removed.
-    BullModule.registerQueue({ name: QUEUE.REELS }),
+    // Every queue: moderation re-enqueues reel compiles, and the dashboard
+    // counts each queue's failed jobs.
+    BullModule.registerQueue(...Object.values(QUEUE).map((name) => ({ name }))),
     AuthModule, // TokenService (session kill) + PasswordService (admin login)
     NotificationsModule, // owner notice on content removal
     AnalyticsModule, // dashboards read the rollup
@@ -72,6 +108,9 @@ import { TotpService } from './totp.service';
     AdminGuard,
     AuditService,
     AdminUsersService,
+    AdminWebhooksService,
+    AdminSearchService,
+    AdminDashboardService,
     ModerationService,
     ModerationListener,
     NoopSafetyProvider,

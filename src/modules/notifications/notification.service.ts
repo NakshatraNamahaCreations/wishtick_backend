@@ -172,7 +172,10 @@ export class NotificationService {
     const out: Record<string, string> = {};
     for (const key of ['chatId', 'senderId', 'direct']) {
       const value = data.payload[key];
-      if (value !== undefined && value !== null) out[key] = String(value);
+      // Scalars only: an object here would reach the app as "[object Object]".
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        out[key] = String(value);
+      }
     }
     return out;
   }
@@ -364,7 +367,7 @@ export class NotificationService {
 
   async list(userId: string, limit = 50): Promise<NotificationDocument[]> {
     return this.notificationModel
-      .find({ userId: new Types.ObjectId(userId) })
+      .find({ userId: new Types.ObjectId(userId), deletedAt: null })
       .sort({ createdAt: -1 })
       .limit(limit)
       .exec();
@@ -393,10 +396,31 @@ export class NotificationService {
     }
   }
 
+  /**
+   * Deletes the caller's own notifications, from a swipe or a selection.
+   *
+   * Hidden, not removed — see Notification.deletedAt. Ids that are not theirs,
+   * or already gone, are skipped rather than refused: a selection made a
+   * moment ago can hold a row another device has just deleted.
+   */
+  async remove(userId: string, ids: string[]): Promise<{ deleted: number }> {
+    const res = await this.notificationModel
+      .updateMany(
+        {
+          _id: { $in: ids.map((id) => new Types.ObjectId(id)) },
+          userId: new Types.ObjectId(userId),
+          deletedAt: null,
+        },
+        { $set: { deletedAt: new Date() } },
+      )
+      .exec();
+    return { deleted: res.modifiedCount };
+  }
+
   async markAllRead(userId: string): Promise<{ updated: number }> {
     const res = await this.notificationModel
       .updateMany(
-        { userId: new Types.ObjectId(userId), readAt: null },
+        { userId: new Types.ObjectId(userId), readAt: null, deletedAt: null },
         { $set: { readAt: new Date() } },
       )
       .exec();
@@ -405,14 +429,16 @@ export class NotificationService {
 
   async unreadCount(userId: string): Promise<number> {
     return this.notificationModel
-      .countDocuments({ userId: new Types.ObjectId(userId), readAt: null })
+      .countDocuments({ userId: new Types.ObjectId(userId), readAt: null, deletedAt: null })
       .exec();
   }
 
   /** The dashboard NOTIFICATIONS section: total count + unread badge. */
   async sectionCounts(userId: string): Promise<{ count: number; badge: number }> {
     const [count, badge] = await Promise.all([
-      this.notificationModel.countDocuments({ userId: new Types.ObjectId(userId) }).exec(),
+      this.notificationModel
+        .countDocuments({ userId: new Types.ObjectId(userId), deletedAt: null })
+        .exec(),
       this.unreadCount(userId),
     ]);
     return { count, badge };

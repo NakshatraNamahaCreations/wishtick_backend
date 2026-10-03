@@ -116,6 +116,33 @@ export class SuspendUserDto {
   reason!: string;
 }
 
+/** The panel's search box. */
+export class AdminSearchQueryDto {
+  @ApiProperty({ example: 'rohan', minLength: 2, maxLength: 120 })
+  @IsString()
+  @Length(2, 120)
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
+  q!: string;
+}
+
+/** Page and limit for any admin list. Lists clamp the limit to 100 themselves. */
+export class PageQueryDto {
+  @ApiPropertyOptional({ minimum: 1, default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @ApiPropertyOptional({ minimum: 1, maximum: 100, default: 25 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+}
+
 export class ModerationQueueQueryDto {
   @ApiPropertyOptional({ enum: ReportTargetType })
   @IsOptional()

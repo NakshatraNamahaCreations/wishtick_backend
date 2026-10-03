@@ -21,6 +21,7 @@ import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import type { AppConfig } from 'src/config/configuration';
 import {
+  DeleteNotificationsDto,
   RegisterDeviceDto,
   UpdatePreferenceDto,
   UnsubscribeQueryDto,
@@ -91,6 +92,22 @@ export class NotificationController {
   @ApiOperation({ summary: 'Mark every notification read' })
   markAllRead(@CurrentUser('id') userId: string): Promise<{ updated: number }> {
     return this.notifications.markAllRead(userId);
+  }
+
+  @Post('notifications/delete')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Delete some of your notifications',
+    description:
+      'One id from a swipe, up to 100 from a selection. Ids that are not yours or already ' +
+      'deleted are skipped; `deleted` says how many went.',
+  })
+  remove(
+    @CurrentUser('id') userId: string,
+    @Body() dto: DeleteNotificationsDto,
+  ): Promise<{ deleted: number }> {
+    return this.notifications.remove(userId, dto.ids);
   }
 
   @Get('notifications/preferences')
