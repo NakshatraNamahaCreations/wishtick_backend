@@ -1783,7 +1783,19 @@ export class GroupGiftService {
     return this.assembleView(await this.loadOrFail(gift._id.toString()), userId);
   }
 
-  private async assembleView(gift: GroupGiftDocument, userId: string): Promise<GroupGiftView> {
+  private async assembleView(loaded: GroupGiftDocument, userId: string): Promise<GroupGiftView> {
+    let gift = loaded;
+    // An equal split whose members arrived before the host's share was kept —
+    // or that missed a change for any reason — is put right as it is read, so
+    // nobody is ever shown a split that asks the others for the host's part.
+    // A no-op, and no write, when the share is already right.
+    if (
+      gift.contributionMode === ContributionMode.EQUAL &&
+      gift.status === GroupGiftStatus.OPEN &&
+      (await this.shares.sync(gift._id))
+    ) {
+      gift = await this.loadOrFail(gift._id.toString());
+    }
     const { names, items, recentContributions } = await this.resolveViewData(gift);
     const mine = await this.contributionModel
       .aggregate<{ total: number }>([

@@ -13,6 +13,7 @@ import type { GiftListItemView } from 'src/modules/gifting/gift.views';
 import { DeliveryDateRegistrar } from 'src/modules/group-gifts/delivery-date.registrar';
 import { GroupGiftReconcileService } from 'src/modules/group-gifts/group-gift-reconcile.service';
 import { GroupGiftShareService } from 'src/modules/group-gifts/group-gift-share.service';
+import { GroupGiftInvite } from 'src/modules/group-gifts/schemas/group-gift-invite.schema';
 import { GroupGiftStatus, OverfundPolicy } from 'src/modules/group-gifts/group-gift.types';
 import {
   GroupGift,
@@ -2174,6 +2175,42 @@ describe('Group gifting (e2e)', () => {
       );
       // ₹1,000 among five.
       expect(added?.title).toMatch(/200/);
+    });
+
+    it('puts right a split whose members arrived before the share was kept', async () => {
+      // The screen this pins: invitations from before the split existed, no
+      // host share on record, and the whole total asked of the others.
+      const owner = await newUserDirect();
+      const host = await newUserDirect();
+      const { itemId } = await wishlistWithItem(owner);
+      const gg = (
+        await createGroupGift(host, itemId, {
+          contributionMode: 'equal',
+          targetAmountMinor: 100_000,
+        }).expect(201)
+      ).body as Envelope<{ id: string }>;
+      const invites = app.get<Model<{ groupGiftId: Types.ObjectId }>>(
+        getModelToken(GroupGiftInvite.name),
+      );
+      for (let i = 0; i < 3; i++) {
+        const f = await newUserDirect();
+        await invites.create({
+          groupGiftId: new Types.ObjectId(gg.data.id),
+          invitedUserId: new Types.ObjectId(f.userId),
+          invitedById: new Types.ObjectId(host.userId),
+          status: 'pending',
+        });
+      }
+
+      const got = await view(host, gg.data.id);
+
+      // ₹1,000 among four: the host's ₹250 is on record, and nobody else is
+      // asked for it.
+      expect(got.split!.members.find((m) => m.host)!.paidMinor).toBe(25_000);
+      expect(got.collectedAmountMinor).toBe(25_000);
+      expect(got.split!.members.filter((m) => !m.host).every((m) => m.owesMinor === 25_000)).toBe(
+        true,
+      );
     });
 
     it('carries what the group needs to look the gift over', async () => {

@@ -146,10 +146,11 @@ export class GroupGiftShareService {
    * running total move together in one transaction — the collected figure is
    * money, and must never be half-updated.
    */
-  async sync(groupGiftId: string | Types.ObjectId): Promise<void> {
+  /** True when it changed something — the caller's copy of the gift is stale. */
+  async sync(groupGiftId: string | Types.ObjectId): Promise<boolean> {
     const id = groupGiftId.toString();
     try {
-      await this.locks.withBestEffortLock(
+      return await this.locks.withBestEffortLock(
         `group-gift:${id}`,
         () => this.syncLocked(new Types.ObjectId(id)),
         { ttlMs: 5_000, retries: 15, retryDelayMs: 40 },
@@ -158,12 +159,13 @@ export class GroupGiftShareService {
       // Never the reason a join or an invite fails: the next change, or the
       // nightly reconcile of the total, puts it right.
       this.logger.warn(`Host share for ${id} not resynced: ${(err as Error).message}`);
+      return false;
     }
   }
 
-  private async syncLocked(giftId: Types.ObjectId): Promise<void> {
+  private async syncLocked(giftId: Types.ObjectId): Promise<boolean> {
     const gift = await this.groupGiftModel.findById(giftId).exec();
-    if (!gift || gift.status !== GroupGiftStatus.OPEN) return;
+    if (!gift || gift.status !== GroupGiftStatus.OPEN) return false;
 
     const hostId = gift.initiatorId;
     const existing = await this.contributionModel
@@ -200,7 +202,7 @@ export class GroupGiftShareService {
     }
 
     const delta = wanted - current;
-    if (delta === 0) return;
+    if (delta === 0) return false;
 
     const session = await this.connection.startSession();
     let funded: { collected: number } | null = null;
@@ -273,6 +275,7 @@ export class GroupGiftShareService {
         contributorCount: 0,
       } satisfies GroupGiftFundedEvent);
     }
+    return true;
   }
 
   /**
@@ -291,6 +294,9 @@ export class GroupGiftShareService {
     for (const gift of gifts) {
       // Past its deadline nobody can pay any more, so there is nothing to ask.
       if (gift.deadline && gift.deadline.getTime() < now.getTime()) continue;
+      // Put right first: a gift whose members arrived before the split was
+      // kept would otherwise ask the others for the host's part too.
+      await this.sync(gift._id);
       const split = await this.splitOf(gift);
       if (!split) continue;
       const pending = new Set(
