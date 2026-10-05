@@ -386,6 +386,28 @@ export class MemoriesService {
     return this.assemble(capsule, userId);
   }
 
+  /** An admin opening a memory early — the same transition, and the same notices. */
+  async unlockAsAdmin(id: string): Promise<void> {
+    await this.transitionToUnlocked(await this.loadOrFail(id));
+  }
+
+  /**
+   * An admin sealing a memory again, to open on [unlockAt] — after it opened
+   * by mistake, or to hold it while a report is looked at. Wishes stay sealed:
+   * a relocked memory takes no more, because people already saw it.
+   */
+  async relockAsAdmin(id: string, unlockAt: Date): Promise<void> {
+    if (Number.isNaN(unlockAt.getTime()) || unlockAt.getTime() <= Date.now()) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'unlockAt must be in the future', 400);
+    }
+    const capsule = await this.loadOrFail(id);
+    capsule.status = MemoryStatus.LOCKED;
+    capsule.unlockedAt = null;
+    capsule.unlockAt = unlockAt;
+    await capsule.save();
+    await this.scheduleUnlock(capsule);
+  }
+
   /** The scheduled job's handler. */
   async fireUnlock(data: MemoryUnlockJobData): Promise<{ unlocked: boolean }> {
     const capsule = await this.capsuleModel.findById(data.capsuleId).exec();

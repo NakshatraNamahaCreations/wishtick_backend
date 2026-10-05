@@ -1,9 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import request from 'supertest';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { INestApplication } from '@nestjs/common';
-import { getModelToken } from '@nestjs/mongoose';
-import { Types, type Model } from 'mongoose';
+import { getConnectionToken, getModelToken } from '@nestjs/mongoose';
+import { Types, type Connection, type Model } from 'mongoose';
 import { io, type Socket } from 'socket.io-client';
 import { AuthService } from 'src/modules/auth/auth.service';
 import { AnalyticsService } from 'src/modules/analytics/analytics.service';
@@ -12,6 +13,10 @@ import {
   type AnalyticsEventDocument,
 } from 'src/modules/analytics/schemas/analytics-event.schema';
 import { WishlistVisibility } from 'src/modules/wishlists/wishlist.types';
+import { GroupGiftReconcileService } from 'src/modules/group-gifts/group-gift-reconcile.service';
+import { NotificationService } from 'src/modules/notifications/notification.service';
+import { NotificationChannel } from 'src/modules/notifications/notification.types';
+import { SchedulerRegistry } from 'src/infra/queue/scheduler-registry';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
 const PASSWORD = 'correct-horse-battery-staple';
@@ -103,50 +108,17 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
   const adminLogin = async (
     email = ADMIN_EMAIL,
     password = ADMIN_PASSWORD,
-    totp?: string,
-  ): Promise<Envelope<{ accessToken: string; setupRequired: boolean }>['data']> => {
+  ): Promise<Envelope<{ accessToken: string }>['data']> => {
     const res = await request(server())
       .post(`${V1}/admin/auth/login`)
-      .send({ email, password, ...(totp ? { totp } : {}) })
+      .send({ email, password })
       .expect(200);
-    return (res.body as Envelope<{ accessToken: string; setupRequired: boolean }>).data;
+    return (res.body as Envelope<{ accessToken: string }>).data;
   };
 
-  /**
-   * Each admin's two-factor secret, once set up. Kept for the whole file: the
-   * reset between tests clears Redis, not the database, so an admin who set it
-   * up once still has it on.
-   */
-  const totpSecrets = new Map<string, string>();
-
-  const totpCode = async (secret: string): Promise<string> =>
-    app.get((await import('src/modules/admin/totp.service')).TotpService).current(secret);
-
-  /**
-   * A token that can use the panel. Two-factor sign-in is mandatory, so an
-   * admin signing in for the first time sets it up on the way — as the panel
-   * makes them — and signs in with a code from then on.
-   */
-  const signIn = async (email = ADMIN_EMAIL, password = ADMIN_PASSWORD): Promise<string> => {
-    const known = totpSecrets.get(email);
-    if (known) return (await adminLogin(email, password, await totpCode(known))).accessToken;
-
-    const first = await adminLogin(email, password);
-    if (!first.setupRequired) return first.accessToken;
-    const setup = (
-      await request(server())
-        .post(`${V1}/admin/auth/totp/setup`)
-        .set(auth(first.accessToken))
-        .expect(200)
-    ).body as Envelope<{ secret: string }>;
-    await request(server())
-      .post(`${V1}/admin/auth/totp/enable`)
-      .set(auth(first.accessToken))
-      .send({ token: await totpCode(setup.data.secret) })
-      .expect(200);
-    totpSecrets.set(email, setup.data.secret);
-    return first.accessToken;
-  };
+  /** A token that can use the panel: email and password are all it takes. */
+  const signIn = async (email = ADMIN_EMAIL, password = ADMIN_PASSWORD): Promise<string> =>
+    (await adminLogin(email, password)).accessToken;
 
   const adminToken = (): Promise<string> => signIn();
 
@@ -201,8 +173,6 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
     it('bootstraps a super-admin that can log in', async () => {
       const data = await adminLogin();
       expect(data.accessToken).toBeTruthy();
-      // No TOTP enrolled on the seed yet, so the first login flags setup.
-      expect(data.setupRequired).toBe(true);
     });
 
     it('discovers a non-trivial set of guarded admin routes', () => {
@@ -236,43 +206,31 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       await request(server()).get(`${V1}/admin/users`).expect(401);
     });
 
-    // A password alone used to open every route the admin's role allowed; the
-    // `setupRequired` flag at login was advice nothing enforced.
-    it('lets an admin without two-factor do nothing but set it up', async () => {
-      // A new admin, who has never set it up — whatever order the tests run in.
-      const email = `no2fa-${Date.now()}@wishtick.test`;
+    // Authenticator sign-in was removed: a new admin's email and password are
+    // the whole of it, with nothing to set up first.
+    it('lets a new admin in with their password alone, as far as their role goes', async () => {
+      const email = `pw-only-${Date.now()}@wishtick.test`;
       const password = 'a-long-enough-password';
       await request(server())
         .post(`${V1}/admin/admins`)
         .set(auth(await adminToken()))
-        .send({ email, password, name: 'No 2FA', roles: ['support'] })
+        .send({ email, password, name: 'Support', roles: ['support'] })
         .expect(201);
-      const { accessToken } = await adminLogin(email, password);
 
-      const refused = await request(server())
-        .get(`${V1}/admin/users`)
-        .set(auth(accessToken))
-        .expect(403);
-      expect((refused.body as Envelope<never>).error?.code).toBe('ADMIN_TOTP_SETUP_REQUIRED');
+      const token = await signIn(email, password);
+      await request(server()).get(`${V1}/admin/users`).set(auth(token)).expect(200);
+      // …and no further than the role allows.
+      await request(server()).get(`${V1}/admin/admins`).set(auth(token)).expect(403);
 
-      // Who they are, and the way to set it up, stay open.
-      const me = (
-        await request(server()).get(`${V1}/admin/auth/me`).set(auth(accessToken)).expect(200)
-      ).body as Envelope<{ totpEnabled: boolean; name: string }>;
-      expect(me.data.totpEnabled).toBe(false);
-      expect(typeof me.data.name).toBe('string');
-      await request(server())
-        .post(`${V1}/admin/auth/totp/setup`)
-        .set(auth(accessToken))
-        .expect(200);
+      const me = (await request(server()).get(`${V1}/admin/auth/me`).set(auth(token)).expect(200))
+        .body as Envelope<{ name: string; totpEnabled?: boolean }>;
+      expect(me.data.name).toBe('Support');
+      expect(me.data.totpEnabled).toBeUndefined();
     });
 
-    it('once two-factor is on, the same session can use the panel', async () => {
+    it('has no authenticator setup routes any more', async () => {
       const token = await adminToken();
-      await request(server()).get(`${V1}/admin/users`).set(auth(token)).expect(200);
-      const me = (await request(server()).get(`${V1}/admin/auth/me`).set(auth(token)).expect(200))
-        .body as Envelope<{ totpEnabled: boolean }>;
-      expect(me.data.totpEnabled).toBe(true);
+      await request(server()).post(`${V1}/admin/auth/totp/setup`).set(auth(token)).expect(404);
     });
   });
 
@@ -358,6 +316,2151 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       expect(data.content).toBeUndefined();
       // Moderation is not theirs.
       expect(data.attention.some((a) => a.key.startsWith('reports'))).toBe(false);
+    });
+  });
+
+  describe('users 360', () => {
+    interface Page<T> {
+      items: T[];
+      total: number;
+      names?: Record<string, string>;
+    }
+
+    /** A user whose email the test knows, with a profile and a username. */
+    const person = async (name: string): Promise<Actor & { email: string; username: string }> => {
+      const email = `p360-${++seq}.${Date.now()}@example.com`;
+      const { user, tokens } = await authService.signup(
+        { email, password: PASSWORD, name },
+        { ip: '127.0.0.1', userAgent: 'e2e-phone' },
+      );
+      const username = `u360${seq}${Date.now().toString(36)}`;
+      await request(server())
+        .post(`${V1}/me/username`)
+        .set(auth(tokens.accessToken))
+        .send({ username })
+        .expect(201);
+      return { token: tokens.accessToken, userId: user.id, email, username };
+    };
+
+    const adminAs = async (role: string): Promise<string> => {
+      const email = `${role}-${++seq}-${Date.now()}@wishtick.test`;
+      const password = 'a-long-enough-password';
+      await request(server())
+        .post(`${V1}/admin/admins`)
+        .set(auth(await adminToken()))
+        .send({ email, password, name: role, roles: [role] })
+        .expect(201);
+      return signIn(email, password);
+    };
+
+    it('lists users with contact details masked, found by username too', async () => {
+      const token = await adminToken();
+      const priya = await person('Priya Sharma');
+
+      const list = (
+        await request(server())
+          .get(`${V1}/admin/users`)
+          .query({ search: `@${priya.username}` })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Page<{ id: string; email: string | null }>>;
+
+      expect(list.data.items.map((u) => u.id)).toEqual([priya.userId]);
+      expect(list.data.items[0].email).not.toBe(priya.email);
+      expect(list.data.items[0].email).toMatch(/^p3\*\*\*@example\.com$/);
+    });
+
+    it('filters by verification and sorts by name', async () => {
+      const token = await adminToken();
+      await person('Zed Unverified');
+      const list = (
+        await request(server())
+          .get(`${V1}/admin/users`)
+          .query({ verified: 'none', sort: 'name', order: 'asc', limit: 100 })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Page<{ name: string | null; emailVerified: boolean }>>;
+      expect(list.data.items.every((u) => !u.emailVerified)).toBe(true);
+      const names = list.data.items.map((u) => u.name ?? '');
+      expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+    });
+
+    it('opens the whole profile, and each section in pages', async () => {
+      const token = await adminToken();
+      const priya = await person('Priya Sharma');
+      await request(server())
+        .post(`${V1}/wishlists`)
+        .set(auth(priya.token))
+        .send({ title: 'Diwali list', visibility: WishlistVisibility.PUBLIC })
+        .expect(201);
+
+      const profile = (
+        await request(server())
+          .get(`${V1}/admin/users/${priya.userId}/profile`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{
+        email: string;
+        profile: { username: string } | null;
+        counts: Record<string, number>;
+      }>;
+      expect(profile.data.profile?.username).toBe(priya.username);
+      expect(profile.data.email).not.toBe(priya.email);
+      expect(profile.data.counts.wishlists).toBe(1);
+      // Signing up opened a session.
+      expect(profile.data.counts.activeSessions).toBeGreaterThanOrEqual(1);
+
+      const wishlists = (
+        await request(server())
+          .get(`${V1}/admin/users/${priya.userId}/sections/wishlists`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Page<{ title: string }>>;
+      expect(wishlists.data.items.map((w) => w.title)).toEqual(['Diwali list']);
+
+      await request(server())
+        .get(`${V1}/admin/users/${priya.userId}/sections/nonsense`)
+        .set(auth(token))
+        .expect(404);
+    });
+
+    // A moderator works on content and reports, not on people's money.
+    it('keeps each section to the permission it belongs to', async () => {
+      const priya = await person('Priya Sharma');
+      const moderator = await adminAs('moderator');
+      await request(server())
+        .get(`${V1}/admin/users/${priya.userId}/sections/wishlists`)
+        .set(auth(moderator))
+        .expect(200);
+      await request(server())
+        .get(`${V1}/admin/users/${priya.userId}/sections/gifts-given`)
+        .set(auth(moderator))
+        .expect(403);
+
+      const profile = (
+        await request(server())
+          .get(`${V1}/admin/users/${priya.userId}/profile`)
+          .set(auth(moderator))
+          .expect(200)
+      ).body as Envelope<{ counts: Record<string, number> }>;
+      expect(profile.data.counts.giftsGiven).toBeUndefined();
+    });
+
+    it('reveals a private value only with the permission, and audits why', async () => {
+      const priya = await person('Priya Sharma');
+
+      const analyst = await adminAs('analyst');
+      await request(server())
+        .post(`${V1}/admin/users/${priya.userId}/reveal`)
+        .set(auth(analyst))
+        .send({ field: 'email', reason: 'Checking a support ticket' })
+        .expect(403);
+
+      const token = await adminToken();
+      const revealed = (
+        await request(server())
+          .post(`${V1}/admin/users/${priya.userId}/reveal`)
+          .set(auth(token))
+          .send({ field: 'email', reason: 'Support ticket #123' })
+          .expect(200)
+      ).body as Envelope<{ value: string }>;
+      expect(revealed.data.value).toBe(priya.email);
+
+      const audit = (
+        await request(server())
+          .get(`${V1}/admin/users/${priya.userId}/sections/audit`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Page<{ action: string; meta: { field: string; reason: string } }>>;
+      const entry = audit.data.items.find((a) => a.action === 'user.reveal');
+      expect(entry?.meta).toEqual({ field: 'email', reason: 'Support ticket #123' });
+    });
+
+    it('ends one sign-in, not all of them', async () => {
+      const token = await adminToken();
+      const priya = await person('Priya Sharma');
+      const sessions = (
+        await request(server())
+          .get(`${V1}/admin/users/${priya.userId}/sections/sessions`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Page<{ id: string; revokedAt: string | null; userAgent: string }>>;
+      const live = sessions.data.items.find((x) => x.revokedAt === null)!;
+      expect(live.userAgent).toBe('e2e-phone');
+
+      await request(server())
+        .post(`${V1}/admin/users/${priya.userId}/sessions/${live.id}/revoke`)
+        .set(auth(token))
+        .expect(200);
+
+      const after = (
+        await request(server())
+          .get(`${V1}/admin/users/${priya.userId}/sections/sessions`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Page<{ id: string; revokedAt: string | null }>>;
+      expect(after.data.items.find((x) => x.id === live.id)?.revokedAt).not.toBeNull();
+    });
+
+    it('marks an email verified, with a reason on record', async () => {
+      const token = await adminToken();
+      const priya = await person('Priya Sharma');
+      await request(server())
+        .post(`${V1}/admin/users/${priya.userId}/verify`)
+        .set(auth(token))
+        .send({ field: 'email', reason: 'Confirmed over the phone' })
+        .expect(200);
+      const profile = (
+        await request(server())
+          .get(`${V1}/admin/users/${priya.userId}/profile`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ emailVerified: boolean }>;
+      expect(profile.data.emailVerified).toBe(true);
+    });
+
+    it('redacts a profile, and will not hand out a taken username', async () => {
+      const token = await adminToken();
+      const priya = await person('Priya Sharma');
+      const other = await person('Other Person');
+
+      await request(server())
+        .patch(`${V1}/admin/users/${priya.userId}/profile`)
+        .set(auth(token))
+        .send({ displayName: 'Priya', bio: '', reason: 'Phone number in bio' })
+        .expect(200);
+      const profile = (
+        await request(server())
+          .get(`${V1}/admin/users/${priya.userId}/profile`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ profile: { displayName: string; bio: string | null } }>;
+      expect(profile.data.profile.displayName).toBe('Priya');
+      expect(profile.data.profile.bio).toBeNull();
+
+      await request(server())
+        .patch(`${V1}/admin/users/${priya.userId}/profile`)
+        .set(auth(token))
+        .send({ username: other.username, reason: 'Impersonation' })
+        .expect(409);
+    });
+
+    it('exports the list as CSV for those allowed to, with contacts masked', async () => {
+      const priya = await person('Priya Sharma');
+      const analyst = await adminAs('analyst');
+      const res = await request(server())
+        .get(`${V1}/admin/users/export`)
+        .query({ search: priya.username })
+        .set(auth(analyst))
+        .expect(200);
+      expect(res.headers['content-type']).toContain('text/csv');
+      const lines = res.text.trim().split('\n');
+      expect(lines[0]).toBe(
+        'id,name,email,phone,status,emailVerified,phoneVerified,source,joined,lastLogin',
+      );
+      expect(lines).toHaveLength(2);
+      expect(res.text).not.toContain(priya.email);
+
+      const support = await adminAs('support');
+      await request(server()).get(`${V1}/admin/users/export`).set(auth(support)).expect(403);
+    });
+  });
+
+  describe('content explorer', () => {
+    interface ListPage {
+      items: { id: string; title?: string | null; private?: boolean }[];
+      total: number;
+      names: Record<string, string>;
+    }
+    interface Detail {
+      row: Record<string, unknown>;
+      fields: Record<string, unknown>;
+      sections: {
+        key: string;
+        items: Record<string, unknown>[];
+        total: number;
+        locked?: boolean;
+      }[];
+      locked: boolean;
+      revealed: boolean;
+      removal: { id: string } | null;
+      names: Record<string, string>;
+    }
+
+    const roleToken = async (role: string): Promise<string> => {
+      const email = `${role}-c${++seq}-${Date.now()}@wishtick.test`;
+      const password = 'a-long-enough-password';
+      await request(server())
+        .post(`${V1}/admin/admins`)
+        .set(auth(await adminToken()))
+        .send({ email, password, name: role, roles: [role] })
+        .expect(201);
+      return signIn(email, password);
+    };
+
+    const db = () => app.get<Connection>(getConnectionToken()).db!;
+
+    const wishlist = async (owner: Actor, title: string, visibility: string) =>
+      (
+        (
+          await request(server())
+            .post(`${V1}/wishlists`)
+            .set(auth(owner.token))
+            .send({ title, visibility })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+
+    const item = async (owner: Actor, wishlistId: string, title: string) =>
+      (
+        (
+          await request(server())
+            .post(`${V1}/wishlists/${wishlistId}/items`)
+            .set(auth(owner.token))
+            .send({ title })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+
+    it('lists wishlists with filters, and opens one with its items', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const listId = await wishlist(owner, `Explorer list ${seq}`, WishlistVisibility.PUBLIC);
+      await item(owner, listId, 'Kindle Paperwhite');
+
+      const page = (
+        await request(server())
+          .get(`${V1}/admin/content/wishlists`)
+          .query({ q: 'Explorer list', owner: owner.userId, archived: 'no' })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<ListPage>;
+      expect(page.data.items.map((w) => w.id)).toEqual([listId]);
+      expect(Object.keys(page.data.names)).toContain(owner.userId);
+
+      const detail = (
+        await request(server())
+          .get(`${V1}/admin/content/wishlists/${listId}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Detail>;
+      expect(detail.data.locked).toBe(false);
+      const items = detail.data.sections.find((s) => s.key === 'items')!;
+      expect(items.items[0].title).toBe('Kindle Paperwhite');
+
+      await request(server()).get(`${V1}/admin/content/nonsense`).set(auth(token)).expect(404);
+    });
+
+    it('holds a private list back until it is revealed with a reason, and audits the look', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const listId = await wishlist(owner, `Secret list ${seq}`, WishlistVisibility.PRIVATE);
+      const itemId = await item(owner, listId, 'Very private thing');
+
+      // The items list does not carry its title either.
+      const items = (
+        await request(server())
+          .get(`${V1}/admin/content/items`)
+          .query({ owner: owner.userId })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<ListPage>;
+      const row = items.data.items.find((i) => i.id === itemId)!;
+      expect(row.private).toBe(true);
+      expect(row.title).toBeNull();
+
+      const held = (
+        await request(server())
+          .get(`${V1}/admin/content/wishlists/${listId}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Detail>;
+      expect(held.data.locked).toBe(true);
+      expect(held.data.sections.find((s) => s.key === 'items')!.items[0].title).toBeNull();
+
+      // An analyst cannot reveal; a moderator can, and it is on the record.
+      await request(server())
+        .post(`${V1}/admin/content/wishlists/${listId}/reveal`)
+        .set(auth(await roleToken('analyst')))
+        .send({ reason: 'curious' })
+        .expect(403);
+      const shown = (
+        await request(server())
+          .post(`${V1}/admin/content/wishlists/${listId}/reveal`)
+          .set(auth(token))
+          .send({ reason: 'Report #42 about this list' })
+          .expect(200)
+      ).body as Envelope<Detail>;
+      expect(shown.data.revealed).toBe(true);
+      expect(shown.data.sections.find((s) => s.key === 'items')!.items[0].title).toBe(
+        'Very private thing',
+      );
+
+      const audit = (
+        await request(server())
+          .get(`${V1}/admin/audit`)
+          .query({ targetType: 'wishlists', targetId: listId })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { action: string; meta: { reason?: string } }[] }>;
+      const reveal = audit.data.items.find((a) => a.action === 'content.reveal');
+      expect(reveal?.meta.reason).toBe('Report #42 about this list');
+    });
+
+    it('hides an item and puts it back, keeping the list counts right', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const listId = await wishlist(owner, `Count list ${seq}`, WishlistVisibility.PUBLIC);
+      const itemId = await item(owner, listId, 'Spam item');
+      await item(owner, listId, 'Real item');
+
+      const count = async () =>
+        (
+          (await db()
+            .collection('wishlists')
+            .findOne({ _id: new Types.ObjectId(listId) }))!.stats as { itemCount: number }
+        ).itemCount;
+      expect(await count()).toBe(2);
+
+      const hidden = (
+        await request(server())
+          .post(`${V1}/admin/content/items/${itemId}/actions/hide`)
+          .set(auth(token))
+          .send({ reason: 'Spam link' })
+          .expect(200)
+      ).body as Envelope<{ removal: { id: string } }>;
+      expect(await count()).toBe(1);
+
+      // Hiding twice is refused rather than stacking removals.
+      await request(server())
+        .post(`${V1}/admin/content/items/${itemId}/actions/hide`)
+        .set(auth(token))
+        .send({ reason: 'Again' })
+        .expect(409);
+
+      await request(server())
+        .post(`${V1}/admin/content/removals/${hidden.data.removal.id}/restore`)
+        .set(auth(token))
+        .send({ reason: 'Owner appealed' })
+        .expect(200);
+      expect(await count()).toBe(2);
+      await request(server())
+        .post(`${V1}/admin/content/removals/${hidden.data.removal.id}/restore`)
+        .set(auth(token))
+        .send({ reason: 'Twice' })
+        .expect(409);
+
+      // A support role can look but not act.
+      await request(server())
+        .post(`${V1}/admin/content/items/${itemId}/actions/hide`)
+        .set(auth(await roleToken('support')))
+        .send({ reason: 'Nope' })
+        .expect(403);
+      // And an action the area does not have is a clear 400.
+      await request(server())
+        .post(`${V1}/admin/content/items/${itemId}/actions/explode`)
+        .set(auth(token))
+        .send({ reason: 'No' })
+        .expect(400);
+    });
+
+    it('rotates a share link and archives a list, both on the record', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const listId = await wishlist(owner, `Share list ${seq}`, WishlistVisibility.PUBLIC);
+      const slugOf = async () =>
+        (
+          (await db()
+            .collection('wishlists')
+            .findOne({ _id: new Types.ObjectId(listId) }))!.share as { slug: string }
+        ).slug;
+      const before = await slugOf();
+
+      await request(server())
+        .post(`${V1}/admin/content/wishlists/${listId}/actions/rotate-share`)
+        .set(auth(token))
+        .send({ reason: 'Link leaked publicly' })
+        .expect(200);
+      expect(await slugOf()).not.toBe(before);
+
+      await request(server())
+        .post(`${V1}/admin/content/wishlists/${listId}/actions/archive`)
+        .set(auth(token))
+        .send({ reason: 'Spam' })
+        .expect(200);
+      const archived = (
+        await request(server())
+          .get(`${V1}/admin/content/wishlists/${listId}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Detail>;
+      expect(archived.data.row.archivedAt).toBeTruthy();
+      expect(archived.data.removal).not.toBeNull();
+
+      await request(server())
+        .post(`${V1}/admin/content/wishlists/${listId}/actions/unarchive`)
+        .set(auth(token))
+        .send({ reason: 'Appeal upheld' })
+        .expect(200);
+      const back = await db()
+        .collection('wishlists')
+        .findOne({ _id: new Types.ObjectId(listId) });
+      expect(back!.archivedAt).toBeNull();
+
+      const audit = (
+        await request(server())
+          .get(`${V1}/admin/audit`)
+          .query({ targetId: listId })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { action: string }[] }>;
+      expect(audit.data.items.map((a) => a.action)).toEqual(
+        expect.arrayContaining(['content.rotate_share', 'content.remove', 'content.restore']),
+      );
+    });
+
+    it('cancels an event through the events module, and unpublishes another', async () => {
+      const token = await adminToken();
+      const host = await newUser();
+      const create = async (title: string) =>
+        (
+          (
+            await request(server())
+              .post(`${V1}/events`)
+              .set(auth(host.token))
+              .send({
+                title,
+                type: 'birthday',
+                startsAt: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+                timezone: 'Asia/Kolkata',
+              })
+              .expect(201)
+          ).body as Envelope<{ id: string }>
+        ).data.id;
+      const publish = (id: string) =>
+        request(server()).post(`${V1}/events/${id}/publish`).set(auth(host.token)).expect(200);
+
+      const a = await create('Party A');
+      const b = await create('Party B');
+      await publish(a);
+      await publish(b);
+
+      await request(server())
+        .post(`${V1}/admin/content/events/${a}/actions/cancel`)
+        .set(auth(token))
+        .send({ reason: 'Fraudulent event' })
+        .expect(200);
+      await request(server())
+        .post(`${V1}/admin/content/events/${b}/actions/unpublish`)
+        .set(auth(token))
+        .send({ reason: 'Hold for review' })
+        .expect(200);
+
+      const list = (
+        await request(server())
+          .get(`${V1}/admin/content/events`)
+          .query({ owner: host.userId, status: 'cancelled' })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<ListPage>;
+      expect(list.data.items.map((e) => e.id)).toEqual([a]);
+      const draft = await db()
+        .collection('events')
+        .findOne({ _id: new Types.ObjectId(b) });
+      expect(draft!.status).toBe('draft');
+
+      const detail = (
+        await request(server()).get(`${V1}/admin/content/events/${a}`).set(auth(token)).expect(200)
+      ).body as Envelope<Detail>;
+      expect(detail.data.sections.map((s) => s.key)).toEqual(
+        expect.arrayContaining(['invites', 'join-requests', 'wishlists', 'memories']),
+      );
+    });
+
+    it('keeps memory wishes sealed, and removes and restores one exactly', async () => {
+      const token = await adminToken();
+      const host = await newUser();
+      const contributor = await newUser();
+      const capsuleId = new Types.ObjectId();
+      const wishId = new Types.ObjectId();
+      await db()
+        .collection('memory_capsules')
+        .insertOne({
+          _id: capsuleId,
+          hostId: new Types.ObjectId(host.userId),
+          title: 'For Asha',
+          personName: 'Asha',
+          occasion: 'birthday',
+          status: 'collecting',
+          unlockAt: new Date(Date.now() + 10 * DAY_MS),
+          timezone: 'Asia/Kolkata',
+          share: { slug: `mem${Date.now()}${seq}`, expiresAt: null, rotatedAt: new Date() },
+          wishCount: 1,
+          sharedWith: [],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      await db()
+        .collection('memory_wishes')
+        .insertOne({
+          _id: wishId,
+          capsuleId,
+          contributorId: new Types.ObjectId(contributor.userId),
+          contributorName: 'Ravi',
+          kind: 'text',
+          text: 'Happy birthday, from the bottom of my heart',
+          mediaId: null,
+          mediaUrl: null,
+          durationMs: 0,
+          order: 0,
+          reactionCount: 0,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+      const sealed = (
+        await request(server())
+          .get(`${V1}/admin/content/memories/${capsuleId.toString()}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Detail>;
+      const wishes = sealed.data.sections.find((s) => s.key === 'wishes')!;
+      expect(wishes.locked).toBe(true);
+      expect(wishes.items[0].text).toBeNull();
+      expect(wishes.items[0].contributorName).toBe('Ravi');
+
+      const removed = (
+        await request(server())
+          .post(`${V1}/admin/content/memories/${capsuleId.toString()}/actions/remove-wish`)
+          .set(auth(token))
+          .send({ reason: 'Abusive', wishId: wishId.toString() })
+          .expect(200)
+      ).body as Envelope<{ removal: { id: string } }>;
+      expect(await db().collection('memory_wishes').findOne({ _id: wishId })).toBeNull();
+      const capsule = () => db().collection('memory_capsules').findOne({ _id: capsuleId });
+      expect((await capsule())!.wishCount).toBe(0);
+
+      await request(server())
+        .post(`${V1}/admin/content/removals/${removed.data.removal.id}/restore`)
+        .set(auth(token))
+        .send({ reason: 'Misread it' })
+        .expect(200);
+      const back = await db().collection('memory_wishes').findOne({ _id: wishId });
+      expect(back!.text).toBe('Happy birthday, from the bottom of my heart');
+      expect((await capsule())!.wishCount).toBe(1);
+
+      // Relocking needs a date in the future.
+      await request(server())
+        .post(`${V1}/admin/content/memories/${capsuleId.toString()}/actions/relock`)
+        .set(auth(token))
+        .send({ reason: 'Hold', unlockAt: new Date(Date.now() - DAY_MS).toISOString() })
+        .expect(400);
+    });
+
+    it('reads a chat only on reveal, and deletes and restores a message', async () => {
+      const token = await adminToken();
+      const a = await newUser();
+      const b = await newUser();
+      const chatId = new Types.ObjectId();
+      const messageId = new Types.ObjectId();
+      await db()
+        .collection('chats')
+        .insertOne({
+          _id: chatId,
+          type: 'direct',
+          refId: new Types.ObjectId(),
+          participantIds: [new Types.ObjectId(a.userId), new Types.ObjectId(b.userId)],
+          lastMessageAt: new Date(),
+          settings: { whoCanPost: 'participants' },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      await db()
+        .collection('messages')
+        .insertOne({
+          _id: messageId,
+          chatId,
+          senderId: new Types.ObjectId(a.userId),
+          kind: 'text',
+          body: 'meet me at 7',
+          attachments: [],
+          reactions: [],
+          replyToId: null,
+          editedAt: null,
+          deletedAt: null,
+          systemType: null,
+          hideFromUserIds: [],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+      const listed = (
+        await request(server())
+          .get(`${V1}/admin/content/chats`)
+          .query({ participant: a.userId })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<ListPage>;
+      expect(listed.data.items.map((c) => c.id)).toEqual([chatId.toString()]);
+
+      const sealed = (
+        await request(server())
+          .get(`${V1}/admin/content/chats/${chatId.toString()}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Detail>;
+      expect(sealed.data.sections[0].items[0].body).toBeNull();
+      const open = (
+        await request(server())
+          .post(`${V1}/admin/content/chats/${chatId.toString()}/reveal`)
+          .set(auth(token))
+          .send({ reason: 'Harassment report' })
+          .expect(200)
+      ).body as Envelope<Detail>;
+      expect(open.data.sections[0].items[0].body).toBe('meet me at 7');
+
+      await request(server())
+        .post(`${V1}/admin/content/chats/${chatId.toString()}/actions/delete-message`)
+        .set(auth(token))
+        .send({ reason: 'Threat', messageId: messageId.toString() })
+        .expect(200);
+      expect(
+        (await db().collection('messages').findOne({ _id: messageId }))!.deletedAt,
+      ).toBeTruthy();
+      await request(server())
+        .post(`${V1}/admin/content/chats/${chatId.toString()}/actions/restore-message`)
+        .set(auth(token))
+        .send({ reason: 'Context: a joke', messageId: messageId.toString() })
+        .expect(200);
+      expect((await db().collection('messages').findOne({ _id: messageId }))!.deletedAt).toBeNull();
+    });
+
+    it('pages a long section, and reveals a later page with a reason', async () => {
+      const token = await adminToken();
+      const a = await newUser();
+      const chatId = new Types.ObjectId();
+      await db()
+        .collection('chats')
+        .insertOne({
+          _id: chatId,
+          type: 'direct',
+          refId: new Types.ObjectId(),
+          participantIds: [new Types.ObjectId(a.userId)],
+          lastMessageAt: new Date(),
+          settings: {},
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      await db()
+        .collection('messages')
+        .insertMany(
+          Array.from({ length: 60 }, (_, i) => ({
+            _id: new Types.ObjectId(),
+            chatId,
+            senderId: new Types.ObjectId(a.userId),
+            kind: 'text',
+            body: `message ${i}`,
+            attachments: [],
+            deletedAt: null,
+            createdAt: new Date(Date.now() + i),
+            updatedAt: new Date(),
+          })),
+        );
+
+      const detail = (
+        await request(server())
+          .get(`${V1}/admin/content/chats/${chatId.toString()}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Detail>;
+      const first = detail.data.sections[0];
+      expect(first.items).toHaveLength(50);
+      expect(first.total).toBe(60);
+
+      const sealed = (
+        await request(server())
+          .get(`${V1}/admin/content/chats/${chatId.toString()}/sections/messages`)
+          .query({ page: 2 })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { body: string | null }[]; locked: boolean; page: number }>;
+      expect(sealed.data.items).toHaveLength(10);
+      expect(sealed.data.locked).toBe(true);
+      expect(sealed.data.items[0].body).toBeNull();
+
+      const open = (
+        await request(server())
+          .post(`${V1}/admin/content/chats/${chatId.toString()}/sections/messages/reveal`)
+          .set(auth(token))
+          .send({ reason: 'Older context for a report', page: 2 })
+          .expect(200)
+      ).body as Envelope<{ items: { body: string | null }[] }>;
+      // Newest first, so the second page holds the oldest ten.
+      expect(open.data.items.map((m) => m.body)).toContain('message 0');
+
+      await request(server())
+        .get(`${V1}/admin/content/chats/${chatId.toString()}/sections/nope`)
+        .set(auth(token))
+        .expect(404);
+    });
+
+    it('offers item categories from the data, and shows a price drop on the item', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const listId = await wishlist(owner, `Alert list ${seq}`, WishlistVisibility.PUBLIC);
+      const itemId = await item(owner, listId, 'Headphones');
+      await db()
+        .collection('wishlist_items')
+        .updateOne(
+          { _id: new Types.ObjectId(itemId) },
+          {
+            $set: {
+              category: 'zz-test-audio',
+              'price.amountMinor': 500000,
+              sourceAlert: {
+                priceChangedAt: new Date(),
+                currentAmountMinor: 420000,
+                outOfStock: false,
+                checkedAt: new Date(),
+              },
+            },
+          },
+        );
+
+      const facets = (
+        await request(server())
+          .get(`${V1}/admin/content/items/facets/category`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<string[]>;
+      expect(facets.data).toContain('zz-test-audio');
+      await request(server())
+        .get(`${V1}/admin/content/items/facets/title`)
+        .set(auth(token))
+        .expect(404);
+
+      const list = (
+        await request(server())
+          .get(`${V1}/admin/content/items`)
+          .query({ category: 'zz-test-audio', minPrice: 400000, maxPrice: 600000 })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { id: string; alert: { currentAmountMinor: number } | null }[] }>;
+      expect(list.data.items.map((i) => i.id)).toEqual([itemId]);
+      expect(list.data.items[0].alert?.currentAmountMinor).toBe(420000);
+    });
+
+    it('shows the invitation card as guests get it', async () => {
+      const token = await adminToken();
+      const host = await newUser();
+      const eventId = (
+        (
+          await request(server())
+            .post(`${V1}/events`)
+            .set(auth(host.token))
+            .send({
+              title: 'Card party',
+              type: 'birthday',
+              startsAt: new Date(Date.now() + 30 * DAY_MS).toISOString(),
+              timezone: 'Asia/Kolkata',
+            })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+      await db()
+        .collection('events')
+        .updateOne(
+          { _id: new Types.ObjectId(eventId) },
+          {
+            $set: {
+              inviteTemplate: { templateId: 'celebration', colorVariant: 'blush', fields: {} },
+            },
+          },
+        );
+
+      const detail = (
+        await request(server())
+          .get(`${V1}/admin/content/events/${eventId}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<Detail>;
+      const invitation = detail.data.fields.invitation as {
+        templateId: string;
+        colorVariant: string;
+        text: { headline: string } | null;
+      };
+      expect(invitation.templateId).toBe('celebration');
+      expect(invitation.colorVariant).toBe('blush');
+      expect(invitation.text?.headline).toBeTruthy();
+    });
+
+    it('deletes a file for good, and re-processes only a failed video', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const photo = new Types.ObjectId();
+      await db()
+        .collection('media')
+        .insertOne({
+          _id: photo,
+          ownerId: new Types.ObjectId(owner.userId),
+          purpose: 'wishlist_cover',
+          storageKey: `test/${photo.toString()}.jpg`,
+          status: 'ready',
+          declaredContentType: 'image/jpeg',
+          contentType: 'image/jpeg',
+          sizeBytes: 3 * 1024 * 1024,
+          url: 'https://cdn.example.test/x.jpg',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+      const bySize = (
+        await request(server())
+          .get(`${V1}/admin/content/media`)
+          .query({ owner: owner.userId, minSize: 2 * 1024 * 1024, maxSize: 4 * 1024 * 1024 })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { id: string }[] }>;
+      expect(bySize.data.items.map((m) => m.id)).toEqual([photo.toString()]);
+
+      // A photo is never processed, so there is nothing to retry.
+      await request(server())
+        .post(`${V1}/admin/content/media/${photo.toString()}/actions/retry-processing`)
+        .set(auth(token))
+        .send({ reason: 'Try again' })
+        .expect(409);
+
+      await request(server())
+        .post(`${V1}/admin/content/media/${photo.toString()}/actions/delete-now`)
+        .set(auth(token))
+        .send({ reason: 'Illegal image' })
+        .expect(200);
+      expect(await db().collection('media').findOne({ _id: photo })).toBeNull();
+    });
+
+    it('exports a content list as CSV for those allowed to', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      await wishlist(owner, `Csv list ${seq}`, WishlistVisibility.PUBLIC);
+      const res = await request(server())
+        .get(`${V1}/admin/content/wishlists/export`)
+        .query({ owner: owner.userId })
+        .set(auth(token))
+        .expect(200);
+      expect(res.headers['content-type']).toContain('text/csv');
+      expect(res.text.split('\n')).toHaveLength(2);
+      // An analyst may export, but not content they cannot see.
+      await request(server())
+        .get(`${V1}/admin/content/wishlists/export`)
+        .set(auth(await roleToken('analyst')))
+        .expect(403);
+    });
+  });
+
+  describe('money explorer', () => {
+    const idem = () => ({ 'Idempotency-Key': `idem-${randomUUID()}` });
+    const db = () => app.get<Connection>(getConnectionToken()).db!;
+
+    const roleToken = async (role: string): Promise<string> => {
+      const email = `${role}-m${++seq}-${Date.now()}@wishtick.test`;
+      const password = 'a-long-enough-password';
+      await request(server())
+        .post(`${V1}/admin/admins`)
+        .set(auth(await adminToken()))
+        .send({ email, password, name: role, roles: [role] })
+        .expect(201);
+      return signIn(email, password);
+    };
+
+    const itemFor = async (owner: Actor, price = 249900): Promise<string> => {
+      const wl = (
+        await request(server())
+          .post(`${V1}/wishlists`)
+          .set(auth(owner.token))
+          .send({ title: `Money list ${++seq}`, visibility: WishlistVisibility.PUBLIC })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      return (
+        (
+          await request(server())
+            .post(`${V1}/wishlists/${wl.data.id}/items`)
+            .set(auth(owner.token))
+            .send({ title: 'Headphones', price: { amountMinor: price } })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+    };
+
+    const reserve = async (gifter: Actor, itemId: string): Promise<string> =>
+      (
+        (
+          await request(server())
+            .post(`${V1}/items/${itemId}/reserve`)
+            .set(auth(gifter.token))
+            .set(idem())
+            .send({})
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+
+    const act = (token: string, kind: string, rowId: string, action: string, body: object) =>
+      request(server())
+        .post(`${V1}/admin/money/${kind}/${rowId}/actions/${action}`)
+        .set(auth(token))
+        .send(body);
+
+    it('lists gifts, finds a stuck reservation, and opens one with its history', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const gifter = await newUser();
+      const giftId = await reserve(gifter, await itemFor(owner));
+      await db()
+        .collection('gifts')
+        .updateOne(
+          { _id: new Types.ObjectId(giftId) },
+          { $set: { expiresAt: new Date(Date.now() - 60_000) } },
+        );
+
+      const stuck = (
+        await request(server())
+          .get(`${V1}/admin/money/gifts`)
+          .query({ stuck: 'yes', owner: gifter.userId })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { id: string; stuck: boolean; itemTitle: string }[] }>;
+      expect(stuck.data.items.map((g) => g.id)).toEqual([giftId]);
+      expect(stuck.data.items[0].stuck).toBe(true);
+      expect(stuck.data.items[0].itemTitle).toBe('Headphones');
+
+      const detail = (
+        await request(server())
+          .get(`${V1}/admin/money/gifts/${giftId}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ sections: { key: string; items: { status: string }[] }[] }>;
+      const history = detail.data.sections.find((s) => s.key === 'history')!;
+      expect(history.items[0].status).toBe('reserved');
+
+      // A role without money:view cannot look.
+      await request(server())
+        .get(`${V1}/admin/money/gifts`)
+        .set(auth(await roleToken('moderator')))
+        .expect(403);
+    });
+
+    it('extends a hold, then cancels the gift — freeing the item, on the record', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const gifter = await newUser();
+      const itemId = await itemFor(owner);
+      const giftId = await reserve(gifter, itemId);
+
+      const until = new Date(Date.now() + 10 * DAY_MS).toISOString();
+      await act(token, 'gifts', giftId, 'extend', {
+        reason: 'Asked support for time',
+        until,
+      }).expect(200);
+      const extended = await db()
+        .collection('gifts')
+        .findOne({ _id: new Types.ObjectId(giftId) });
+      expect((extended!.expiresAt as Date).toISOString()).toBe(until);
+
+      // Support can see money but not change it.
+      await act(await roleToken('support'), 'gifts', giftId, 'cancel', { reason: 'No' }).expect(
+        403,
+      );
+
+      await act(token, 'gifts', giftId, 'cancel', { reason: 'Duplicate reservation' }).expect(200);
+      const gift = await db()
+        .collection('gifts')
+        .findOne({ _id: new Types.ObjectId(giftId) });
+      expect(gift!.status).toBe('cancelled');
+      const history = gift!.history as { by: string; note: string }[];
+      expect(history.at(-1)!.by).toBe(`admin:${ADMIN_EMAIL}`);
+      const item = await db()
+        .collection('wishlist_items')
+        .findOne({ _id: new Types.ObjectId(itemId) });
+      expect(item!.status).toBe('available');
+
+      const audit = (
+        await request(server())
+          .get(`${V1}/admin/audit`)
+          .query({ targetId: giftId })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { action: string }[] }>;
+      expect(audit.data.items.map((a) => a.action)).toEqual(
+        expect.arrayContaining(['money.extend', 'money.cancel']),
+      );
+
+      // A cancelled gift cannot be bought: the gift rules still apply.
+      await act(token, 'gifts', giftId, 'mark-purchased', { reason: 'Oops' }).expect(409);
+    });
+
+    it('marks a gift bought, which opens its order; then corrects the order', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const gifter = await newUser();
+      const giftId = await reserve(gifter, await itemFor(owner));
+      await act(token, 'gifts', giftId, 'mark-purchased', { reason: 'Receipt by email' }).expect(
+        200,
+      );
+
+      // The order is created by the gift lifecycle listener.
+      let order: Record<string, unknown> | null = null;
+      for (let i = 0; i < 20 && !order; i++) {
+        order = await db()
+          .collection('orders')
+          .findOne({ giftId: new Types.ObjectId(giftId) });
+        if (!order) await delay(50);
+      }
+      expect(order).not.toBeNull();
+      const orderId = String(order!._id);
+
+      await act(token, 'orders', orderId, 'set-stage', {
+        reason: 'Courier confirmed',
+        stage: 'shipped',
+      }).expect(200);
+      await act(token, 'orders', orderId, 'set-tracking', {
+        reason: 'Courier sent it',
+        courier: 'Delhivery',
+        trackingNumber: 'DL123',
+      }).expect(200);
+      // Back a step is allowed for an admin, on the record as manual.
+      await act(token, 'orders', orderId, 'set-stage', {
+        reason: 'Mis-scan',
+        stage: 'processing',
+      }).expect(200);
+
+      const detail = (
+        await request(server())
+          .get(`${V1}/admin/money/orders/${orderId}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{
+        row: { stage: string; courier: string };
+        sections: { key: string; items: { stage: string; source: string }[] }[];
+      }>;
+      expect(detail.data.row.stage).toBe('processing');
+      expect(detail.data.row.courier).toBe('Delhivery');
+      const timeline = detail.data.sections.find((s) => s.key === 'timeline')!;
+      expect(timeline.items[0]).toEqual(
+        expect.objectContaining({ stage: 'processing', source: 'manual' }),
+      );
+      await act(token, 'orders', orderId, 'set-stage', { reason: 'x', stage: 'teleported' }).expect(
+        400,
+      );
+    });
+
+    it('replays a dead-lettered webhook once its gift exists', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const gifter = await newUser();
+      const giftId = await reserve(gifter, await itemFor(owner));
+      const orderRef = `ord-${randomUUID()}`;
+      await db()
+        .collection('gifts')
+        .updateOne({ _id: new Types.ObjectId(giftId) }, { $set: { orderRef } });
+      const eventId = new Types.ObjectId();
+      await db()
+        .collection('webhook_events')
+        .insertOne({
+          _id: eventId,
+          provider: 'fixture',
+          providerEventId: `evt-${randomUUID()}`,
+          eventType: 'order',
+          orderRef,
+          status: 'unmatched',
+          matchedGiftId: null,
+          payload: { providerEventId: 'x', eventType: 'order', orderRef, timestamp: Date.now() },
+          note: 'no active online gift matched this orderRef',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+      const res = (
+        await act(token, 'webhooks', eventId.toString(), 'replay', {
+          reason: 'Gift exists now',
+        }).expect(200)
+      ).body as Envelope<{ result: { status: string; giftId: string } }>;
+      expect(res.data.result).toEqual({ status: 'processed', giftId });
+      const gift = await db()
+        .collection('gifts')
+        .findOne({ _id: new Types.ObjectId(giftId) });
+      expect(gift!.status).toBe('purchased');
+      // Processed now, so there is nothing left to replay.
+      await act(token, 'webhooks', eventId.toString(), 'replay', { reason: 'Again' }).expect(409);
+    });
+
+    it('refunds a contribution, cancels a group gift, and logs drift', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const host = await newUser();
+      const itemId = await itemFor(owner, 500000);
+      const gg = (
+        (
+          await request(server())
+            .post(`${V1}/items/${itemId}/group-gift`)
+            .set(auth(host.token))
+            .set(idem())
+            .send({ title: 'Team gift', contributionMode: 'custom' })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+      await request(server())
+        .post(`${V1}/group-gifts/${gg}/contribute`)
+        .set(auth(host.token))
+        .set(idem())
+        .send({ amountMinor: 100000 })
+        .expect(201);
+
+      const detail = (
+        await request(server())
+          .get(`${V1}/admin/money/group-gifts/${gg}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{
+        fields: { balance: { collectedMinor: number } };
+        sections: { key: string; items: { id: string; status: string }[] }[];
+      }>;
+      expect(detail.data.fields.balance.collectedMinor).toBe(100000);
+      const contribution = detail.data.sections.find((s) => s.key === 'contributions')!.items[0];
+
+      await act(token, 'group-gifts', gg, 'refund-contribution', {
+        reason: 'Paid back by bank transfer',
+        contributionId: contribution.id,
+      }).expect(200);
+      const after = await db()
+        .collection('group_gifts')
+        .findOne({ _id: new Types.ObjectId(gg) });
+      expect(after!.collectedAmountMinor).toBe(0);
+
+      // Drift: the cached total disagrees with the contributions.
+      await db()
+        .collection('group_gifts')
+        .updateOne({ _id: new Types.ObjectId(gg) }, { $set: { collectedAmountMinor: 777 } });
+      await app.get(GroupGiftReconcileService).reconcile();
+      let logged = false;
+      for (let i = 0; i < 20 && !logged; i++) {
+        logged =
+          (await db()
+            .collection('ops_events')
+            .countDocuments({ refId: new Types.ObjectId(gg) })) > 0;
+        if (!logged) await delay(50);
+      }
+      expect(logged).toBe(true);
+      const drift = (
+        await request(server()).get(`${V1}/admin/money/drift`).set(auth(token)).expect(200)
+      ).body as Envelope<{ items: { groupGiftId: string; driftMinor: number }[] }>;
+      expect(drift.data.items.find((d) => d.groupGiftId === gg)?.driftMinor).toBe(777);
+      const drifted = (
+        await request(server())
+          .get(`${V1}/admin/money/group-gifts`)
+          .query({ drift: 'yes', owner: host.userId })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { id: string }[] }>;
+      expect(drifted.data.items.map((g) => g.id)).toEqual([gg]);
+
+      await act(token, 'group-gifts', gg, 'cancel', {
+        reason: 'Recipient asked us to stop it',
+      }).expect(200);
+      const cancelled = await db()
+        .collection('group_gifts')
+        .findOne({ _id: new Types.ObjectId(gg) });
+      expect(cancelled!.status).toBe('cancelled');
+      expect(cancelled!.cancelReason).toBe('Recipient asked us to stop it');
+    });
+
+    it('sums money by month, and exports it for those allowed to', async () => {
+      const token = await adminToken();
+      await db()
+        .collection('conversions')
+        .insertOne({
+          network: 'cuelinks',
+          externalId: `cx-${randomUUID()}`,
+          campaignName: 'Zz Test Store',
+          saleAmountMinor: 100000,
+          commissionMinor: 5000,
+          currency: 'INR',
+          status: 'pending',
+          transactionAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      const finance = (
+        await request(server()).get(`${V1}/admin/money/finance`).set(auth(token)).expect(200)
+      ).body as Envelope<{
+        months: { month: string; commissionByStatus: Record<string, number> }[];
+      }>;
+      const thisMonth = new Date().toISOString().slice(0, 7);
+      const row = finance.data.months.find((m) => m.month === thisMonth)!;
+      expect(row.commissionByStatus.pending).toBeGreaterThanOrEqual(5000);
+
+      const affiliate = (
+        await request(server()).get(`${V1}/admin/money/affiliate`).set(auth(token)).expect(200)
+      ).body as Envelope<{ byMerchant: { merchant: string; commissionMinor: number }[] }>;
+      expect(
+        affiliate.data.byMerchant.find((m) => m.merchant === 'Zz Test Store')?.commissionMinor,
+      ).toBe(5000);
+
+      const csvRes = await request(server())
+        .get(`${V1}/admin/money/finance/export`)
+        .set(auth(await roleToken('analyst')))
+        .expect(200);
+      expect(csvRes.text).toContain('month,gmvMinor');
+      await request(server())
+        .post(`${V1}/admin/money/affiliate/sync`)
+        .set(auth(await roleToken('analyst')))
+        .expect(403);
+      await request(server()).post(`${V1}/admin/money/affiliate/sync`).set(auth(token)).expect(200);
+    });
+  });
+
+  describe('notifications centre', () => {
+    const db = () => app.get<Connection>(getConnectionToken()).db!;
+
+    const roleToken = async (role: string): Promise<string> => {
+      const email = `${role}-n${++seq}-${Date.now()}@wishtick.test`;
+      const password = 'a-long-enough-password';
+      await request(server())
+        .post(`${V1}/admin/admins`)
+        .set(auth(await adminToken()))
+        .send({ email, password, name: role, roles: [role] })
+        .expect(201);
+      return signIn(email, password);
+    };
+
+    /** Polls until [check] passes or two seconds go by. */
+    const eventually = async (check: () => Promise<boolean>): Promise<boolean> => {
+      for (let i = 0; i < 40; i++) {
+        if (await check()) return true;
+        await delay(50);
+      }
+      return false;
+    };
+
+    it('lists deliveries with addresses masked, and sums outcomes by channel', async () => {
+      const token = await adminToken();
+      const user = await newUser();
+      const uid = new Types.ObjectId(user.userId);
+      await db()
+        .collection('delivery_logs')
+        .insertMany([
+          {
+            userId: uid,
+            type: 'gift_purchased',
+            channel: 'email',
+            refId: `r-${seq}`,
+            dedupeKey: `k-${seq}-1-${Date.now()}`,
+            status: 'failed',
+            destination: 'asha.rao@example.com',
+            providerRef: null,
+            error: 'mailbox full',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          {
+            userId: uid,
+            type: 'gift_purchased',
+            channel: 'email',
+            refId: `r-${seq}`,
+            dedupeKey: `k-${seq}-2-${Date.now()}`,
+            status: 'sent',
+            destination: 'asha.rao@example.com',
+            providerRef: 'p1',
+            error: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        ]);
+
+      const failed = (
+        await request(server())
+          .get(`${V1}/admin/notifications/deliveries`)
+          .query({ owner: user.userId, status: 'failed' })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { destination: string; error: string }[] }>;
+      expect(failed.data.items).toHaveLength(1);
+      expect(failed.data.items[0].error).toBe('mailbox full');
+      expect(failed.data.items[0].destination).not.toContain('asha.rao');
+
+      const overview = (
+        await request(server())
+          .get(`${V1}/admin/notifications/overview`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ byChannel: { channel: string; counts: Record<string, number> }[] }>;
+      const email = overview.data.byChannel.find((c) => c.channel === 'email')!;
+      expect(email.counts.failed).toBeGreaterThanOrEqual(1);
+
+      // An analyst has no business with notifications.
+      await request(server())
+        .get(`${V1}/admin/notifications/overview`)
+        .set(auth(await roleToken('analyst')))
+        .expect(403);
+    });
+
+    it('previews any notification, including an announcement', async () => {
+      const token = await adminToken();
+      const list = (
+        await request(server())
+          .get(`${V1}/admin/notifications/templates`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ type: string; channels: string[] }[]>;
+      expect(list.data.find((t) => t.type === 'admin_announcement')?.channels).toEqual([
+        'in_app',
+        'push',
+      ]);
+
+      const preview = (
+        await request(server())
+          .post(`${V1}/admin/notifications/templates/admin_announcement/preview`)
+          .set(auth(token))
+          .send({ payload: { title: 'Diwali gifting is open', body: 'Lists for everyone.' } })
+          .expect(200)
+      ).body as Envelope<{ title: string; text: string; html: string }>;
+      expect(preview.data.title).toBe('Diwali gifting is open');
+      expect(preview.data.html).toContain('Lists for everyone.');
+
+      await request(server())
+        .post(`${V1}/admin/notifications/templates/nonsense/preview`)
+        .set(auth(token))
+        .send({})
+        .expect(404);
+    });
+
+    it('lets an address receive again, on the record', async () => {
+      const token = await adminToken();
+      const address = `bounce-${seq}-${Date.now()}@example.com`;
+      await app.get(NotificationService).suppress(NotificationChannel.EMAIL, address);
+
+      const listed = (
+        await request(server())
+          .get(`${V1}/admin/notifications/suppressions`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{
+        revealed: boolean;
+        channels: { channel: string; addresses: string[] }[];
+      }>;
+      expect(listed.data.revealed).toBe(true);
+      expect(listed.data.channels.find((c) => c.channel === 'email')!.addresses).toContain(address);
+
+      // Support can look, but not change who receives mail.
+      await request(server())
+        .post(`${V1}/admin/notifications/suppressions/remove`)
+        .set(auth(await roleToken('support')))
+        .send({ channel: 'email', address, reason: 'Fixed mailbox' })
+        .expect(403);
+
+      await request(server())
+        .post(`${V1}/admin/notifications/suppressions/remove`)
+        .set(auth(token))
+        .send({ channel: 'email', address, reason: 'Fixed mailbox' })
+        .expect(200);
+      expect(
+        await app.get(NotificationService).isSuppressedAddress(NotificationChannel.EMAIL, address),
+      ).toBe(false);
+      await request(server())
+        .post(`${V1}/admin/notifications/suppressions/remove`)
+        .set(auth(token))
+        .send({ channel: 'email', address, reason: 'Again' })
+        .expect(404);
+    });
+
+    it('test-sends one notification to one person', async () => {
+      const token = await adminToken();
+      const user = await newUser();
+      await request(server())
+        .post(`${V1}/admin/notifications/test`)
+        .set(auth(token))
+        .send({
+          type: 'admin_announcement',
+          userId: user.userId,
+          payload: { title: 'Test from ops' },
+        })
+        .expect(200);
+      await ctx.drainNotifications();
+      const arrived = await eventually(
+        async () =>
+          (await db()
+            .collection('notifications')
+            .countDocuments({
+              userId: new Types.ObjectId(user.userId),
+              type: 'admin_announcement',
+            })) > 0,
+      );
+      expect(arrived).toBe(true);
+      await request(server())
+        .post(`${V1}/admin/notifications/test`)
+        .set(auth(token))
+        .send({ type: 'admin_announcement', userId: DUMMY_ID })
+        .expect(404);
+    });
+
+    it('counts an audience first, then announces to exactly it', async () => {
+      const token = await adminToken();
+      const city = `Zzcity${seq}${Date.now()}`;
+      const inCity = await newUser();
+      const elsewhere = await newUser();
+      await db()
+        .collection('user_profiles')
+        .updateOne(
+          { userId: new Types.ObjectId(inCity.userId) },
+          { $set: { city } },
+          { upsert: true },
+        );
+
+      const dry = (
+        await request(server())
+          .post(`${V1}/admin/notifications/broadcasts/dry-run`)
+          .set(auth(token))
+          .send({ segment: { city: city.toLowerCase() } })
+          .expect(200)
+      ).body as Envelope<{ count: number }>;
+      expect(dry.data.count).toBe(1);
+
+      const sent = (
+        await request(server())
+          .post(`${V1}/admin/notifications/broadcasts`)
+          .set(auth(token))
+          .send({ title: 'Hello city', body: 'Something for you.', segment: { city } })
+          .expect(201)
+      ).body as Envelope<{ id: string; audience: number }>;
+      expect(sent.data.audience).toBe(1);
+
+      // The fan-out is a scheduler job: queued, then run here as the worker would.
+      const job = ctx.scheduler.added.find(
+        (j) =>
+          j.name === 'admin-broadcast' &&
+          (j.data as { broadcastId: string }).broadcastId === sent.data.id,
+      );
+      expect(job).toBeDefined();
+      await app.get(SchedulerRegistry).get('admin-broadcast')!(job!.data);
+      await ctx.drainNotifications();
+
+      const done = await eventually(async () => {
+        const b = await db()
+          .collection('admin_broadcasts')
+          .findOne({ _id: new Types.ObjectId(sent.data.id) });
+        return b?.status === 'sent';
+      });
+      expect(done).toBe(true);
+      const got = (id: string) =>
+        db()
+          .collection('notifications')
+          .countDocuments({ userId: new Types.ObjectId(id), type: 'admin_announcement' });
+      expect(await eventually(async () => (await got(inCity.userId)) === 1)).toBe(true);
+      expect(await got(elsewhere.userId)).toBe(0);
+
+      // Nobody matches → nothing is queued.
+      await request(server())
+        .post(`${V1}/admin/notifications/broadcasts`)
+        .set(auth(token))
+        .send({ title: 'Nobody', body: 'No one here.', segment: { city: 'Nowhere-at-all' } })
+        .expect(400);
+    });
+
+    it('turns off pushes to one device', async () => {
+      const token = await adminToken();
+      const user = await newUser();
+      const deviceId = new Types.ObjectId();
+      await db()
+        .collection('device_tokens')
+        .insertOne({
+          _id: deviceId,
+          userId: new Types.ObjectId(user.userId),
+          token: `tok-${deviceId.toString()}`,
+          platform: 'android',
+          deviceName: 'Pixel 8',
+          lastSeenAt: new Date(),
+          revokedAt: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      await request(server())
+        .post(`${V1}/admin/notifications/devices/${deviceId.toString()}/actions/revoke`)
+        .set(auth(token))
+        .send({ reason: 'Lost phone' })
+        .expect(200);
+      const after = await db().collection('device_tokens').findOne({ _id: deviceId });
+      expect(after!.revokedAt).toBeTruthy();
+    });
+  });
+
+  describe('operations desk', () => {
+    const roleToken = async (role: string): Promise<string> => {
+      const email = `${role}-o${++seq}-${Date.now()}@wishtick.test`;
+      const password = 'a-long-enough-password';
+      await request(server())
+        .post(`${V1}/admin/admins`)
+        .set(auth(await adminToken()))
+        .send({ email, password, name: role, roles: [role] })
+        .expect(201);
+      return signIn(email, password);
+    };
+
+    it('lists every queue, and pauses and resumes one on the record', async () => {
+      const token = await adminToken();
+      const list = (
+        await request(server()).get(`${V1}/admin/ops/queues`).set(auth(token)).expect(200)
+      ).body as Envelope<{ name: string; paused: boolean; counts: Record<string, number> }[]>;
+      expect(list.data.map((q) => q.name)).toEqual(
+        expect.arrayContaining(['scheduler', 'notifications']),
+      );
+
+      await request(server())
+        .post(`${V1}/admin/ops/queues/scheduler/pause`)
+        .set(auth(token))
+        .send({ paused: true, reason: 'Investigating a stuck job' })
+        .expect(200);
+      const one = (
+        await request(server()).get(`${V1}/admin/ops/queues/scheduler`).set(auth(token)).expect(200)
+      ).body as Envelope<{ paused: boolean; state: string; jobs: unknown[] }>;
+      expect(one.data.paused).toBe(true);
+      expect(one.data.state).toBe('failed');
+      await request(server())
+        .post(`${V1}/admin/ops/queues/scheduler/pause`)
+        .set(auth(token))
+        .send({ paused: false, reason: 'Fixed' })
+        .expect(200);
+
+      await request(server()).get(`${V1}/admin/ops/queues/nonsense`).set(auth(token)).expect(404);
+      // Support has no business with the machinery.
+      await request(server())
+        .get(`${V1}/admin/ops/queues`)
+        .set(auth(await roleToken('support')))
+        .expect(403);
+
+      const audit = (
+        await request(server())
+          .get(`${V1}/admin/audit`)
+          .query({ targetId: 'scheduler' })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { action: string }[] }>;
+      expect(audit.data.items.map((a) => a.action)).toEqual(
+        expect.arrayContaining(['ops.pause_queue', 'ops.resume_queue']),
+      );
+    });
+
+    it('checks the database, Redis and queues', async () => {
+      const token = await adminToken();
+      const health = (
+        await request(server()).get(`${V1}/admin/ops/health`).set(auth(token)).expect(200)
+      ).body as Envelope<{ checks: { name: string; ok: boolean }[] }>;
+      expect(health.data.checks.map((c) => c.name)).toEqual(['Database', 'Redis', 'Queues']);
+      expect(health.data.checks.find((c) => c.name === 'Database')?.ok).toBe(true);
+    });
+
+    it('shows product search spending, and counts cache hits apart from misses', async () => {
+      const token = await adminToken();
+      const user = await newUser();
+      // The same search twice: the first goes to the provider, the second is cached.
+      for (let i = 0; i < 2; i++) {
+        await request(server())
+          .get(`${V1}/products/search`)
+          .query({ q: `ops check ${seq}` })
+          .set(auth(user.token))
+          .expect(200);
+      }
+      const stats = (
+        await request(server()).get(`${V1}/admin/ops/product-search`).set(auth(token)).expect(200)
+      ).body as Envelope<{
+        provider: string;
+        breaker: string;
+        requests: { thisMonth: number };
+        cache: { days: { hits: number; misses: number }[]; hitRate: number | null };
+      }>;
+      const today = stats.data.cache.days.at(-1)!;
+      expect(today.hits).toBeGreaterThanOrEqual(1);
+      expect(today.misses).toBeGreaterThanOrEqual(1);
+      expect(stats.data.requests.thisMonth).toBeGreaterThanOrEqual(1);
+      expect(stats.data.breaker).toBe('closed');
+
+      const budget = (
+        await request(server())
+          .get(`${V1}/admin/ops/product-search/budget/${user.userId}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ spent: number; budget: number }>;
+      expect(budget.data.budget).toBe(60);
+
+      await request(server())
+        .post(`${V1}/admin/ops/product-search/reset-breaker`)
+        .set(auth(token))
+        .send({ reason: 'Vendor is back' })
+        .expect(200);
+    });
+
+    it('clears a named cache, and only the named ones', async () => {
+      const token = await adminToken();
+      await request(server()).get(`${V1}/admin/dashboard`).set(auth(token)).expect(200);
+      const cleared = (
+        await request(server())
+          .post(`${V1}/admin/ops/caches/dashboard/clear`)
+          .set(auth(token))
+          .send({ reason: 'Numbers looked stale' })
+          .expect(200)
+      ).body as Envelope<{ removed: number }>;
+      expect(cleared.data.removed).toBeGreaterThanOrEqual(1);
+      await request(server())
+        .post(`${V1}/admin/ops/caches/sessions/clear`)
+        .set(auth(token))
+        .send({ reason: 'Nope' })
+        .expect(404);
+    });
+
+    it('lists migrations and the settings, with no secret among them', async () => {
+      const token = await adminToken();
+      const migrations = (
+        await request(server()).get(`${V1}/admin/ops/migrations`).set(auth(token)).expect(200)
+      ).body as Envelope<{ id: string; applied: boolean }[]>;
+      expect(migrations.data.some((m) => m.id.startsWith('038'))).toBe(true);
+
+      const settings = await request(server())
+        .get(`${V1}/admin/ops/settings`)
+        .set(auth(token))
+        .expect(200);
+      const text = JSON.stringify(settings.body).toLowerCase();
+      expect(text).toContain('product search');
+      for (const secret of ['secret', 'password', 'apikey', 'mongodb://', 'dsn']) {
+        expect(text).not.toContain(secret);
+      }
+    });
+  });
+
+  describe('catalogue desk', () => {
+    const roleToken = async (role: string): Promise<string> => {
+      const email = `${role}-c${++seq}-${Date.now()}@wishtick.test`;
+      const password = 'a-long-enough-password';
+      await request(server())
+        .post(`${V1}/admin/admins`)
+        .set(auth(await adminToken()))
+        .send({ email, password, name: role, roles: [role] })
+        .expect(201);
+      return signIn(email, password);
+    };
+    type Term = { id: string; key: string; label: string; active: boolean; uses: number };
+    const optionsText = async (): Promise<string> =>
+      JSON.stringify((await request(server()).get(`${V1}/onboarding/options`).expect(200)).body);
+
+    it('adds, relabels, retires and restores an option, and the app sees each change', async () => {
+      const token = await adminToken();
+      const kinds = (
+        await request(server()).get(`${V1}/admin/catalog/taxonomy`).set(auth(token)).expect(200)
+      ).body as Envelope<{ kind: string; total: number; canAdd: boolean }[]>;
+      expect(kinds.data.find((k) => k.kind === 'lifestyle')?.total).toBeGreaterThan(0);
+      expect(kinds.data.find((k) => k.kind === 'event_type')?.canAdd).toBe(false);
+      await optionsText(); // warm the options cache
+
+      const key = `stargazing_${seq}`;
+      const created = (
+        await request(server())
+          .post(`${V1}/admin/catalog/taxonomy/lifestyle`)
+          .set(auth(token))
+          .send({ key, label: 'Stargazing' })
+          .expect(201)
+      ).body as Envelope<Term>;
+      expect(await optionsText()).toContain('Stargazing');
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/lifestyle`)
+        .set(auth(token))
+        .send({ key, label: 'Again' })
+        .expect(409);
+
+      await request(server())
+        .patch(`${V1}/admin/catalog/taxonomy/lifestyle/${created.data.id}`)
+        .set(auth(token))
+        .send({ label: 'Stargazing and astronomy', key: 'ignored' })
+        .expect(200);
+      let text = await optionsText();
+      expect(text).toContain('Stargazing and astronomy');
+      expect(text).toContain(key);
+
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/lifestyle/${created.data.id}/active`)
+        .set(auth(token))
+        .send({ active: false, reason: 'Too niche' })
+        .expect(200);
+      text = await optionsText();
+      expect(text).not.toContain(key);
+      // Retired, not deleted: the panel still lists it.
+      const list = (
+        await request(server())
+          .get(`${V1}/admin/catalog/taxonomy/lifestyle`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ terms: Term[] }>;
+      expect(list.data.terms.find((t) => t.key === key)?.active).toBe(false);
+
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/lifestyle/${created.data.id}/active`)
+        .set(auth(token))
+        .send({ active: true })
+        .expect(200);
+      expect(await optionsText()).toContain(key);
+
+      const audit = (
+        await request(server())
+          .get(`${V1}/admin/audit`)
+          .query({ targetId: created.data.id })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { action: string }[] }>;
+      expect(audit.data.items.map((a) => a.action)).toEqual(
+        expect.arrayContaining([
+          'catalog.add_option',
+          'catalog.edit_option',
+          'catalog.retire_option',
+          'catalog.restore_option',
+        ]),
+      );
+    });
+
+    it('checks the extras an option needs, and keeps the ones the app depends on', async () => {
+      const token = await adminToken();
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/interest`)
+        .set(auth(token))
+        .send({ key: `x_${seq}`, label: 'No category' })
+        .expect(400);
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/interest`)
+        .set(auth(token))
+        .send({ key: `x_${seq}`, label: 'Bad category', meta: { category: 'nonsense' } })
+        .expect(400);
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/color`)
+        .set(auth(token))
+        .send({
+          key: `c_${seq}`,
+          label: 'Bad hex',
+          meta: { hex: 'red', group: 'red', groupLabel: 'Reds' },
+        })
+        .expect(400);
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/lifestyle`)
+        .set(auth(token))
+        .send({ key: 'Has Spaces', label: 'Bad key' })
+        .expect(400);
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/event_type`)
+        .set(auth(token))
+        .send({ key: `party_${seq}`, label: 'Party' })
+        .expect(400);
+
+      const interests = (
+        await request(server())
+          .get(`${V1}/admin/catalog/taxonomy/interest`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ choices: Record<string, { value: string }[]> }>;
+      const category = interests.data.choices.category[0].value;
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/interest`)
+        .set(auth(token))
+        .send({ key: `${category}_kites_${seq}`, label: 'Kites', meta: { category } })
+        .expect(201);
+
+      const occasions = (
+        await request(server())
+          .get(`${V1}/admin/catalog/taxonomy/occasion`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ terms: (Term & { fixed: boolean })[] }>;
+      const other = occasions.data.terms.find((t) => t.key === 'other')!;
+      expect(other.fixed).toBe(true);
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/occasion/${other.id}/active`)
+        .set(auth(token))
+        .send({ active: false })
+        .expect(400);
+    });
+
+    it('reorders options, counts their use, and lets only catalogue managers change them', async () => {
+      const token = await adminToken();
+      const user = await newUser();
+      const before = (
+        await request(server())
+          .get(`${V1}/admin/catalog/taxonomy/fit_preference`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ terms: Term[] }>;
+      const fit = before.data.terms[0];
+      await request(server())
+        .patch(`${V1}/me/preferences`)
+        .set(auth(user.token))
+        .send({ fitPreference: fit.key })
+        .expect(200);
+
+      const reversed = [...before.data.terms].reverse().map((t) => t.id);
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/fit_preference/reorder`)
+        .set(auth(token))
+        .send({ ids: reversed })
+        .expect(200);
+      const after = (
+        await request(server())
+          .get(`${V1}/admin/catalog/taxonomy/fit_preference`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ terms: Term[] }>;
+      expect(after.data.terms.map((t) => t.id)).toEqual(reversed);
+      expect(after.data.terms.find((t) => t.id === fit.id)!.uses).toBeGreaterThanOrEqual(1);
+      // Put it back for the rest of the suite.
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/fit_preference/reorder`)
+        .set(auth(token))
+        .send({ ids: before.data.terms.map((t) => t.id) })
+        .expect(200);
+
+      const support = await roleToken('support');
+      await request(server())
+        .get(`${V1}/admin/catalog/taxonomy/fit_preference`)
+        .set(auth(support))
+        .expect(200);
+      await request(server())
+        .patch(`${V1}/admin/catalog/taxonomy/fit_preference/${fit.id}`)
+        .set(auth(support))
+        .send({ label: 'Nope' })
+        .expect(403);
+      await request(server())
+        .get(`${V1}/admin/catalog/taxonomy/flavours`)
+        .set(auth(token))
+        .expect(404);
+    });
+
+    it('browses products with their sellers and stores, and refreshes one on the record', async () => {
+      const token = await adminToken();
+      const user = await newUser();
+      await request(server())
+        .get(`${V1}/products/search`)
+        .query({ q: 'headphones' })
+        .set(auth(user.token))
+        .expect(200);
+
+      const list = (
+        await request(server())
+          .get(`${V1}/admin/catalog/products`)
+          .query({ sort: 'synced' })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{
+        items: { id: string; title: string; provider: string; trust: number }[];
+        total: number;
+      }>;
+      expect(list.data.total).toBeGreaterThan(0);
+      const product = list.data.items[0];
+      expect([0, 1, 2]).toContain(product.trust);
+
+      const providers = (
+        await request(server())
+          .get(`${V1}/admin/catalog/products/facets/provider`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<string[]>;
+      expect(providers.data).toContain(product.provider);
+
+      const detail = (
+        await request(server())
+          .get(`${V1}/admin/catalog/products/${product.id}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ sections: { key: string }[] }>;
+      expect(detail.data.sections.map((s) => s.key)).toEqual(['offers', 'items', 'clicks']);
+
+      const refreshed = (
+        await request(server())
+          .post(`${V1}/admin/catalog/products/${product.id}/actions/refresh`)
+          .set(auth(token))
+          .send({ reason: 'Price looked wrong' })
+          .expect(200)
+      ).body as Envelope<{ result: { freshness: string } }>;
+      expect(refreshed.data.result.freshness).toBeTruthy();
+      await request(server())
+        .post(`${V1}/admin/catalog/products/${product.id}/actions/delete`)
+        .set(auth(token))
+        .send({ reason: 'Nope' })
+        .expect(400);
+
+      const stores = (
+        await request(server()).get(`${V1}/admin/catalog/stores`).set(auth(token)).expect(200)
+      ).body as Envelope<{ trusted: string[]; resellers: string[]; merchants: unknown[] }>;
+      expect(stores.data.trusted).toContain('amazon');
+      expect(stores.data.resellers).toContain('ubuy');
+
+      const csv = await request(server())
+        .get(`${V1}/admin/catalog/products/export`)
+        .set(auth(token))
+        .expect(200);
+      expect(csv.headers['content-type']).toContain('text/csv');
+      expect(csv.text).toContain(product.id);
+    });
+  });
+
+  describe('moderation upgrades', () => {
+    const reportWishlist = async (reporter: Actor, wishlistId: string) =>
+      (
+        (
+          await request(server())
+            .post(`${V1}/reports`)
+            .set(auth(reporter.token))
+            .send({ targetType: 'wishlist', targetId: wishlistId, reason: 'spam' })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+
+    const newList = async (owner: Actor) =>
+      (
+        (
+          await request(server())
+            .post(`${V1}/wishlists`)
+            .set(auth(owner.token))
+            .send({ title: `Mod list ${++seq}`, visibility: WishlistVisibility.PUBLIC })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+
+    it('removes through a report, shows the removal, and restores it', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const reporter = await newUser();
+      const listId = await newList(owner);
+      const reportId = await reportWishlist(reporter, listId);
+
+      await request(server())
+        .post(`${V1}/admin/moderation/reports/${reportId}/act`)
+        .set(auth(token))
+        .send({ action: 'remove', reason: 'spam' })
+        .expect(200);
+      const target = (
+        await request(server())
+          .get(`${V1}/admin/moderation/reports/${reportId}/target`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ state: string; removal: { id: string } | null }>;
+      expect(target.data.removal).not.toBeNull();
+
+      const restored = (
+        await request(server())
+          .post(`${V1}/admin/moderation/reports/${reportId}/restore`)
+          .set(auth(token))
+          .send({ reason: 'Appeal: it was a real list' })
+          .expect(200)
+      ).body as Envelope<{ status: string; resolution: string }>;
+      expect(restored.data.status).toBe('dismissed');
+      expect(restored.data.resolution).toContain('Restored');
+      const list = await app
+        .get<Connection>(getConnectionToken())
+        .db!.collection('wishlists')
+        .findOne({ _id: new Types.ObjectId(listId) });
+      expect(list!.archivedAt).toBeNull();
+    });
+
+    it('lets a moderator claim a report, and not take one held by someone else', async () => {
+      const root = await adminToken();
+      const owner = await newUser();
+      const reporter = await newUser();
+      const reportId = await reportWishlist(reporter, await newList(owner));
+
+      const email = `mod-claim-${++seq}-${Date.now()}@wishtick.test`;
+      await request(server())
+        .post(`${V1}/admin/admins`)
+        .set(auth(root))
+        .send({ email, password: 'a-long-enough-password', name: 'Mod', roles: ['moderator'] })
+        .expect(201);
+      const mod = await signIn(email, 'a-long-enough-password');
+
+      await request(server())
+        .post(`${V1}/admin/moderation/reports/${reportId}/claim`)
+        .set(auth(mod))
+        .send({})
+        .expect(200);
+      await request(server())
+        .post(`${V1}/admin/moderation/reports/${reportId}/claim`)
+        .set(auth(root))
+        .send({})
+        .expect(409);
+
+      const mine = (
+        await request(server())
+          .get(`${V1}/admin/moderation/queue`)
+          .query({ assigned: 'me' })
+          .set(auth(mod))
+          .expect(200)
+      ).body as Envelope<{ items: { _id: string }[] }>;
+      expect(mine.data.items.map((r) => r._id)).toContain(reportId);
+
+      await request(server())
+        .post(`${V1}/admin/moderation/reports/${reportId}/claim`)
+        .set(auth(root))
+        .send({ takeOver: true })
+        .expect(200);
+    });
+
+    it('acts on several reports at once and says which failed', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const reporter = await newUser();
+      const one = await reportWishlist(reporter, await newList(owner));
+      const two = await reportWishlist(reporter, await newList(owner));
+
+      const res = (
+        await request(server())
+          .post(`${V1}/admin/moderation/reports/bulk`)
+          .set(auth(token))
+          .send({ ids: [one, two, DUMMY_ID], action: 'approve', reason: 'Fine' })
+          .expect(200)
+      ).body as Envelope<{ done: string[]; failed: { id: string; code: string }[] }>;
+      expect(res.data.done.sort()).toEqual([one, two].sort());
+      expect(res.data.failed).toEqual([
+        expect.objectContaining({ id: DUMMY_ID, code: 'REPORT_NOT_FOUND' }),
+      ]);
+    });
+
+    it("shows the reporter's and the author's record", async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const reporter = await newUser();
+      const first = await reportWishlist(reporter, await newList(owner));
+      await request(server())
+        .post(`${V1}/admin/moderation/reports/${first}/act`)
+        .set(auth(token))
+        .send({ action: 'remove', reason: 'spam' })
+        .expect(200);
+      const second = await reportWishlist(reporter, await newList(owner));
+
+      const ctxRes = (
+        await request(server())
+          .get(`${V1}/admin/moderation/reports/${second}/context`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{
+        reporter: { id: string; reports: number; upheld: number };
+        author: { id: string; removals: number; reportsAboutContent: number };
+        sameTarget: number;
+      }>;
+      expect(ctxRes.data.reporter).toEqual(
+        expect.objectContaining({ id: reporter.userId, reports: 2, upheld: 1 }),
+      );
+      expect(ctxRes.data.author).toEqual(
+        expect.objectContaining({ id: owner.userId, removals: 1, reportsAboutContent: 2 }),
+      );
+      expect(ctxRes.data.sameTarget).toBe(1);
+    });
+
+    it('accepts reports on the new kinds of content', async () => {
+      const reporter = await newUser();
+      const someone = await newUser();
+      await request(server())
+        .post(`${V1}/reports`)
+        .set(auth(reporter.token))
+        .send({ targetType: 'profile', targetId: someone.userId, reason: 'impersonation' })
+        .expect(201);
     });
   });
 
@@ -551,52 +2654,6 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       expect(statusChange).toEqual({ field: 'status', before: 'active', after: 'suspended' });
       const reasonChange = entry!.diff.find((d) => d.field === 'suspendedReason');
       expect(reasonChange?.after).toBe('spam ring');
-    });
-  });
-
-  // ── TOTP enrollment → login now requires the code ────────────────────────────
-
-  describe('admin 2FA (TOTP)', () => {
-    it('enrolls a second admin in 2FA and enforces it on the next login', async () => {
-      const superToken = await adminToken();
-
-      // Super-admin creates a second admin.
-      const email = `mod-${Date.now()}@wishtick.test`;
-      const password = 'ModeratorPassw0rd!';
-      await request(server())
-        .post(`${V1}/admin/admins`)
-        .set(auth(superToken))
-        .send({ email, password, name: 'Mod', roles: ['moderator'] })
-        .expect(201);
-
-      // First login is password-only and flags setup.
-      const first = await adminLogin(email, password);
-      expect(first.setupRequired).toBe(true);
-
-      // Begin enrollment → returns a secret; compute the current code and enable.
-      const setup = (
-        await request(server())
-          .post(`${V1}/admin/auth/totp/setup`)
-          .set(auth(first.accessToken))
-          .expect(200)
-      ).body as Envelope<{ secret: string; keyUri: string }>;
-      expect(setup.data.keyUri).toMatch(/^otpauth:\/\/totp\//);
-
-      const totp = app.get((await import('src/modules/admin/totp.service')).TotpService);
-      const code = await totp.current(setup.data.secret);
-      await request(server())
-        .post(`${V1}/admin/auth/totp/enable`)
-        .set(auth(first.accessToken))
-        .send({ token: code })
-        .expect(200);
-
-      // Now password alone is rejected…
-      await request(server()).post(`${V1}/admin/auth/login`).send({ email, password }).expect(401);
-
-      // …and password + a fresh code succeeds.
-      const fresh = await totp.current(setup.data.secret);
-      const second = await adminLogin(email, password, fresh);
-      expect(second.setupRequired).toBe(false);
     });
   });
 

@@ -112,6 +112,8 @@ const logger = new Logger('ProductsModule');
   ],
   exports: [
     ProductsService,
+    // The admin panel reads breaker state and request counts.
+    ProviderGuard,
     ProductImportService,
     AffiliateSyncService,
     MonetizationService,

@@ -184,7 +184,7 @@ describe('Memories (e2e)', () => {
       expect(wish.mimeTypes).toContain('video/mp4');
     });
 
-    it('reports the 20-second ceiling a video wish is held to', async () => {
+    it('reports the 15-second ceiling a video wish is held to', async () => {
       const actor = await newUser();
       const res = await request(app.getHttpServer())
         .get(`${V1}/media/limits`)

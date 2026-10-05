@@ -93,6 +93,39 @@ export class FakeQueue {
     return Promise.resolve(true);
   }
 
+  /** Paused or not — the admin panel's operations desk toggles it. */
+  paused = false;
+
+  isPaused(): Promise<boolean> {
+    return Promise.resolve(this.paused);
+  }
+
+  pause(): Promise<void> {
+    this.paused = true;
+    return Promise.resolve();
+  }
+
+  resume(): Promise<void> {
+    this.paused = false;
+    return Promise.resolve();
+  }
+
+  /**
+   * Recorded jobs have no lifecycle, so no state holds any: the operations desk
+   * lists nothing rather than inventing failures.
+   */
+  getJobs(): Promise<never[]> {
+    return Promise.resolve([]);
+  }
+
+  getJobCountByTypes(): Promise<number> {
+    return Promise.resolve(0);
+  }
+
+  retryJobs(): Promise<void> {
+    return Promise.resolve();
+  }
+
   jobsNamed(name: string): RecordedJob[] {
     return this.added.filter((j) => j.name === name);
   }
@@ -100,6 +133,7 @@ export class FakeQueue {
   reset(): void {
     this.added.length = 0;
     this.removed.length = 0;
+    this.paused = false;
   }
 
   /** Satisfies the Queue type at injection sites without implementing all of it. */

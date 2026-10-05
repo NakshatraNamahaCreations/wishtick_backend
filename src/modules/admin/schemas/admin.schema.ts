@@ -7,8 +7,8 @@ export type AdminDocument = HydratedDocument<Admin>;
 /**
  * A platform operator. Entirely separate from `User` — different collection,
  * different JWT audience — so a user account can never become an admin and a
- * user token can never reach `/admin`. Credentials are argon2 (same as users),
- * and TOTP 2FA is mandatory before an admin can do anything beyond enrolling it.
+ * user token can never reach `/admin`. Credentials are argon2 (same as users).
+ * Sign-in is email and password; there is no authenticator second factor.
  */
 @Schema({ collection: 'admins', timestamps: true })
 export class Admin {
@@ -28,13 +28,6 @@ export class Admin {
 
   @Prop({ type: String, enum: Object.values(AdminStatus), default: AdminStatus.ACTIVE })
   status!: AdminStatus;
-
-  /** Base32 TOTP secret; null until enrolled. */
-  @Prop({ type: String, default: null })
-  totpSecret!: string | null;
-
-  @Prop({ type: Boolean, default: false })
-  totpEnabled!: boolean;
 
   /** If non-empty, the admin may only authenticate from these IPs. */
   @Prop({ type: [String], default: [] })

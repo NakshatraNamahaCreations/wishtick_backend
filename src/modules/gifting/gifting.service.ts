@@ -536,6 +536,90 @@ export class GiftingService {
     return toGifterView(gift);
   }
 
+  // ── Admin overrides ────────────────────────────────────────────────────────
+  //
+  // The same moves the gifter makes, with the same consequences — the item
+  // frees up or follows, the order closes, the recipient hears — recorded in
+  // the gift's history under the admin ([by]) rather than the gifter. A group
+  // gift's holder gift is refused: it moves with its group, and must be acted
+  // on there.
+
+  async adminCancel(giftId: string, by: string, note: string): Promise<GiftDocument> {
+    const gift = await this.loadForAdmin(giftId);
+    await this.status.transition(gift, GiftStatus.CANCELLED, by, { note });
+    await this.cancelExpiry(giftId);
+    await this.wishlists.recount(gift.wishlistId);
+    this.emitter.emit(GIFT_CANCELLED, GiftingService.lifecyclePayload(gift));
+    return gift;
+  }
+
+  async adminPurchase(giftId: string, by: string, note: string): Promise<GiftDocument> {
+    const gift = await this.loadForAdmin(giftId);
+    await this.status.transition(gift, GiftStatus.PURCHASED, by, { note });
+    await this.cancelExpiry(giftId);
+    gift.expiresAt = null;
+    await gift.save();
+    this.emitter.emit(GIFT_PURCHASED, GiftingService.lifecyclePayload(gift));
+    return gift;
+  }
+
+  async adminFulfil(giftId: string, by: string, note: string): Promise<GiftDocument> {
+    const gift = await this.loadForAdmin(giftId);
+    await this.status.transition(gift, GiftStatus.FULFILLED, by, { note });
+    this.emitter.emit(GIFT_FULFILLED, GiftingService.lifecyclePayload(gift));
+    return gift;
+  }
+
+  /**
+   * Gives a reservation longer before it lapses — a gifter who asked support
+   * for more time. Only a live reservation; the old expiry job is replaced.
+   */
+  async extendReservation(
+    giftId: string,
+    until: Date,
+    by: string,
+    note: string,
+  ): Promise<GiftDocument> {
+    const gift = await this.loadForAdmin(giftId);
+    if (gift.status !== GiftStatus.RESERVED || !gift.active) {
+      throw new AppException(
+        ErrorCode.INVALID_GIFT_TRANSITION,
+        'Only a live reservation can be extended',
+        409,
+      );
+    }
+    if (Number.isNaN(until.getTime()) || until.getTime() <= Date.now()) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'The new end must be in the future', 400);
+    }
+    const before = gift.expiresAt;
+    gift.expiresAt = until;
+    gift.history.push({
+      status: GiftStatus.RESERVED,
+      at: new Date(),
+      by,
+      note: `hold extended${before ? ` from ${before.toISOString()}` : ''} to ${until.toISOString()}: ${note}`,
+    });
+    await gift.save();
+    await this.cancelExpiry(giftId);
+    await this.scheduleExpiry(gift);
+    return gift;
+  }
+
+  private async loadForAdmin(giftId: string): Promise<GiftDocument> {
+    const gift = Types.ObjectId.isValid(giftId)
+      ? await this.giftModel.findById(giftId).exec()
+      : null;
+    if (!gift) throw new AppException(ErrorCode.GIFT_NOT_FOUND, 'Gift not found', 404);
+    if (gift.type === GiftType.GROUP) {
+      throw new AppException(
+        ErrorCode.INVALID_GIFT_TRANSITION,
+        'This gift belongs to a group gift — act on the group gift instead',
+        409,
+      );
+    }
+    return gift;
+  }
+
   // ── Lists ──────────────────────────────────────────────────────────────────
 
   // ── Loading & authorization ────────────────────────────────────────────────

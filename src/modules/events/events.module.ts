@@ -75,6 +75,13 @@ import { Event, EventSchema } from './schemas/event.schema';
     JoinRequestsRegistrar,
   ],
   // JoinRequestsService: the e2e suite drives the sweep by hand.
-  exports: [EventsService, InvitesService, EventRemindersService, JoinRequestsService],
+  exports: [
+    EventsService,
+    InvitesService,
+    EventRemindersService,
+    JoinRequestsService,
+    // The admin panel shows the invitation card exactly as guests get it.
+    InvitePreviewService,
+  ],
 })
 export class EventsModule {}

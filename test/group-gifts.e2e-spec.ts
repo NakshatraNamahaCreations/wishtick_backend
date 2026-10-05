@@ -1602,6 +1602,42 @@ describe('Group gifting (e2e)', () => {
       await contribute(friend, gg.data.id, { amountMinor: 10000 }).expect(201);
     });
 
+    // For the picker: who to grey out rather than offer a tap that is skipped.
+    it('lists who has been asked already, including whoever left', async () => {
+      const owner = await newUser();
+      const initiator = await newUser();
+      const stays = await newUser();
+      const leaves = await newUser();
+      const notAsked = await newUser();
+      for (const friend of [stays, leaves, notAsked]) {
+        await becomeWishmates(initiator, friend);
+      }
+      const { itemId } = await privateListSharedWith(owner, initiator);
+      const gg = (
+        await createGroupGift(initiator, itemId, { targetAmountMinor: 500000 }).expect(201)
+      ).body as Envelope<{ id: string }>;
+      await inviteTo(initiator, gg.data.id, [stays.userId, leaves.userId]).expect(200);
+      await leave(leaves, gg.data.id).expect(200);
+
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/group-gifts/${gg.data.id}/invites`)
+        .set(auth(initiator.token))
+        .expect(200);
+      const ids = (res.body as Envelope<{ userIds: string[] }>).data.userIds;
+
+      // Left, but the server will not ask them twice — so not offered either.
+      expect(ids).toEqual(
+        expect.arrayContaining([initiator.userId, owner.userId, stays.userId, leaves.userId]),
+      );
+      expect(ids).not.toContain(notAsked.userId);
+
+      // Who is in a group is the group's business.
+      await request(app.getHttpServer())
+        .get(`${V1}/group-gifts/${gg.data.id}/invites`)
+        .set(auth(notAsked.token))
+        .expect(404);
+    });
+
     it('shows them the gift they have been added to', async () => {
       const owner = await newUser();
       const initiator = await newUser();

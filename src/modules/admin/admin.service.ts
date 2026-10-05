@@ -9,7 +9,6 @@ import { PasswordService } from 'src/modules/auth/services/password.service';
 import { AdminTokenService } from './admin-token.service';
 import { AdminRole, AdminStatus, type AuthenticatedAdmin, permissionsFor } from './admin.types';
 import { Admin, type AdminDocument } from './schemas/admin.schema';
-import { TotpService } from './totp.service';
 
 export interface AdminView {
   id: string;
@@ -18,7 +17,6 @@ export interface AdminView {
   roles: AdminRole[];
   permissions: string[];
   status: string;
-  totpEnabled: boolean;
   ipAllowlist: string[];
   lastLoginAt: Date | null;
   createdAt: Date;
@@ -31,7 +29,6 @@ export class AdminService implements OnModuleInit {
   constructor(
     @InjectModel(Admin.name) private readonly adminModel: Model<AdminDocument>,
     private readonly passwords: PasswordService,
-    private readonly totp: TotpService,
     private readonly tokens: AdminTokenService,
     private readonly config: ConfigService<AppConfig, true>,
   ) {}
@@ -54,19 +51,20 @@ export class AdminService implements OnModuleInit {
   // ── Auth ────────────────────────────────────────────────────────────────────
 
   /**
-   * Password + (mandatory once enrolled) TOTP. Every failure returns the same
-   * generic credential error so login is not a probe for which admins exist.
-   * A brand-new admin has no TOTP yet, so their first login is password-only and
-   * flags `setupRequired` — enrolling 2FA is then mandatory.
+   * Email and password. Every failure returns the same generic credential
+   * error so login is not a probe for which admins exist.
+   *
+   * There is no second factor: authenticator-app sign-in was removed at the
+   * owner's request (Oct 2026). What stands in for it is the password, the
+   * per-admin IP allowlist, the 2-hour session and the login throttle.
    */
   async login(
-    input: { email: string; password: string; totp?: string },
+    input: { email: string; password: string },
     ip: string | null,
   ): Promise<{
     accessToken: string;
     expiresInSeconds: number;
     admin: AdminView;
-    setupRequired: boolean;
   }> {
     const admin = await this.adminModel.findOne({ email: input.email.toLowerCase() }).exec();
     if (!admin || admin.status !== AdminStatus.ACTIVE) {
@@ -76,18 +74,10 @@ export class AdminService implements OnModuleInit {
     if (!(await this.passwords.verify(admin.passwordHash, input.password))) {
       throw new AppException(ErrorCode.ADMIN_CREDENTIALS_INVALID, 'Invalid credentials', 401);
     }
-    if (admin.totpEnabled) {
-      if (!input.totp) {
-        throw new AppException(ErrorCode.ADMIN_TOTP_REQUIRED, 'A 2FA code is required', 401);
-      }
-      if (!admin.totpSecret || !(await this.totp.verify(input.totp, admin.totpSecret))) {
-        throw new AppException(ErrorCode.ADMIN_TOTP_INVALID, 'Invalid 2FA code', 401);
-      }
-    }
     admin.lastLoginAt = new Date();
     await admin.save();
     const token = await this.tokens.mint(admin);
-    return { ...token, admin: AdminService.toView(admin), setupRequired: !admin.totpEnabled };
+    return { ...token, admin: AdminService.toView(admin) };
   }
 
   async logout(jti: string): Promise<void> {
@@ -95,31 +85,6 @@ export class AdminService implements OnModuleInit {
     // over-covering costs nothing and there is no exp to read off the payload.
     const ttlSeconds = this.config.get('admin.accessTtlHours', { infer: true }) * 3600;
     await this.tokens.denylist(jti, Math.floor(Date.now() / 1000) + ttlSeconds);
-  }
-
-  // ── TOTP enrollment ─────────────────────────────────────────────────────────
-
-  async setupTotp(adminId: string): Promise<{ secret: string; keyUri: string }> {
-    const admin = await this.findActive(adminId);
-    if (admin.totpEnabled) {
-      throw new AppException(ErrorCode.ADMIN_TOTP_ALREADY_ENABLED, '2FA is already enabled', 409);
-    }
-    const secret = this.totp.generateSecret();
-    admin.totpSecret = secret; // pending until verified
-    await admin.save();
-    return { secret, keyUri: this.totp.keyUri(admin.email, secret) };
-  }
-
-  async enableTotp(adminId: string, token: string): Promise<void> {
-    const admin = await this.findActive(adminId);
-    if (admin.totpEnabled) {
-      throw new AppException(ErrorCode.ADMIN_TOTP_ALREADY_ENABLED, '2FA is already enabled', 409);
-    }
-    if (!admin.totpSecret || !(await this.totp.verify(token, admin.totpSecret))) {
-      throw new AppException(ErrorCode.ADMIN_TOTP_INVALID, 'Invalid 2FA code', 401);
-    }
-    admin.totpEnabled = true;
-    await admin.save();
   }
 
   // ── CRUD ─────────────────────────────────────────────────────────────────────
@@ -219,8 +184,8 @@ export class AdminService implements OnModuleInit {
    * The auditable fields of an admin, before a mutation.
    *
    * The audit diff is computed over these snapshots, so an update records
-   * `roles: [moderator] -> [support]` rather than "something changed". Secrets
-   * (passwordHash, totpSecret) are deliberately absent — an audit log that
+   * `roles: [moderator] -> [support]` rather than "something changed". The
+   * password hash is deliberately absent — an audit log that
    * quotes a credential is a credential leak with a timestamp.
    */
   async snapshot(adminId: string): Promise<Record<string, unknown>> {
@@ -292,7 +257,6 @@ export class AdminService implements OnModuleInit {
       roles: admin.roles,
       permissions: permissionsFor(admin.roles),
       status: admin.status,
-      totpEnabled: admin.totpEnabled,
       ipAllowlist: admin.ipAllowlist,
       lastLoginAt: admin.lastLoginAt,
       createdAt: admin.createdAt,

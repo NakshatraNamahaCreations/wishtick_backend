@@ -35,6 +35,7 @@ import { VendorBudgetService } from './vendor-budget.service';
   providers: [SuggestionsService, VendorBudgetService, TastePrewarmService, TastePrewarmRegistrar],
   // The prewarm is exported for the same reason the reminder scan is: the e2e
   // suite drives one tick by hand, because there is no worker in tests.
-  exports: [SuggestionsService, TastePrewarmService],
+  // VendorBudgetService: the admin panel looks up a person's search budget.
+  exports: [SuggestionsService, TastePrewarmService, VendorBudgetService],
 })
 export class SuggestionsModule {}

@@ -1,3 +1,5 @@
+import type { RemovalView } from './admin-takedown.service';
+
 export enum ReportTargetType {
   WISH = 'wish',
   REEL = 'reel',
@@ -5,6 +7,13 @@ export enum ReportTargetType {
   WISHLIST = 'wishlist',
   EVENT = 'event',
   USER = 'user',
+  MEMORY_WISH = 'memory_wish',
+  MEMORY_REPLY = 'memory_reply',
+  THANK_YOU = 'thank_you',
+  /** A person's profile — photo and bio — reported by their user id. */
+  PROFILE = 'profile',
+  GROUP_GIFT = 'group_gift',
+  MEDIA = 'media',
 }
 
 export enum ReportStatus {
@@ -37,7 +46,17 @@ export enum ModerationAction {
 export function severityFor(targetType: ReportTargetType, source: ReportSource): number {
   let severity = 1;
   if (targetType === ReportTargetType.USER) severity += 2;
-  if (targetType === ReportTargetType.MESSAGE || targetType === ReportTargetType.WISH)
+  // Words and pictures sent to people rank above things they browse to.
+  if (
+    [
+      ReportTargetType.MESSAGE,
+      ReportTargetType.WISH,
+      ReportTargetType.MEMORY_WISH,
+      ReportTargetType.MEMORY_REPLY,
+      ReportTargetType.THANK_YOU,
+      ReportTargetType.MEDIA,
+    ].includes(targetType)
+  )
     severity += 1;
   if (source === ReportSource.AUTO) severity += 1;
   return severity;
@@ -77,4 +96,6 @@ export interface ModerationTargetView {
   createdAt: Date | null;
   /** Type-specific extras, rendered as a label/value list. */
   fields: Record<string, string | number | boolean | null>;
+  /** The admin takedown in force, if any — what a restore would undo. */
+  removal: RemovalView | null;
 }

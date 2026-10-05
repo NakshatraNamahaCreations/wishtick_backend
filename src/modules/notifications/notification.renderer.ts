@@ -402,6 +402,12 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     ],
     cta: { label: 'Read the reply', url: s(p, 'url') },
   }),
+  [NotificationType.ADMIN_ANNOUNCEMENT]: (p) => ({
+    subject: s(p, 'title', 'News from Wishtick'),
+    title: s(p, 'title', 'News from Wishtick'),
+    lines: [s(p, 'body')].filter(Boolean),
+    ...(s(p, 'url') ? { cta: { label: s(p, 'ctaLabel', 'Take a look'), url: s(p, 'url') } } : {}),
+  }),
   [NotificationType.CONTENT_REMOVED]: (p) => ({
     subject: 'A note about your content',
     title: 'Your content was removed',

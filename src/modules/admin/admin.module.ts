@@ -36,12 +36,36 @@ import {
 import { Wish, WishSchema } from 'src/modules/reels/schemas/wish.schema';
 import { User, UserSchema } from 'src/modules/users/schemas/user.schema';
 import { Wishlist, WishlistSchema } from 'src/modules/wishlists/schemas/wishlist.schema';
+import { EventsModule } from 'src/modules/events/events.module';
+import { MediaModule } from 'src/modules/media/media.module';
+import { MemoriesModule } from 'src/modules/memories/memories.module';
+import { WishlistsModule } from 'src/modules/wishlists/wishlists.module';
+import { AdminCatalogController } from './admin-catalog.controller';
+import { AdminCatalogService } from './admin-catalog.service';
+import { AdminContentController } from './admin-content.controller';
+import { AdminMoneyController } from './admin-money.controller';
+import { AdminNotificationsController } from './admin-notifications.controller';
+import { AdminOpsController } from './admin-ops.controller';
+import { AdminOpsService } from './admin-ops.service';
+import { ProductsModule } from 'src/modules/products/products.module';
+import { SuggestionsModule } from 'src/modules/suggestions/suggestions.module';
+import { TaxonomyModule } from 'src/modules/taxonomy/taxonomy.module';
+import { AdminNotificationsService } from './admin-notifications.service';
+import { AdminMoneyService } from './admin-money.service';
+import { OpsEventsListener } from './ops-events.listener';
+import { GiftingModule } from 'src/modules/gifting/gifting.module';
+import { GroupGiftModule } from 'src/modules/group-gifts/group-gift.module';
+import { OrdersModule } from 'src/modules/orders/orders.module';
+import { AdminContentService } from './admin-content.service';
+import { AdminTakedownService } from './admin-takedown.service';
+import { Removal, RemovalSchema } from './schemas/removal.schema';
 import { AdminAuthController } from './admin-auth.controller';
 import { AdminTokenService } from './admin-token.service';
 import { AdminUsersService } from './admin-users.service';
 import { AdminWebhooksService } from './admin-webhooks.service';
 import { AdminSearchService } from './admin-search.service';
 import { AdminDashboardService } from './admin-dashboard.service';
+import { AdminUser360Service } from './admin-user360.service';
 import { AdminController } from './admin.controller';
 import { AdminGuard } from './admin.guard';
 import { AdminService } from './admin.service';
@@ -54,7 +78,6 @@ import { Admin, AdminSchema } from './schemas/admin.schema';
 import { AuditLog, AuditLogSchema } from './schemas/audit-log.schema';
 import { Report, ReportSchema } from './schemas/report.schema';
 import { AdminJwtStrategy } from './strategies/admin-jwt.strategy';
-import { TotpService } from './totp.service';
 
 /**
  * The operator plane: separate admin auth (distinct JWT audience), the moderation
@@ -86,6 +109,7 @@ import { TotpService } from './totp.service';
       { name: Conversion.name, schema: ConversionSchema },
       { name: DeliveryLog.name, schema: DeliveryLogSchema },
       { name: Media.name, schema: MediaSchema },
+      { name: Removal.name, schema: RemovalSchema },
     ]),
     // Admin tokens are signed per-call with the admin secret + audience; the
     // module-level default stays empty so a user secret can never leak in.
@@ -98,10 +122,33 @@ import { TotpService } from './totp.service';
     AuthModule, // TokenService (session kill) + PasswordService (admin login)
     NotificationsModule, // owner notice on content removal
     AnalyticsModule, // dashboards read the rollup
+    // Content actions go through the owning module where it has side effects:
+    // a cancel tells guests, an unlock notifies, an item change recounts.
+    EventsModule,
+    MemoriesModule,
+    WishlistsModule,
+    MediaModule,
+    // Money corrections go through the modules that own the money.
+    GiftingModule,
+    GroupGiftModule,
+    OrdersModule,
+    // The operations desk reads product search's breaker, counters and budgets.
+    ProductsModule,
+    SuggestionsModule,
+    // The catalogue desk edits the taxonomy and clears its cache.
+    TaxonomyModule,
   ],
-  controllers: [AdminAuthController, AdminController, ReportsController],
+  controllers: [
+    AdminAuthController,
+    AdminController,
+    AdminContentController,
+    AdminMoneyController,
+    AdminNotificationsController,
+    AdminOpsController,
+    AdminCatalogController,
+    ReportsController,
+  ],
   providers: [
-    TotpService,
     AdminTokenService,
     AdminService,
     AdminJwtStrategy,
@@ -111,6 +158,14 @@ import { TotpService } from './totp.service';
     AdminWebhooksService,
     AdminSearchService,
     AdminDashboardService,
+    AdminUser360Service,
+    AdminTakedownService,
+    AdminContentService,
+    AdminMoneyService,
+    AdminNotificationsService,
+    AdminOpsService,
+    AdminCatalogService,
+    OpsEventsListener,
     ModerationService,
     ModerationListener,
     NoopSafetyProvider,

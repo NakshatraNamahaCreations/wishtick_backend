@@ -90,6 +90,9 @@ export class ProviderGuard {
 
     let lastError: unknown;
     for (let attempt = 0; attempt <= cfg.maxRetries; attempt++) {
+      // Every request sent is counted, retries included: that is what the
+      // vendor bills, and the admin panel weighs it against the plan.
+      await this.countRequest(provider);
       try {
         const result = await ProviderGuard.withTimeout(fn(), cfg.timeoutMs, provider);
         breaker.recordSuccess();
@@ -124,6 +127,27 @@ export class ProviderGuard {
       timedOut ? 'timeout' : 'upstream_error',
       `${provider}/${label} failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
     );
+  }
+
+  /** Requests sent to [provider] in [month] (`YYYY-MM`, UTC), across every instance. */
+  async requestsIn(provider: string, month: string): Promise<number> {
+    const n = await this.cache.client.get(ProviderGuard.usageKey(provider, month));
+    return Number(n) || 0;
+  }
+
+  private async countRequest(provider: string): Promise<void> {
+    const key = ProviderGuard.usageKey(provider, new Date().toISOString().slice(0, 7));
+    try {
+      const n = await this.cache.client.incr(key);
+      // Kept a little over a year, so last year's same month can be compared.
+      if (n === 1) await this.cache.client.expire(key, 400 * 86_400);
+    } catch {
+      // A counter must never stop a search.
+    }
+  }
+
+  private static usageKey(provider: string, month: string): string {
+    return `products:usage:${provider}:${month}`;
   }
 
   /**

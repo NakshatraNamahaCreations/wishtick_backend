@@ -4,9 +4,9 @@ import { Throttle } from '@nestjs/throttler';
 import { Public } from 'src/common/decorators/public.decorator';
 import { AdminService, type AdminView } from './admin.service';
 import { AdminGuard } from './admin.guard';
-import { AllowWithoutTotp, CurrentAdmin } from './admin.decorators';
+import { CurrentAdmin } from './admin.decorators';
 import type { AuthenticatedAdmin } from './admin.types';
-import { AdminLoginDto, TotpTokenDto } from './dto/admin.dto';
+import { AdminLoginDto } from './dto/admin.dto';
 
 /** Bounds brute-force against admin login. */
 const LOGIN_THROTTLE = { default: { limit: 10, ttl: 60_000 } };
@@ -20,7 +20,7 @@ export class AdminAuthController {
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @Throttle(LOGIN_THROTTLE)
-  @ApiOperation({ summary: 'Admin login (password + TOTP once enrolled)' })
+  @ApiOperation({ summary: 'Admin login (email + password)' })
   login(
     @Body() dto: AdminLoginDto,
     @Ip() ip: string,
@@ -28,14 +28,12 @@ export class AdminAuthController {
     accessToken: string;
     expiresInSeconds: number;
     admin: AdminView;
-    setupRequired: boolean;
   }> {
     return this.admins.login(dto, ip ?? null);
   }
 
   @Post('logout')
   @UseGuards(AdminGuard)
-  @AllowWithoutTotp()
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'End this admin session' })
@@ -46,34 +44,9 @@ export class AdminAuthController {
 
   @Get('me')
   @UseGuards(AdminGuard)
-  @AllowWithoutTotp()
   @ApiBearerAuth()
   @ApiOperation({ summary: 'The authenticated admin' })
   me(@CurrentAdmin() admin: AuthenticatedAdmin): AuthenticatedAdmin {
     return admin;
-  }
-
-  @Post('totp/setup')
-  @UseGuards(AdminGuard)
-  @AllowWithoutTotp()
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Begin 2FA enrollment — returns a secret + otpauth URI' })
-  setupTotp(@CurrentAdmin('id') adminId: string): Promise<{ secret: string; keyUri: string }> {
-    return this.admins.setupTotp(adminId);
-  }
-
-  @Post('totp/enable')
-  @UseGuards(AdminGuard)
-  @AllowWithoutTotp()
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Confirm the code to enable 2FA' })
-  async enableTotp(
-    @CurrentAdmin('id') adminId: string,
-    @Body() dto: TotpTokenDto,
-  ): Promise<{ ok: true }> {
-    await this.admins.enableTotp(adminId, dto.token);
-    return { ok: true };
   }
 }

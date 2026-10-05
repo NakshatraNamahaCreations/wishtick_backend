@@ -677,6 +677,35 @@ export class GroupGiftService {
     contributionId: string,
     userId: string,
   ): Promise<GroupGiftView> {
+    await this.withdrawContribution(groupGiftId, contributionId, {
+      ownerId: userId,
+      refundRef: `withdraw-${contributionId}`,
+    });
+    const refreshed = await this.loadOrFail(groupGiftId);
+    return this.assembleView(refreshed, userId);
+  }
+
+  /**
+   * An admin recording one contribution as refunded — money handed back
+   * outside the app. The same rules as the contributor withdrawing it (only
+   * while the gift is open), and the same bookkeeping.
+   */
+  async refundContributionAsAdmin(
+    groupGiftId: string,
+    contributionId: string,
+    adminId: string,
+  ): Promise<void> {
+    await this.withdrawContribution(groupGiftId, contributionId, {
+      ownerId: null,
+      refundRef: `admin-${adminId}`,
+    });
+  }
+
+  private async withdrawContribution(
+    groupGiftId: string,
+    contributionId: string,
+    opts: { ownerId: string | null; refundRef: string },
+  ): Promise<void> {
     if (!Types.ObjectId.isValid(contributionId)) {
       throw new AppException(ErrorCode.CONTRIBUTION_NOT_FOUND, 'Contribution not found', 404);
     }
@@ -703,7 +732,7 @@ export class GroupGiftService {
                 404,
               );
             }
-            if (contribution.userId.toString() !== userId) {
+            if (opts.ownerId && contribution.userId.toString() !== opts.ownerId) {
               throw new AppException(
                 ErrorCode.NOT_THE_CONTRIBUTOR,
                 'You can only withdraw your own contribution',
@@ -722,7 +751,7 @@ export class GroupGiftService {
             const now = new Date();
             contribution.status = ContributionStatus.REFUNDED;
             contribution.refundedAt = now;
-            contribution.refundRef = `withdraw-${contribution._id.toString()}`;
+            contribution.refundRef = opts.refundRef;
             await contribution.save({ session });
 
             // Fewer confirmed contributions may drop the contributor count.
@@ -748,8 +777,6 @@ export class GroupGiftService {
     );
 
     await this.shares.sync(groupGiftId);
-    const refreshed = await this.loadOrFail(groupGiftId);
-    return this.assembleView(refreshed, userId);
   }
 
   // ── Purchase / fulfil / cancel (initiator) ──────────────────────────────────
@@ -1223,6 +1250,26 @@ export class GroupGiftService {
     if (gift.initiatorId.toString() !== userId) {
       throw new AppException(ErrorCode.NOT_THE_INITIATOR, 'Only the initiator can cancel', 403);
     }
+    await this.cancelGroup(gift, `user:${userId}`, dto);
+    const refreshed = await this.loadOrFail(groupGiftId);
+    return this.assembleView(refreshed, userId);
+  }
+
+  /**
+   * An admin calling a group gift off — exactly what the host's cancel does
+   * (refunds recorded, item freed, everybody told), under the admin's name.
+   */
+  async cancelAsAdmin(groupGiftId: string, by: string, reason: string): Promise<void> {
+    const gift = await this.loadOrFail(groupGiftId);
+    await this.cancelGroup(gift, by, { note: reason });
+  }
+
+  private async cancelGroup(
+    gift: GroupGiftDocument,
+    by: string,
+    dto: GroupGiftActionDto,
+  ): Promise<void> {
+    const groupGiftId = gift._id.toString();
     if (
       ![GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED, GroupGiftStatus.PURCHASING].includes(
         gift.status,
@@ -1266,7 +1313,7 @@ export class GroupGiftService {
             gg.cancelReason = reason;
 
             // Free the item.
-            await this.status.transitionById(gg.giftId, GiftStatus.CANCELLED, `user:${userId}`, {
+            await this.status.transitionById(gg.giftId, GiftStatus.CANCELLED, by, {
               note: dto.note ?? 'group gift cancelled',
               session,
             });
@@ -1288,12 +1335,7 @@ export class GroupGiftService {
                   { session },
                 )
                 .exec();
-              this.pushStatus(
-                gg,
-                GroupGiftStatus.REFUNDING,
-                `user:${userId}`,
-                'cancelled with contributions',
-              );
+              this.pushStatus(gg, GroupGiftStatus.REFUNDING, by, 'cancelled with contributions');
               this.pushStatus(
                 gg,
                 GroupGiftStatus.CANCELLED,
@@ -1301,7 +1343,7 @@ export class GroupGiftService {
                 reason ? `refunds recorded: ${reason}` : 'refunds recorded',
               );
             } else {
-              this.pushStatus(gg, GroupGiftStatus.CANCELLED, `user:${userId}`, reason);
+              this.pushStatus(gg, GroupGiftStatus.CANCELLED, by, reason);
             }
             await gg.save({ session });
           });
@@ -1328,9 +1370,6 @@ export class GroupGiftService {
       currency: gift.currency,
       members: [...told].map((id) => ({ userId: id, refundedMinor: refunded.get(id) ?? 0 })),
     } satisfies GroupGiftCancelledEvent);
-
-    const refreshed = await this.loadOrFail(groupGiftId);
-    return this.assembleView(refreshed, userId);
   }
 
   // ── Read ────────────────────────────────────────────────────────────────────

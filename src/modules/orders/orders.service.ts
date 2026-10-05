@@ -131,6 +131,53 @@ export class OrdersService {
     return order;
   }
 
+  /**
+   * An admin putting an order at [stage] — forward or back, to correct what a
+   * courier or network got wrong. Recorded on the timeline as `manual`, with
+   * the admin's note, so it never reads as the carrier's word.
+   */
+  async setStageAsAdmin(orderId: string, stage: OrderStage, note: string): Promise<OrderDocument> {
+    const order = await this.loadForAdmin(orderId);
+    if (order.cancelledAt) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'This order was cancelled', 409);
+    }
+    // Saying it again would only add a second identical line to the timeline.
+    if (order.stage === stage) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        'The order is already at that stage',
+        409,
+      );
+    }
+    const at = new Date();
+    order.stage = stage;
+    order.timeline.push({ stage, at, source: OrderStageSource.MANUAL, note });
+    order.deliveredAt = stage === OrderStage.DELIVERED ? at : null;
+    await order.save();
+    return order;
+  }
+
+  /** An admin correcting the carrier and tracking details. */
+  async setTrackingAsAdmin(
+    orderId: string,
+    input: { courier?: string | null; trackingNumber?: string | null; trackingUrl?: string | null },
+  ): Promise<OrderDocument> {
+    const order = await this.loadForAdmin(orderId);
+    if (input.courier !== undefined) order.courier = input.courier;
+    if (input.trackingNumber !== undefined) order.trackingNumber = input.trackingNumber;
+    if (input.trackingUrl !== undefined) order.trackingUrl = input.trackingUrl;
+    await order.save();
+    return order;
+  }
+
+  private async loadForAdmin(orderId: string): Promise<OrderDocument> {
+    const order = Types.ObjectId.isValid(orderId)
+      ? await this.model.findById(orderId).exec()
+      : null;
+    if (!order) throw new AppException(ErrorCode.NOT_FOUND, 'Order not found', 404);
+    return order;
+  }
+
   async advanceByGift(giftId: string, input: AdvanceOrderInput): Promise<OrderDocument | null> {
     const order = await this.model.findOne({ giftId: new Types.ObjectId(giftId) }).exec();
     if (!order) return null;

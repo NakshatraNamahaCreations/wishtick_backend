@@ -99,11 +99,25 @@ export class AdminSearchService {
         kind: 'user' as const,
         id: u._id.toString(),
         label: profile?.displayName || u.name || 'Unnamed account',
-        sub: [profile?.username ? `@${profile.username}` : null, u.status]
+        // The shape of their email or phone, never the whole of it — enough to
+        // tell two people of the same name apart.
+        sub: [
+          profile?.username ? `@${profile.username}` : null,
+          AdminSearchService.mask(u.email ?? u.phone ?? null),
+          u.status,
+        ]
           .filter(Boolean)
           .join(' · '),
       };
     });
+  }
+
+  /** `ro***@gmail.com`, `+9198•••••210` — as the panel masks private values. */
+  static mask(value: string | null): string | null {
+    if (!value) return null;
+    const at = value.indexOf('@');
+    if (at > 0) return `${value.slice(0, Math.min(2, at))}***${value.slice(at)}`;
+    return value.length > 8 ? `${value.slice(0, 5)}•••••${value.slice(-3)}` : '•••';
   }
 
   private async findWishlists(contains: RegExp, byId: Types.ObjectId | null): Promise<SearchHit[]> {

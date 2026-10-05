@@ -14,6 +14,13 @@ export interface DispatchJobData {
   payload: Record<string, unknown>;
   /** When set, only this channel is processed (a deferred re-enqueue). */
   onlyChannel?: NotificationChannel;
+  /**
+   * A refId prefix this notification replaces in the in-app list: the user's
+   * earlier rows of the same type whose refId starts with it are hidden once
+   * this one lands. For news where only the latest word counts — a guest's
+   * RSVP, which they can change as often as they like.
+   */
+  supersedes?: string;
 }
 
 export interface ThankYouSendJobData {

@@ -2880,12 +2880,16 @@ describe('Events & invites (e2e)', () => {
       await settle();
       expect(await rowsFor(host, 'event_rsvp')).toHaveLength(1);
 
-      // A changed mind is.
+      // A changed mind is — and it replaces the earlier answer rather than
+      // sitting under it, so the list never says she is coming after she
+      // said she is not.
+      const first = rows[0].refId;
       await rsvp(token, 'no');
       await settle();
       rows = await rowsFor(host, 'event_rsvp');
-      expect(rows).toHaveLength(2);
-      expect(rows.map((r) => r.title)).toContain("Priya Nair can't make it to Diwali Night");
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toBe("Priya Nair can't make it to Diwali Night");
+      expect(rows[0].refId).not.toBe(first);
 
       // And the guest is never told about their own reply.
       expect(await rowsFor(guest, 'event_rsvp')).toHaveLength(0);

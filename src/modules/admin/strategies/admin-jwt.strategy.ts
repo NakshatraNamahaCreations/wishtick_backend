@@ -49,7 +49,6 @@ export class AdminJwtStrategy extends PassportStrategy(Strategy, 'admin-jwt') {
       id: admin._id.toString(),
       email: admin.email,
       name: admin.name,
-      totpEnabled: admin.totpEnabled,
       roles: admin.roles,
       permissions: permissionsFor(admin.roles),
       jti: payload.jti,

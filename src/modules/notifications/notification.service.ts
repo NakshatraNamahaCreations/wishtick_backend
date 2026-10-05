@@ -44,6 +44,8 @@ export interface NotificationRequest {
   type: NotificationType;
   refId: string;
   payload: Record<string, unknown>;
+  /** See DispatchJobData.supersedes. */
+  supersedes?: string;
 }
 
 const deliveryDedupe = (userId: string, type: string, refId: string, channel: string): string =>
@@ -290,10 +292,35 @@ export class NotificationService {
       });
     } catch (err) {
       // A retried dispatch hits the unique (userId, dedupeKey) — already created.
-      if (NotificationService.isDuplicateKey(err)) return;
-      throw err;
+      // It still hides what this one replaces: the first attempt may have
+      // failed between the two.
+      if (!NotificationService.isDuplicateKey(err)) throw err;
+      await this.hideSuperseded(data);
+      return;
     }
+    await this.hideSuperseded(data);
     await this.record(data, NotificationChannel.IN_APP, DeliveryStatus.SENT, {});
+  }
+
+  /**
+   * Hides the user's earlier rows that [data] replaces — see
+   * DispatchJobData.supersedes. Hidden the way a swipe hides one, so they
+   * leave the list and the unread badge alike.
+   */
+  private async hideSuperseded(data: DispatchJobData): Promise<void> {
+    if (!data.supersedes) return;
+    const prefix = data.supersedes.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    await this.notificationModel
+      .updateMany(
+        {
+          userId: new Types.ObjectId(data.userId),
+          type: data.type,
+          refId: { $regex: `^${prefix}`, $ne: data.refId },
+          deletedAt: null,
+        },
+        { $set: { deletedAt: new Date() } },
+      )
+      .exec();
   }
 
   private async deferChannel(
@@ -508,6 +535,32 @@ export class NotificationService {
 
   async suppress(channel: NotificationChannel, address: string): Promise<void> {
     await this.cache.client.sadd(NotificationService.suppressKey(channel), address.toLowerCase());
+  }
+
+  /** Lets an address receive again — a bounce that was fixed, a number re-verified. */
+  async unsuppress(channel: NotificationChannel, address: string): Promise<boolean> {
+    const removed = await this.cache.client.srem(
+      NotificationService.suppressKey(channel),
+      address.toLowerCase(),
+    );
+    return removed === 1;
+  }
+
+  /** Up to [limit] suppressed addresses on [channel], and how many there are. */
+  async listSuppressed(
+    channel: NotificationChannel,
+    limit = 500,
+  ): Promise<{ addresses: string[]; total: number }> {
+    const key = NotificationService.suppressKey(channel);
+    const [total, [, addresses]] = await Promise.all([
+      this.cache.client.scard(key),
+      this.cache.client.sscan(key, '0', 'COUNT', limit),
+    ]);
+    return { addresses: addresses.slice(0, limit).sort(), total };
+  }
+
+  async isSuppressedAddress(channel: NotificationChannel, address: string): Promise<boolean> {
+    return this.isSuppressed(channel, address);
   }
 
   private async isSuppressed(channel: NotificationChannel, address: string): Promise<boolean> {

@@ -17,7 +17,8 @@ import type { NormalizedProduct } from './product.types';
  */
 export type MerchantTrust = 0 | 1 | 2;
 
-const TRUSTED = [
+/** Stores most Indian shoppers already buy from. Read by the admin panel too. */
+export const TRUSTED_STORES: readonly string[] = [
   'amazon',
   'flipkart',
   'myntra',
@@ -54,9 +55,18 @@ const TRUSTED = [
   'sugar cosmetics',
 ];
 
-const RESELLERS = ['ubuy', 'desertcart', 'aliexpress', 'temu', 'dhgate', 'wish.com', 'shein'];
+/** Cross-border resellers, ranked last. */
+export const RESELLER_STORES: readonly string[] = [
+  'ubuy',
+  'desertcart',
+  'aliexpress',
+  'temu',
+  'dhgate',
+  'wish.com',
+  'shein',
+];
 
-function source(product: NormalizedProduct): string {
+function source(product: Pick<NormalizedProduct, 'merchant' | 'productUrl'>): string {
   const merchant = product.merchant?.toLowerCase().trim();
   if (merchant) return merchant;
   try {
@@ -76,11 +86,13 @@ function names(where: string, name: string): boolean {
   return edge(before) && edge(after);
 }
 
-export function merchantTrust(product: NormalizedProduct): MerchantTrust {
+export function merchantTrust(
+  product: Pick<NormalizedProduct, 'merchant' | 'productUrl'>,
+): MerchantTrust {
   const where = source(product);
   if (!where) return 1;
-  if (RESELLERS.some((name) => names(where, name))) return 0;
-  if (TRUSTED.some((name) => names(where, name))) return 2;
+  if (RESELLER_STORES.some((name) => names(where, name))) return 0;
+  if (TRUSTED_STORES.some((name) => names(where, name))) return 2;
   return 1;
 }
 

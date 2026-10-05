@@ -3,7 +3,7 @@ import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
-import { ALLOW_WITHOUT_TOTP_KEY, REQUIRE_PERMISSION_KEY } from './admin.decorators';
+import { REQUIRE_PERMISSION_KEY } from './admin.decorators';
 import type { AdminPermission, AuthenticatedAdmin } from './admin.types';
 
 /**
@@ -23,21 +23,6 @@ export class AdminGuard extends AuthGuard('admin-jwt') {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const authenticated = (await super.canActivate(context)) as boolean;
     if (!authenticated) return false;
-
-    // Two-factor sign-in is mandatory. A password alone gets an admin as far as
-    // setting it up and no further — not one user record, not one report.
-    const signedIn = context.switchToHttp().getRequest<{ user?: AuthenticatedAdmin }>().user;
-    const exempt = this.reflector.getAllAndOverride<boolean | undefined>(ALLOW_WITHOUT_TOTP_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
-    if (signedIn && !signedIn.totpEnabled && !exempt) {
-      throw new AppException(
-        ErrorCode.ADMIN_TOTP_SETUP_REQUIRED,
-        'Set up two-factor sign-in to continue',
-        403,
-      );
-    }
 
     const required = this.reflector.getAllAndOverride<AdminPermission | undefined>(
       REQUIRE_PERMISSION_KEY,

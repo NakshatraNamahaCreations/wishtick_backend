@@ -67,6 +67,7 @@ import { ThankYouService } from './thank-you.service';
     NotificationListener,
     NotificationProcessor,
   ],
-  exports: [NotificationService, DeviceTokenService],
+  // The renderer too: the admin panel previews every notification's wording.
+  exports: [NotificationService, DeviceTokenService, NotificationRenderer],
 })
 export class NotificationsModule {}

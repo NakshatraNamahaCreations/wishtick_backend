@@ -222,6 +222,30 @@ export class GroupGiftInvitesService {
   }
 
   /**
+   * Everyone [invite] would skip without asking WishMate status: the host,
+   * the recipient, the members, and anybody with an invitation row — which
+   * includes those who left, since the unique index will not ask them twice.
+   *
+   * For the picker, so it greys these out rather than offering a tap that
+   * the server then quietly counts as skipped.
+   */
+  async alreadyInvited(groupGiftId: string, userId: string): Promise<{ userIds: string[] }> {
+    const gift = await this.loadOpenOrFail(groupGiftId);
+    this.assertMember(gift, userId);
+    const invited = await this.model
+      .find({ groupGiftId: gift._id })
+      .distinct('invitedUserId')
+      .exec();
+    const ids = new Set<string>([
+      gift.initiatorId.toString(),
+      gift.recipientId.toString(),
+      ...gift.participantIds.map((id) => id.toString()),
+      ...invited.map((id) => id.toString()),
+    ]);
+    return { userIds: [...ids] };
+  }
+
+  /**
    * "Not interested": out of a group gift the caller was added to.
    *
    * Only before they have paid anything — money in is a commitment the rest

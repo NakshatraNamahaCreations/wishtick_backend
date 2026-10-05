@@ -11,6 +11,8 @@ import {
 import { UserStatus } from 'src/common/enums/user-role.enum';
 import { TokenService } from 'src/modules/auth/services/token.service';
 import { User, type UserDocument } from 'src/modules/users/schemas/user.schema';
+import { dayRange, escapeRegex } from './admin-query.util';
+import { maskValue } from './admin-user360.service';
 import type { AuthenticatedAdmin } from './admin.types';
 import { AuditService } from './audit.service';
 
@@ -29,6 +31,22 @@ export interface UserAdminView {
   createdAt: Date;
 }
 
+export interface UserListQuery {
+  search?: string;
+  status?: UserStatus;
+  verified?: 'email' | 'phone' | 'any' | 'none';
+  source?: string;
+  from?: string;
+  to?: string;
+  sort?: 'joined' | 'lastLogin' | 'name';
+  order?: 'asc' | 'desc';
+  page?: number;
+  limit?: number;
+}
+
+/** The most rows one export carries. */
+const EXPORT_CAP = 50_000;
+
 @Injectable()
 export class AdminUsersService {
   constructor(
@@ -38,30 +56,143 @@ export class AdminUsersService {
     private readonly emitter: EventEmitter2,
   ) {}
 
-  async list(query: {
-    search?: string;
-    status?: UserStatus;
-    page?: number;
-    limit?: number;
-  }): Promise<{ items: UserAdminView[]; total: number; page: number; limit: number }> {
+  async list(query: UserListQuery): Promise<{
+    items: UserAdminView[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(query.limit ?? 25, 100);
-    const filter: Record<string, unknown> = {};
-    if (query.status) filter.status = query.status;
-    if (query.search) {
-      const rx = new RegExp(AdminUsersService.escapeRegex(query.search), 'i');
-      filter.$or = [{ email: rx }, { phone: rx }, { name: rx }];
-    }
+    const filter = await this.filterFor(query);
     const [rows, total] = await Promise.all([
       this.userModel
         .find(filter)
-        .sort({ createdAt: -1 })
+        .sort(AdminUsersService.sortFor(query))
         .skip((page - 1) * limit)
         .limit(limit)
         .exec(),
       this.userModel.countDocuments(filter).exec(),
     ]);
     return { items: rows.map((r) => AdminUsersService.toView(r)), total, page, limit };
+  }
+
+  /**
+   * The same filtered list as CSV, for spreadsheets — up to [EXPORT_CAP] rows,
+   * contact details masked as on screen, and every export audited.
+   */
+  async exportCsv(
+    query: UserListQuery,
+    actor: AuthenticatedAdmin,
+    ip: string | null,
+  ): Promise<string> {
+    const filter = await this.filterFor(query);
+    const rows = await this.userModel
+      .find(filter)
+      .sort(AdminUsersService.sortFor(query))
+      .limit(EXPORT_CAP)
+      .exec();
+    const header = [
+      'id',
+      'name',
+      'email',
+      'phone',
+      'status',
+      'emailVerified',
+      'phoneVerified',
+      'source',
+      'joined',
+      'lastLogin',
+    ];
+    const cell = (v: unknown): string => {
+      const text =
+        v === null || v === undefined
+          ? ''
+          : v instanceof Date
+            ? v.toISOString()
+            : typeof v === 'string'
+              ? v
+              : JSON.stringify(v);
+      // Quote everything that could break a row, and neutralise a leading
+      // = + - @ so a spreadsheet never runs a cell as a formula.
+      const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
+      return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+    };
+    const lines = rows.map((u) => {
+      const v = AdminUsersService.toView(u);
+      return [
+        v.id,
+        v.name,
+        v.email,
+        v.phone,
+        v.status,
+        v.emailVerified,
+        v.phoneVerified,
+        v.acquisition?.source,
+        v.createdAt,
+        v.lastLoginAt,
+      ]
+        .map(cell)
+        .join(',');
+    });
+    await this.audit.record({
+      actor,
+      action: 'user.export',
+      targetType: 'user',
+      targetId: 'list',
+      meta: { rows: rows.length, filter: JSON.stringify(query) },
+      ip,
+    });
+    return [header.join(','), ...lines].join('\n');
+  }
+
+  private async filterFor(query: UserListQuery): Promise<Record<string, unknown>> {
+    const filter: Record<string, unknown> = {};
+    if (query.status) filter.status = query.status;
+    if (query.source) filter['acquisition.source'] = query.source;
+    if (query.verified === 'email') filter.emailVerifiedAt = { $ne: null };
+    else if (query.verified === 'phone') filter.phoneVerifiedAt = { $ne: null };
+    else if (query.verified === 'any') {
+      filter.$and = [
+        { $or: [{ emailVerifiedAt: { $ne: null } }, { phoneVerifiedAt: { $ne: null } }] },
+      ];
+    } else if (query.verified === 'none') {
+      filter.emailVerifiedAt = null;
+      filter.phoneVerifiedAt = null;
+    }
+    const joined = dayRange(query.from, query.to);
+    if (joined) filter.createdAt = joined;
+    if (query.search) {
+      const rx = new RegExp(escapeRegex(query.search.trim().replace(/^@/, '')), 'i');
+      // A username lives on the profile, not the account.
+      const viaProfile = await this.userModel.db
+        .collection('user_profiles')
+        .find({ $or: [{ username: rx }, { displayName: rx }] })
+        .project({ userId: 1 })
+        .limit(500)
+        .toArray();
+      const or: Record<string, unknown>[] = [
+        { email: rx },
+        { phone: rx },
+        { name: rx },
+        { _id: { $in: viaProfile.map((p) => p.userId as Types.ObjectId) } },
+      ];
+      if (
+        Types.ObjectId.isValid(query.search.trim()) &&
+        /^[a-f0-9]{24}$/i.test(query.search.trim())
+      ) {
+        or.push({ _id: new Types.ObjectId(query.search.trim()) });
+      }
+      filter.$or = or;
+    }
+    return filter;
+  }
+
+  private static sortFor(query: UserListQuery): Record<string, 1 | -1> {
+    const dir = query.order === 'asc' ? 1 : -1;
+    const field =
+      query.sort === 'lastLogin' ? 'lastLoginAt' : query.sort === 'name' ? 'name' : 'createdAt';
+    return { [field]: dir, _id: dir };
   }
 
   /** Full profile + cross-collection counts + a recent-activity timeline. */
@@ -217,8 +348,10 @@ export class AdminUsersService {
   private static toView(user: UserDocument): UserAdminView {
     return {
       id: user._id.toString(),
-      email: user.email ?? null,
-      phone: user.phone ?? null,
+      // The shape, not the value — revealed one at a time, audited, on the
+      // user's page.
+      email: maskValue(user.email),
+      phone: maskValue(user.phone),
       name: user.name ?? null,
       status: user.status,
       roles: user.roles,
@@ -235,9 +368,5 @@ export class AdminUsersService {
       lastLoginAt: user.lastLoginAt,
       createdAt: user.createdAt,
     };
-  }
-
-  private static escapeRegex(s: string): string {
-    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 }

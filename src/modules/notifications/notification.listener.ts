@@ -468,6 +468,11 @@ export class NotificationListener {
    * opens — the guest list lives on the event — and ends with when they
    * answered: dedupe is permanent per (user, type, ref), so keyed on the
    * invite alone a guest who changed their mind would never be heard again.
+   *
+   * But only the latest answer stays in the list: each one supersedes the
+   * guest's earlier answers to the same event. A guest who flips between
+   * coming, maybe and not left the host a row per flip — five notifications
+   * saying three different things, of which only the newest was true.
    */
   @OnEvent(EVENT_RSVP_CHANGED)
   async onEventRsvp(e: EventRsvpChangedEvent): Promise<void> {
@@ -476,6 +481,7 @@ export class NotificationListener {
         userId: e.hostId,
         type: NotificationType.EVENT_RSVP,
         refId: `${e.eventId}:${e.inviteId}:${e.respondedAt.getTime()}`,
+        supersedes: `${e.eventId}:${e.inviteId}:`,
         payload: {
           // A guest who answered from a link without an account has no name
           // to give; "A guest" is honest, "Someone" reads like a stranger.

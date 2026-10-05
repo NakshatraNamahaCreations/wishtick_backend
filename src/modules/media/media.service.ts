@@ -498,6 +498,63 @@ export class MediaService {
     return this.model.findById(mediaId).exec();
   }
 
+  /**
+   * An admin deleting a file for good, now rather than at the next sweep: the
+   * stored bytes, the transcoded copy and the record.
+   */
+  async deleteNowAsAdmin(mediaId: string): Promise<void> {
+    const media = await this.findById(mediaId);
+    if (!media) throw new AppException(ErrorCode.MEDIA_NOT_FOUND, 'Media not found', 404);
+    await this.discard(media, 'admin delete');
+  }
+
+  /**
+   * An admin asking for a video to be processed again.
+   *
+   * Still processing: look again. Failed: hand the original upload to the
+   * transcoder afresh — possible only while that upload is still in storage
+   * (it is deleted once a clip is ready, and when a clip is refused).
+   */
+  async reprocessAsAdmin(mediaId: string): Promise<MediaDocument> {
+    const media = await this.findById(mediaId);
+    if (!media) throw new AppException(ErrorCode.MEDIA_NOT_FOUND, 'Media not found', 404);
+    const type = media.contentType ?? media.declaredContentType;
+    if (!this.handledByTranscoder(type)) {
+      throw new AppException(
+        ErrorCode.CONTENT_ACTION_INVALID,
+        'Only a video is processed after upload',
+        409,
+      );
+    }
+    if (media.status === MediaStatus.PROCESSING) return this.syncVideo(media);
+    if (media.status !== MediaStatus.FAILED) {
+      throw new AppException(
+        ErrorCode.CONTENT_ACTION_INVALID,
+        'Only a video that failed to process can be processed again',
+        409,
+      );
+    }
+    const source = await this.storage.head(media.storageKey);
+    if (!source.exists) {
+      throw new AppException(
+        ErrorCode.MEDIA_NOT_UPLOADED,
+        'The original upload is gone, so it cannot be processed again — it has to be uploaded afresh',
+        409,
+      );
+    }
+    if (media.videoId) await this.video.delete(media.videoId).catch(() => undefined);
+    const { videoId } = await this.video.ingest({
+      title: media._id.toString(),
+      sourceUrl: this.storage.getPublicUrl(media.storageKey),
+    });
+    media.videoId = videoId;
+    media.status = MediaStatus.PROCESSING;
+    media.url = this.playUrl(media._id.toString());
+    await media.save();
+    this.logger.log(`Media ${media._id.toString()} handed to transcoder again as ${videoId}`);
+    return media;
+  }
+
   /** Marks media orphaned so the sweeper can reclaim the object. */
   async markOrphaned(mediaId: Types.ObjectId): Promise<void> {
     await this.model.updateOne({ _id: mediaId }, { $set: { status: MediaStatus.ORPHANED } }).exec();

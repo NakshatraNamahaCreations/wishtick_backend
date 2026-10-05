@@ -95,8 +95,6 @@ export interface AuthenticatedAdmin {
   id: string;
   email: string;
   name: string;
-  /** False until two-factor sign-in is set up — see AdminGuard. */
-  totpEnabled: boolean;
   roles: AdminRole[];
   permissions: AdminPermission[];
   jti: string;

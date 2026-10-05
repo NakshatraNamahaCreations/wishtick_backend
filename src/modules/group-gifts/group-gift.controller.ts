@@ -360,6 +360,22 @@ export class GroupGiftController {
     return this.invites.invite(id, userId, dto.userIds);
   }
 
+  @Get('group-gifts/:id/invites')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Who has already been asked to chip in',
+    description:
+      'Members only. The user ids an invite would skip — members, anyone ' +
+      'invited before (including those who left), the host and the ' +
+      'recipient — so the picker can grey them out instead of offering them.',
+  })
+  invited(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+  ): Promise<{ userIds: string[] }> {
+    return this.invites.alreadyInvited(id, userId);
+  }
+
   @Get('group-gift-invites/mine')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Group gifts you have been asked to chip in on' })

@@ -2,7 +2,12 @@ import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'node:crypto';
-import { GIFT_FULFILLED, type GiftLifecycleEvent } from 'src/common/events/domain-events';
+import {
+  EVENT_RSVP_CHANGED,
+  GIFT_FULFILLED,
+  type EventRsvpChangedEvent,
+  type GiftLifecycleEvent,
+} from 'src/common/events/domain-events';
 import { AuthService } from 'src/modules/auth/auth.service';
 import { WishlistVisibility } from 'src/modules/wishlists/wishlist.types';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
@@ -523,6 +528,68 @@ describe('Notifications (e2e)', () => {
       const owner = await newUser();
       await remove(owner, []).expect(400);
       await remove(owner, ['not-an-id']).expect(400);
+    });
+  });
+  // A guest who changes their mind used to leave the host a row per answer —
+  // "coming", "might come", "can't make it", "might come" — of which only the
+  // newest was true.
+  describe('RSVP news', () => {
+    type Row = { id: string; type: string; title: string };
+
+    const rsvp = (
+      host: Actor,
+      inviteId: string,
+      response: EventRsvpChangedEvent['response'],
+      at: number,
+    ): void => {
+      emitter.emit(EVENT_RSVP_CHANGED, {
+        eventId: 'evt_rsvp_e2e',
+        inviteId,
+        hostId: host.userId,
+        guestUserId: null,
+        eventTitle: 'Siya turns 24',
+        response,
+        plusOnes: 0,
+        respondedAt: new Date(at),
+      } satisfies EventRsvpChangedEvent);
+    };
+
+    const rsvpRows = async (actor: Actor): Promise<Row[]> =>
+      ((await notifications(actor).expect(200)).body as Envelope<Row[]>).data.filter(
+        (n) => n.type === 'event_rsvp',
+      );
+
+    it("keeps only a guest's latest answer", async () => {
+      const host = await newUser();
+      const t = Date.now();
+
+      rsvp(host, 'inv_a', 'yes', t);
+      await settle();
+      rsvp(host, 'inv_a', 'maybe', t + 1000);
+      await settle();
+      rsvp(host, 'inv_a', 'no', t + 2000);
+      await settle();
+
+      const rows = await rsvpRows(host);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toBe("A guest can't make it to Siya turns 24");
+    });
+
+    it("leaves every other guest's answer alone", async () => {
+      const host = await newUser();
+      const t = Date.now();
+
+      rsvp(host, 'inv_a', 'yes', t);
+      rsvp(host, 'inv_b', 'maybe', t);
+      await settle();
+      rsvp(host, 'inv_a', 'no', t + 1000);
+      await settle();
+
+      const titles = (await rsvpRows(host)).map((n) => n.title).sort();
+      expect(titles).toEqual([
+        "A guest can't make it to Siya turns 24",
+        'A guest might come to Siya turns 24',
+      ]);
     });
   });
 });

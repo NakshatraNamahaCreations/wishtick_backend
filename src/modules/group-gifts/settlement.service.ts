@@ -371,6 +371,29 @@ export class SettlementService {
     return settlement;
   }
 
+  /**
+   * An admin calling off a settle-up that will not happen — a contributor who
+   * left, an amount agreed some other way. Only while it is still open; the
+   * note says why, on the settlement itself.
+   */
+  async cancelAsAdmin(settlementId: string, note: string): Promise<SettlementDocument> {
+    const settlement = Types.ObjectId.isValid(settlementId)
+      ? await this.settlements.findById(settlementId).exec()
+      : null;
+    if (!settlement) throw new AppException(ErrorCode.NOT_FOUND, 'Settlement not found', 404);
+    if (![SettlementStatus.PENDING, SettlementStatus.SENT].includes(settlement.status)) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        `A ${settlement.status} settlement cannot be cancelled`,
+        409,
+      );
+    }
+    settlement.status = SettlementStatus.CANCELLED;
+    settlement.note = note;
+    await settlement.save();
+    return settlement;
+  }
+
   async listForGroupGift(groupGiftId: string, viewerId?: string): Promise<SettlementDocument[]> {
     if (viewerId !== undefined) {
       await this.assertInTheGroup(await this.load(groupGiftId), viewerId);

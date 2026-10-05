@@ -50,6 +50,13 @@ export class Report {
   @Prop({ type: Date, default: null })
   handledAt!: Date | null;
 
+  /** The moderator working on it, so two people do not judge the same report. */
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'Admin', default: null })
+  assignedAdminId!: Types.ObjectId | null;
+
+  @Prop({ type: Date, default: null })
+  assignedAt!: Date | null;
+
   createdAt!: Date;
   updatedAt!: Date;
 }
@@ -59,5 +66,7 @@ export const ReportSchema = SchemaFactory.createForClass(Report);
 // The queue: open first, then highest severity, then oldest.
 ReportSchema.index({ status: 1, severity: -1, createdAt: 1 });
 ReportSchema.index({ targetType: 1, targetId: 1 });
+ReportSchema.index({ reporterId: 1, createdAt: -1 });
+ReportSchema.index({ assignedAdminId: 1, status: 1 });
 // One open report per (reporter, target, source) — dedupes spam and auto-flags.
 ReportSchema.index({ source: 1, targetType: 1, targetId: 1, reporterId: 1 }, { unique: true });

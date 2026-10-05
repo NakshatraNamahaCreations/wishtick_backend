@@ -35,6 +35,8 @@ export enum NotificationCategory {
   SOCIAL = 'social',
   REELS = 'reels',
   MEMORIES = 'memories',
+  /** News from Wishtick itself — sent by an admin to many people at once. */
+  ANNOUNCEMENTS = 'announcements',
 }
 
 /** Every kind of notification the system can raise. */
@@ -74,6 +76,8 @@ export enum NotificationType {
   MEMORY_REPLY = 'memory_reply',
   MEMORY_SHARED = 'memory_shared',
   CONTENT_REMOVED = 'content_removed',
+  /** A message from Wishtick to a group of people, written by an admin. */
+  ADMIN_ANNOUNCEMENT = 'admin_announcement',
 }
 
 export enum DeliveryStatus {
@@ -371,6 +375,14 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.CRITICAL,
     category: NotificationCategory.ACCOUNT,
     template: 'content-removed',
+  },
+  [NotificationType.ADMIN_ANNOUNCEMENT]: {
+    // In the app and on the phone only: an announcement is not worth an email,
+    // and the category lets anybody turn it off.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.ANNOUNCEMENTS,
+    template: 'announcement',
   },
 };
 

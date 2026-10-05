@@ -70,6 +70,30 @@ export class ProductsService {
    * yesterday's shelf than an empty one; the freshness it returns says which
    * it is, so nothing downstream has to pretend the result is live.
    */
+  /** Searches answered from cache vs. sent on, per day, for the last [days]. */
+  async lookupStats(days: number): Promise<{ day: string; hits: number; misses: number }[]> {
+    const out: { day: string; hits: number; misses: number }[] = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const day = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
+      const [hits, misses] = await this.cache.client.mget(
+        `products:lookups:${day}:hit`,
+        `products:lookups:${day}:miss`,
+      );
+      out.push({ day, hits: Number(hits) || 0, misses: Number(misses) || 0 });
+    }
+    return out;
+  }
+
+  private async countLookup(outcome: 'hit' | 'miss'): Promise<void> {
+    const key = `products:lookups:${new Date().toISOString().slice(0, 10)}:${outcome}`;
+    try {
+      const n = await this.cache.client.incr(key);
+      if (n === 1) await this.cache.client.expire(key, 40 * 86_400);
+    } catch {
+      // A counter must never stop a search.
+    }
+  }
+
   async cachedSearch(query: ProductSearchQuery): Promise<SearchResponse | null> {
     const cached = await this.cache.get<CacheEnvelope<ProductSearchResult>>(
       ProductsService.searchKey(query),
@@ -96,11 +120,11 @@ export class ProductsService {
     // never correct one whose answer had since changed. Both showed up for
     // real: five shelves kept serving an empty result for hours after the bug
     // that emptied them was fixed.
-    if (
-      !opts.refresh &&
-      cached &&
-      Date.now() - cached.cachedAt < this.cfg.cacheTtlSeconds * 1_000
-    ) {
+    const fresh =
+      !opts.refresh && cached && Date.now() - cached.cachedAt < this.cfg.cacheTtlSeconds * 1_000;
+    // A prewarm refresh is not a person's search; it would skew the hit rate.
+    if (!opts.refresh) await this.countLookup(fresh ? 'hit' : 'miss');
+    if (fresh && cached) {
       return {
         ...cached.data,
         items: trustedFirst(cached.data.items),

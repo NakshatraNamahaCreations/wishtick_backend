@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import type { AppConfig } from 'src/config/configuration';
@@ -156,6 +156,39 @@ export class WebhookService {
       throw err;
     }
 
+    return this.applyTo(record, provider, event);
+  }
+
+  /**
+   * Runs a stored, unapplied event through matching again — an admin replaying
+   * a dead letter once the gift it was for exists. The same path as a fresh
+   * delivery, minus the dedupe claim (the row is already ours).
+   */
+  async replay(eventId: string): Promise<WebhookResult> {
+    const record = Types.ObjectId.isValid(eventId)
+      ? await this.events.findById(eventId).exec()
+      : null;
+    if (!record) throw new AppException(ErrorCode.NOT_FOUND, 'Webhook event not found', 404);
+    if (![WebhookEventStatus.UNMATCHED, WebhookEventStatus.FAILED].includes(record.status)) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        `A ${record.status} event has nothing left to apply`,
+        409,
+      );
+    }
+    const event = record.payload as unknown as NormalizedWebhookEvent;
+    if (!event?.providerEventId || !event.orderRef) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'The stored event is incomplete', 409);
+    }
+    return this.applyTo(record, record.provider, event);
+  }
+
+  /** Steps 3–4: match by orderRef and apply, or dead-letter. */
+  private async applyTo(
+    record: WebhookEventDocument,
+    provider: string,
+    event: NormalizedWebhookEvent,
+  ): Promise<WebhookResult> {
     // 3. Match and apply.
     const gift = await this.giftModel
       .findOne({ orderRef: event.orderRef, mode: GiftMode.ONLINE, active: true })
@@ -217,7 +250,8 @@ export class WebhookService {
 
     await this.events.updateOne(
       { _id: record._id },
-      { $set: { status: WebhookEventStatus.PROCESSED, matchedGiftId: gift._id } },
+      // A replayed dead letter carried a "matched nothing" note; it matched now.
+      { $set: { status: WebhookEventStatus.PROCESSED, matchedGiftId: gift._id, note: null } },
     );
 
     this.logger.log(

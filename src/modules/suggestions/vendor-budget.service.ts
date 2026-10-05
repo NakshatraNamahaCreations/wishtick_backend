@@ -75,7 +75,7 @@ export class VendorBudgetService {
     }
   }
 
-  private async spentToday(userId: string): Promise<number> {
+  async spentToday(userId: string): Promise<number> {
     const spent = await this.cache.get<number>(this.keyFor(userId));
     return typeof spent === 'number' ? spent : 0;
   }

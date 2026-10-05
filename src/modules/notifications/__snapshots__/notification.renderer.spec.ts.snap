@@ -9,6 +9,17 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: admin_announcement 1`] = `
+{
+  "sms": "Password changed — https://app.wishtick.test/x",
+  "subject": "Password changed",
+  "text": "Thank you so much for the wonderful gift.
+
+Take a look: https://app.wishtick.test/x",
+  "title": "Password changed",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: celebration_reminder 1`] = `
 {
   "sms": "Someone's celebration is in 2 days",

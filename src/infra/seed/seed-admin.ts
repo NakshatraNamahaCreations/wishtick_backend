@@ -54,7 +54,6 @@ async function main(): Promise<void> {
       console.log(`Admin ${email} already exists — nothing to do.`);
       console.log(`  roles:       ${JSON.stringify(existing.roles)}`);
       console.log(`  status:      ${String(existing.status)}`);
-      console.log(`  totpEnabled: ${String(existing.totpEnabled)}`);
       console.log('\nRe-run with --force to reset its password.');
       return;
     }
@@ -77,9 +76,6 @@ async function main(): Promise<void> {
         },
       );
       console.log(`Password reset for ${email}. Existing sessions were invalidated.`);
-      if (existing.totpEnabled) {
-        console.log('2FA is still enabled — the current authenticator code is still required.');
-      }
       return;
     }
 
@@ -89,8 +85,6 @@ async function main(): Promise<void> {
       name: 'Bootstrap Super Admin',
       roles: ['super_admin'],
       status: 'active',
-      totpSecret: null,
-      totpEnabled: false,
       ipAllowlist: [],
       tokensInvalidBefore: null,
       lastLoginAt: null,

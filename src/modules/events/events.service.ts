@@ -367,6 +367,21 @@ export class EventsService {
    */
   async cancel(eventId: string, userId: string): Promise<EventView> {
     const event = await this.findOwnedOrFail(eventId, userId);
+    await this.callOff(event);
+    return toEventView(event, { isHost: true, shareBaseUrl: this.shareBaseUrl });
+  }
+
+  /**
+   * An admin calling an event off (moderation). The same as the host doing it
+   * — reminders stop and guests are told — so a takedown never leaves people
+   * turning up to a party that was removed.
+   */
+  async cancelAsAdmin(eventId: string): Promise<void> {
+    await this.callOff(await this.findOrFail(eventId));
+  }
+
+  private async callOff(event: EventDocument): Promise<void> {
+    const eventId = event._id.toString();
     if (event.status === EventStatus.CANCELLED) {
       throw new AppException(ErrorCode.EVENT_CANCELLED, 'This event is already cancelled', 409);
     }
@@ -396,8 +411,6 @@ export class EventsService {
         } satisfies EventCalledOffEvent);
       }
     }
-
-    return toEventView(event, { isHost: true, shareBaseUrl: this.shareBaseUrl });
   }
 
   /**
