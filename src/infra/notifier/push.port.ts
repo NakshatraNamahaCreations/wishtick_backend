@@ -5,6 +5,8 @@ export interface SendPushInput {
   body: string;
   /** Deep-link data the app reads on tap. Values must be strings; FCM insists. */
   data?: Record<string, string>;
+  /** A picture to show with it — https, 1 MB or less. */
+  imageUrl?: string;
 }
 
 export interface SendPushResult {

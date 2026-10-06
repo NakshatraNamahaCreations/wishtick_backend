@@ -711,7 +711,7 @@ export class ModerationService {
     switch (action) {
       case ModerationAction.APPROVE:
         report.status = ReportStatus.DISMISSED;
-        resolution = resolution ?? 'Content approved — no action';
+        resolution = resolution ?? 'Report rejected — content left up';
         break;
       case ModerationAction.REMOVE:
         await this.removeTarget(report, actor, ip, reason);

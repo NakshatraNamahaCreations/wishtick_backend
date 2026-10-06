@@ -65,8 +65,21 @@ export class FcmPushAdapter implements IPushSender {
         body: JSON.stringify({
           message: {
             token,
-            notification: { title: input.title, body: input.body },
+            notification: {
+              title: input.title,
+              body: input.body,
+              ...(input.imageUrl ? { image: input.imageUrl } : {}),
+            },
             data: input.data ?? {},
+            // iOS draws the picture only when told the notification may be modified.
+            ...(input.imageUrl
+              ? {
+                  apns: {
+                    payload: { aps: { 'mutable-content': 1 } },
+                    fcm_options: { image: input.imageUrl },
+                  },
+                }
+              : {}),
           },
         }),
       });

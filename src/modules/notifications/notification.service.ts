@@ -202,15 +202,22 @@ export class NotificationService {
     }
 
     const { title, text } = this.renderer.content(data.type, data.payload);
+    const imageUrl =
+      typeof data.payload?.imageUrl === 'string' && data.payload.imageUrl
+        ? data.payload.imageUrl
+        : undefined;
     try {
       const result = await this.push.send({
         tokens,
         title,
         body: text.split('\n')[0],
+        imageUrl,
         // FCM data values must be strings; the app routes on these.
         data: {
           type: data.type,
           refId: data.refId,
+          // Also in data: an app in the foreground draws the notification itself.
+          ...(imageUrl ? { imageUrl } : {}),
           ...NotificationService.routingData(data),
         },
       });

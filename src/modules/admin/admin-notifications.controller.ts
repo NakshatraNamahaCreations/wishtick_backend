@@ -8,9 +8,11 @@ import {
   Param,
   Post,
   Query,
+  Req,
   StreamableFile,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from 'src/common/decorators/public.decorator';
 import { AppException } from 'src/common/errors/app.exception';
@@ -129,7 +131,16 @@ export class AdminNotificationsController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'How many people an audience reaches — nothing is sent' })
   dryRun(@Body() dto: BroadcastDryRunDto): Promise<unknown> {
-    return this.centre.dryRun(dto.segment);
+    return this.centre.dryRun(dto.audience);
+  }
+
+  @Post('broadcasts/image')
+  @RequirePermission(AdminPermission.NOTIFICATIONS_SEND)
+  @ApiOperation({
+    summary: 'Upload a picture for an announcement — the raw JPG, PNG or WebP bytes, up to 1 MB',
+  })
+  image(@CurrentAdmin() actor: AuthenticatedAdmin, @Req() req: Request): Promise<unknown> {
+    return this.centre.uploadBroadcastImage(req.body as Buffer, actor);
   }
 
   @Post('broadcasts')

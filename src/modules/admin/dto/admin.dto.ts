@@ -9,7 +9,6 @@ import {
   IsMongoId,
   IsObject,
   IsUrl,
-  ValidateNested,
   IsArray,
   IsEmail,
   IsEnum,
@@ -896,34 +895,14 @@ export class TestSendDto extends PreviewNotificationDto {
   userId!: string;
 }
 
-export class BroadcastSegmentDto {
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  @MaxLength(80)
-  @Transform(trim)
-  city?: string;
-
-  @ApiPropertyOptional({ description: 'An interest key from onboarding.' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(80)
-  interest?: string;
-
-  @ApiPropertyOptional({ minimum: 1, maximum: 365 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(365)
-  activeWithinDays?: number;
-}
-
 export class BroadcastDryRunDto {
-  @ApiProperty({ type: BroadcastSegmentDto })
-  @ValidateNested()
-  @Type(() => BroadcastSegmentDto)
-  segment!: BroadcastSegmentDto;
+  @ApiProperty({
+    enum: ['everyone', 'new', 'active', 'inactive'],
+    description:
+      'everyone; new: joined in the last 7 days; active: used the app in the last 30 days; inactive: not seen in 30 days.',
+  })
+  @IsIn(['everyone', 'new', 'active', 'inactive'])
+  audience!: 'everyone' | 'new' | 'active' | 'inactive';
 }
 
 export class BroadcastDto extends BroadcastDryRunDto {
@@ -943,6 +922,11 @@ export class BroadcastDto extends BroadcastDryRunDto {
   @IsOptional()
   @IsUrl({ require_protocol: true, protocols: ['https'] })
   url?: string;
+
+  @ApiPropertyOptional({ description: 'From POST broadcasts/image.' })
+  @IsOptional()
+  @Matches(/^broadcasts\/[0-9a-f-]{36}\.(jpg|png|webp)$/)
+  imageKey?: string;
 }
 
 export class JobListQueryDto {

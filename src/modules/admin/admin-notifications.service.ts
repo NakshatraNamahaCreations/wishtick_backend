@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
+import { STORAGE, type IStorageProvider } from 'src/infra/storage/storage.port';
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
 import type { Queue } from 'bullmq';
 import { Connection, Types, type mongo } from 'mongoose';
@@ -50,11 +52,22 @@ export interface NotificationQuery extends BaseListQuery {
   revoked?: 'yes' | 'no';
 }
 
-/** Who a broadcast goes to. Every condition given must hold. */
-export interface BroadcastSegment {
+/**
+ * Who an announcement goes to — four plain choices rather than a query
+ * builder. "Active" is anyone who used the app in the last 30 days (the daily
+ * `active` event, or a sign-in), not just a fresh sign-in: someone who stays
+ * signed in never signs in again.
+ */
+export const BROADCAST_AUDIENCES = ['everyone', 'new', 'active', 'inactive'] as const;
+export type BroadcastAudience = (typeof BROADCAST_AUDIENCES)[number];
+
+const NEW_USER_DAYS = 7;
+const ACTIVE_DAYS = 30;
+
+/** The older, detailed audience — still read so earlier announcements show what they were. */
+interface LegacySegment {
   city?: string;
   interest?: string;
-  /** Signed in within this many days. */
   activeWithinDays?: number;
 }
 
@@ -62,8 +75,31 @@ export interface BroadcastInput {
   title: string;
   body: string;
   url?: string;
-  segment: BroadcastSegment;
+  audience: BroadcastAudience;
+  /** From [uploadBroadcastImage]; shown on the push and in the app. */
+  imageKey?: string;
 }
+
+/** Images an announcement may carry: what Android and iOS both draw in a push. */
+const IMAGE_TYPES: { type: string; ext: string; magic: (b: Buffer) => boolean }[] = [
+  { type: 'image/jpeg', ext: 'jpg', magic: (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
+  {
+    type: 'image/png',
+    ext: 'png',
+    magic: (b) =>
+      b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  },
+  {
+    type: 'image/webp',
+    ext: 'webp',
+    magic: (b) =>
+      b.subarray(0, 4).toString('latin1') === 'RIFF' &&
+      b.subarray(8, 12).toString('latin1') === 'WEBP',
+  },
+];
+/** Firebase drops a push image larger than this. */
+export const BROADCAST_IMAGE_MAX_BYTES = 1_000_000;
+export const BROADCAST_IMAGE_KEY = /^broadcasts\/[0-9a-f-]{36}\.(jpg|png|webp)$/;
 
 /** The scheduler job that fans a broadcast out. */
 export const ADMIN_BROADCAST_JOB = 'admin-broadcast';
@@ -171,6 +207,7 @@ export class AdminNotificationsService implements OnModuleInit {
     private readonly devices: DeviceTokenService,
     private readonly user360: AdminUser360Service,
     private readonly audit: AuditService,
+    @Inject(STORAGE) private readonly storage: IStorageProvider,
   ) {}
 
   onModuleInit(): void {
@@ -456,8 +493,32 @@ export class AdminNotificationsService implements OnModuleInit {
 
   // ── Announcements ──────────────────────────────────────────────────────────
 
-  /** The users a segment covers: active accounts meeting every condition. */
-  private async segmentFilter(segment: BroadcastSegment): Promise<Doc> {
+  /** The accounts an audience covers — always only active, undeleted ones. */
+  private async audienceFilter(audience: BroadcastAudience): Promise<Doc> {
+    const filter: Doc = { status: 'active', deletedAt: null };
+    const since = (days: number) => new Date(Date.now() - days * 86_400_000);
+    if (audience === 'new') return { ...filter, createdAt: { $gte: since(NEW_USER_DAYS) } };
+    if (audience === 'everyone') return filter;
+    const used = (await this.db.collection('analytics_events').distinct('userId', {
+      name: 'active',
+      ts: { $gte: since(ACTIVE_DAYS) },
+      userId: { $ne: null },
+    })) as Types.ObjectId[];
+    const recently = {
+      $or: [{ _id: { $in: used } }, { lastLoginAt: { $gte: since(ACTIVE_DAYS) } }],
+    };
+    if (audience === 'active') return { ...filter, ...recently };
+    // Inactive: here long enough to have been active, and not seen in 30 days.
+    return {
+      ...filter,
+      createdAt: { $lt: since(ACTIVE_DAYS) },
+      _id: { $nin: used },
+      $or: [{ lastLoginAt: null }, { lastLoginAt: { $lt: since(ACTIVE_DAYS) } }],
+    };
+  }
+
+  /** An announcement queued before the four audiences existed. */
+  private async legacyFilter(segment: LegacySegment): Promise<Doc> {
     const filter: Doc = { status: 'active', deletedAt: null };
     if (segment.activeWithinDays) {
       filter.lastLoginAt = { $gte: new Date(Date.now() - segment.activeWithinDays * 86_400_000) };
@@ -477,11 +538,36 @@ export class AdminNotificationsService implements OnModuleInit {
     return filter;
   }
 
-  /** How many people a segment reaches — before anything is sent. */
-  async dryRun(segment: BroadcastSegment): Promise<{ count: number }> {
+  /** How many people an audience reaches — before anything is sent. */
+  async dryRun(audience: BroadcastAudience): Promise<{ count: number }> {
     return {
-      count: await this.db.collection('users').countDocuments(await this.segmentFilter(segment)),
+      count: await this.db.collection('users').countDocuments(await this.audienceFilter(audience)),
     };
+  }
+
+  /**
+   * Stores a picture for an announcement and returns its key. Only real JPEG,
+   * PNG or WebP bytes up to 1 MB — the type is read from the bytes, not taken
+   * from the request.
+   */
+  async uploadBroadcastImage(
+    body: Buffer,
+    actor: AuthenticatedAdmin,
+  ): Promise<{ imageKey: string; imageUrl: string }> {
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'No image was sent', 400);
+    }
+    if (body.length > BROADCAST_IMAGE_MAX_BYTES) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'The image must be 1 MB or smaller', 413);
+    }
+    const kind = IMAGE_TYPES.find((t) => t.magic(body));
+    if (!kind) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'Only JPG, PNG or WebP images', 415);
+    }
+    const imageKey = `broadcasts/${randomUUID()}.${kind.ext}`;
+    await this.storage.putObject(imageKey, body, kind.type);
+    this.logger.log(`Announcement image ${imageKey} (${body.length} bytes) from ${actor.email}`);
+    return { imageKey, imageUrl: this.storage.getPublicUrl(imageKey) };
   }
 
   /**
@@ -489,7 +575,11 @@ export class AdminNotificationsService implements OnModuleInit {
    * batches, so a large audience never rides on one request.
    */
   async broadcast(input: BroadcastInput, actor: AuthenticatedAdmin, ip: string | null) {
-    const { count } = await this.dryRun(input.segment);
+    const { count } = await this.dryRun(input.audience);
+    if (input.imageKey && !BROADCAST_IMAGE_KEY.test(input.imageKey)) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'That image was not uploaded here', 400);
+    }
+    const imageUrl = input.imageKey ? this.storage.getPublicUrl(input.imageKey) : null;
     if (count === 0) {
       throw new AppException(ErrorCode.VALIDATION_FAILED, 'Nobody matches that audience', 400);
     }
@@ -499,7 +589,9 @@ export class AdminNotificationsService implements OnModuleInit {
       title: input.title,
       body: input.body,
       url: input.url ?? null,
-      segment: input.segment,
+      imageKey: input.imageKey ?? null,
+      imageUrl,
+      segment: { audience: input.audience },
       audience: count,
       enqueued: 0,
       status: 'queued',
@@ -518,8 +610,8 @@ export class AdminNotificationsService implements OnModuleInit {
       action: 'notifications.broadcast',
       targetType: 'broadcast',
       targetId: _id.toString(),
-      after: { title: input.title, audience: count },
-      meta: { segment: input.segment },
+      after: { title: input.title, audience: count, image: Boolean(imageUrl) },
+      meta: { audience: input.audience },
       ip,
     });
     return { id: _id.toString(), audience: count };
@@ -543,6 +635,7 @@ export class AdminNotificationsService implements OnModuleInit {
         title: str(d.title),
         body: str(d.body),
         url: str(d.url),
+        imageUrl: str(d.imageUrl),
         segment: (d.segment ?? {}) as Record<string, unknown>,
         audience: num(d.audience) ?? 0,
         enqueued: num(d.enqueued) ?? 0,
@@ -570,7 +663,10 @@ export class AdminNotificationsService implements OnModuleInit {
     if (!b || b.status === 'sent') return { enqueued: 0 };
     await col.updateOne({ _id: b._id }, { $set: { status: 'sending' } });
 
-    const filter = await this.segmentFilter((b.segment ?? {}) as BroadcastSegment);
+    const segment = (b.segment ?? {}) as LegacySegment & { audience?: BroadcastAudience };
+    const filter = segment.audience
+      ? await this.audienceFilter(segment.audience)
+      : await this.legacyFilter(segment);
     const cursor = this.db.collection('users').find(filter).project({ _id: 1 });
     let enqueued = 0;
     let batch: string[] = [];
@@ -581,7 +677,12 @@ export class AdminNotificationsService implements OnModuleInit {
             userId,
             type: NotificationType.ADMIN_ANNOUNCEMENT,
             refId: broadcastId,
-            payload: { title: b.title, body: b.body, url: b.url ?? undefined },
+            payload: {
+              title: b.title,
+              body: b.body,
+              url: b.url ?? undefined,
+              imageUrl: b.imageUrl ?? undefined,
+            },
           }),
         ),
       );

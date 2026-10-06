@@ -1,5 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
-import { Module } from '@nestjs/common';
+import { type MiddlewareConsumer, Module, type NestModule, RequestMethod } from '@nestjs/common';
+import { raw } from 'express';
 import { JwtModule } from '@nestjs/jwt';
 import { MongooseModule } from '@nestjs/mongoose';
 import { PassportModule } from '@nestjs/passport';
@@ -183,4 +184,16 @@ import { AdminJwtStrategy } from './strategies/admin-jwt.strategy';
   ],
   exports: [AdminService, AuditService],
 })
-export class AdminModule {}
+export class AdminModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    // Announcement pictures arrive as raw bytes (the JSON parser leaves image/*
+    // bodies alone). A little over 1 MB, so the service can say "too big" itself.
+    consumer
+      .apply(raw({ type: ['image/*', 'application/octet-stream'], limit: '1100kb' }))
+      .forRoutes({
+        path: 'admin/notifications/broadcasts/image',
+        method: RequestMethod.POST,
+        version: '1',
+      });
+  }
+}

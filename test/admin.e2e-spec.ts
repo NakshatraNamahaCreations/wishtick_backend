@@ -1801,67 +1801,159 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         .expect(404);
     });
 
-    it('counts an audience first, then announces to exactly it', async () => {
+    it('offers four plain audiences, counts one, and announces to exactly it', async () => {
       const token = await adminToken();
-      const city = `Zzcity${seq}${Date.now()}`;
-      const inCity = await newUser();
-      const elsewhere = await newUser();
+      const fresh = await newUser();
+      const dormant = await newUser();
+      // Joined two months ago and not seen since.
+      const longAgo = new Date(Date.now() - 60 * 86_400_000);
       await db()
-        .collection('user_profiles')
+        .collection('users')
         .updateOne(
-          { userId: new Types.ObjectId(inCity.userId) },
-          { $set: { city } },
-          { upsert: true },
+          { _id: new Types.ObjectId(dormant.userId) },
+          { $set: { createdAt: longAgo, lastLoginAt: null } },
         );
+      await db()
+        .collection('analytics_events')
+        .deleteMany({ userId: new Types.ObjectId(dormant.userId) });
 
-      const dry = (
-        await request(server())
-          .post(`${V1}/admin/notifications/broadcasts/dry-run`)
+      const count = async (audience: string) =>
+        (
+          (
+            await request(server())
+              .post(`${V1}/admin/notifications/broadcasts/dry-run`)
+              .set(auth(token))
+              .send({ audience })
+              .expect(200)
+          ).body as Envelope<{ count: number }>
+        ).data.count;
+      const everyone = await count('everyone');
+      expect(await count('new')).toBeGreaterThanOrEqual(1);
+      expect(await count('inactive')).toBeGreaterThanOrEqual(1);
+      expect(await count('new')).toBeLessThanOrEqual(everyone);
+      await request(server())
+        .post(`${V1}/admin/notifications/broadcasts/dry-run`)
+        .set(auth(token))
+        .send({ segment: { city: 'Pune' } })
+        .expect(400);
+
+      const send = async (audience: string, title: string) => {
+        const sent = (
+          await request(server())
+            .post(`${V1}/admin/notifications/broadcasts`)
+            .set(auth(token))
+            .send({ title, body: 'Something for you.', audience })
+            .expect(201)
+        ).body as Envelope<{ id: string; audience: number }>;
+        // The fan-out is a scheduler job: queued, then run here as the worker would.
+        const job = ctx.scheduler.added.find(
+          (j) =>
+            j.name === 'admin-broadcast' &&
+            (j.data as { broadcastId: string }).broadcastId === sent.data.id,
+        );
+        expect(job).toBeDefined();
+        await app.get(SchedulerRegistry).get('admin-broadcast')!(job!.data);
+        await ctx.drainNotifications();
+        return sent.data;
+      };
+      const got = (id: string, title: string) =>
+        db()
+          .collection('notifications')
+          .countDocuments({ userId: new Types.ObjectId(id), type: 'admin_announcement', title });
+
+      await send('inactive', 'We miss you');
+      expect(await eventually(async () => (await got(dormant.userId, 'We miss you')) === 1)).toBe(
+        true,
+      );
+      expect(await got(fresh.userId, 'We miss you')).toBe(0);
+
+      await send('new', 'Welcome aboard');
+      expect(await eventually(async () => (await got(fresh.userId, 'Welcome aboard')) === 1)).toBe(
+        true,
+      );
+      expect(await got(dormant.userId, 'Welcome aboard')).toBe(0);
+    });
+
+    it('carries an uploaded picture to the app, and refuses anything that is not one', async () => {
+      const token = await adminToken();
+      const user = await newUser();
+      // A real 1×1 PNG.
+      const png = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64',
+      );
+      const upload = (body: Buffer, type = 'image/png') =>
+        request(server())
+          .post(`${V1}/admin/notifications/broadcasts/image`)
           .set(auth(token))
-          .send({ segment: { city: city.toLowerCase() } })
-          .expect(200)
-      ).body as Envelope<{ count: number }>;
-      expect(dry.data.count).toBe(1);
+          .set('Content-Type', type)
+          .send(body);
+
+      const uploaded = (await upload(png).expect(201)).body as Envelope<{
+        imageKey: string;
+        imageUrl: string;
+      }>;
+      expect(uploaded.data.imageKey).toMatch(/^broadcasts\/[0-9a-f-]{36}\.png$/);
+      // Text with an image label is still not an image.
+      await upload(Buffer.from('<svg onload=alert(1)>'), 'image/png').expect(415);
+      // Too big, even with a real PNG header.
+      await upload(Buffer.concat([png, Buffer.alloc(1_050_000)])).expect(413);
+
+      await request(server())
+        .post(`${V1}/admin/notifications/broadcasts`)
+        .set(auth(token))
+        .send({
+          title: 'Look',
+          body: 'A picture.',
+          audience: 'new',
+          imageKey: 'broadcasts/../../etc/passwd',
+        })
+        .expect(400);
 
       const sent = (
         await request(server())
           .post(`${V1}/admin/notifications/broadcasts`)
           .set(auth(token))
-          .send({ title: 'Hello city', body: 'Something for you.', segment: { city } })
+          .send({
+            title: 'Diwali sale',
+            body: 'Lights, gifts, and 20% off.',
+            audience: 'new',
+            imageKey: uploaded.data.imageKey,
+          })
           .expect(201)
-      ).body as Envelope<{ id: string; audience: number }>;
-      expect(sent.data.audience).toBe(1);
-
-      // The fan-out is a scheduler job: queued, then run here as the worker would.
+      ).body as Envelope<{ id: string }>;
       const job = ctx.scheduler.added.find(
         (j) =>
           j.name === 'admin-broadcast' &&
           (j.data as { broadcastId: string }).broadcastId === sent.data.id,
       );
-      expect(job).toBeDefined();
       await app.get(SchedulerRegistry).get('admin-broadcast')!(job!.data);
       await ctx.drainNotifications();
+      const note = await eventually(async () =>
+        Boolean(
+          await db()
+            .collection('notifications')
+            .findOne({
+              userId: new Types.ObjectId(user.userId),
+              title: 'Diwali sale',
+            }),
+        ),
+      );
+      expect(note).toBe(true);
+      const row = await db()
+        .collection('notifications')
+        .findOne({ userId: new Types.ObjectId(user.userId), title: 'Diwali sale' });
+      expect((row!.payload as { imageUrl?: string }).imageUrl).toBe(uploaded.data.imageUrl);
 
-      const done = await eventually(async () => {
-        const b = await db()
-          .collection('admin_broadcasts')
-          .findOne({ _id: new Types.ObjectId(sent.data.id) });
-        return b?.status === 'sent';
-      });
-      expect(done).toBe(true);
-      const got = (id: string) =>
-        db()
-          .collection('notifications')
-          .countDocuments({ userId: new Types.ObjectId(id), type: 'admin_announcement' });
-      expect(await eventually(async () => (await got(inCity.userId)) === 1)).toBe(true);
-      expect(await got(elsewhere.userId)).toBe(0);
-
-      // Nobody matches → nothing is queued.
-      await request(server())
-        .post(`${V1}/admin/notifications/broadcasts`)
-        .set(auth(token))
-        .send({ title: 'Nobody', body: 'No one here.', segment: { city: 'Nowhere-at-all' } })
-        .expect(400);
+      const list = (
+        await request(server())
+          .get(`${V1}/admin/notifications/broadcasts`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { id: string; imageUrl: string | null }[] }>;
+      expect(list.data.items.find((b) => b.id === sent.data.id)?.imageUrl).toBe(
+        uploaded.data.imageUrl,
+      );
     });
 
     it('turns off pushes to one device', async () => {
