@@ -41,6 +41,8 @@ import { MediaModule } from 'src/modules/media/media.module';
 import { MemoriesModule } from 'src/modules/memories/memories.module';
 import { WishlistsModule } from 'src/modules/wishlists/wishlists.module';
 import { AdminCatalogController } from './admin-catalog.controller';
+import { AdminInsightsController } from './admin-insights.controller';
+import { AdminInsightsService } from './admin-insights.service';
 import { AdminCatalogService } from './admin-catalog.service';
 import { AdminContentController } from './admin-content.controller';
 import { AdminMoneyController } from './admin-money.controller';
@@ -59,6 +61,9 @@ import { OrdersModule } from 'src/modules/orders/orders.module';
 import { AdminContentService } from './admin-content.service';
 import { AdminTakedownService } from './admin-takedown.service';
 import { Removal, RemovalSchema } from './schemas/removal.schema';
+import { AdminSession, AdminSessionSchema } from './schemas/admin-session.schema';
+import { AdminSessionsService } from './admin-sessions.service';
+import { AdminGovernanceController } from './admin-governance.controller';
 import { AdminAuthController } from './admin-auth.controller';
 import { AdminTokenService } from './admin-token.service';
 import { AdminUsersService } from './admin-users.service';
@@ -110,6 +115,7 @@ import { AdminJwtStrategy } from './strategies/admin-jwt.strategy';
       { name: DeliveryLog.name, schema: DeliveryLogSchema },
       { name: Media.name, schema: MediaSchema },
       { name: Removal.name, schema: RemovalSchema },
+      { name: AdminSession.name, schema: AdminSessionSchema },
     ]),
     // Admin tokens are signed per-call with the admin secret + audience; the
     // module-level default stays empty so a user secret can never leak in.
@@ -146,10 +152,13 @@ import { AdminJwtStrategy } from './strategies/admin-jwt.strategy';
     AdminNotificationsController,
     AdminOpsController,
     AdminCatalogController,
+    AdminInsightsController,
+    AdminGovernanceController,
     ReportsController,
   ],
   providers: [
     AdminTokenService,
+    AdminSessionsService,
     AdminService,
     AdminJwtStrategy,
     AdminGuard,
@@ -165,6 +174,7 @@ import { AdminJwtStrategy } from './strategies/admin-jwt.strategy';
     AdminNotificationsService,
     AdminOpsService,
     AdminCatalogService,
+    AdminInsightsService,
     OpsEventsListener,
     ModerationService,
     ModerationListener,

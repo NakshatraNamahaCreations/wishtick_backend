@@ -1,15 +1,21 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
+import {
+  WISHLIST_LINK_OPENED,
+  type WishlistLinkOpenedEvent,
+} from 'src/common/events/domain-events';
 import type { AppConfig } from 'src/config/configuration';
 import { UsersService } from 'src/modules/users/users.service';
 import {
   UserProfile,
   type UserProfileDocument,
 } from 'src/modules/profile/schemas/user-profile.schema';
+import { byImportance } from './item-order';
 import { AccessPolicyService } from './access/access-policy.service';
 import { WishlistItem, type WishlistItemDocument } from './schemas/wishlist-item.schema';
 import type { WishlistDocument } from './schemas/wishlist.schema';
@@ -33,6 +39,7 @@ export class PublicWishlistsService {
     private readonly access: AccessPolicyService,
     private readonly users: UsersService,
     private readonly config: ConfigService<AppConfig, true>,
+    private readonly emitter: EventEmitter2,
   ) {}
 
   /**
@@ -104,6 +111,11 @@ export class PublicWishlistsService {
     viewerUserId?: string,
   ): Promise<PublicWishlistView> {
     const wishlist = await this.resolveBySlug(slug, passcode, viewerUserId);
+    this.emitter.emit(WISHLIST_LINK_OPENED, {
+      wishlistId: wishlist._id.toString(),
+      ownerId: wishlist.ownerId.toString(),
+      viewerUserId: viewerUserId ?? null,
+    } satisfies WishlistLinkOpenedEvent);
 
     const [loaded, ownerFirstName] = await Promise.all([
       this.items
@@ -123,8 +135,8 @@ export class PublicWishlistsService {
       Boolean(viewerUserId) && recipientId.toString() === viewerUserId && !wishlist.forName;
     const items =
       wishlist.ownerId.toString() === viewerUserId
-        ? loaded.filter((i) => !i.hiddenFromOwner)
-        : loaded;
+        ? byImportance(loaded).filter((i) => !i.hiddenFromOwner)
+        : byImportance(loaded);
     // Names are for signed-in guests and WishMates. Someone holding only the
     // link learns that an item is bought, and not by whom.
     const ids = viewerUserId && !isRecipient ? namedBuyerIds(items) : [];

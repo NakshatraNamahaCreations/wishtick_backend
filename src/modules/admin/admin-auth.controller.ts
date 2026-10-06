@@ -1,4 +1,14 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Ip, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  HttpCode,
+  HttpStatus,
+  Ip,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Public } from 'src/common/decorators/public.decorator';
@@ -24,12 +34,13 @@ export class AdminAuthController {
   login(
     @Body() dto: AdminLoginDto,
     @Ip() ip: string,
+    @Headers('user-agent') userAgent?: string,
   ): Promise<{
     accessToken: string;
     expiresInSeconds: number;
     admin: AdminView;
   }> {
-    return this.admins.login(dto, ip ?? null);
+    return this.admins.login(dto, ip ?? null, userAgent ?? null);
   }
 
   @Post('logout')
@@ -37,8 +48,8 @@ export class AdminAuthController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'End this admin session' })
-  async logout(@CurrentAdmin() admin: AuthenticatedAdmin): Promise<{ ok: true }> {
-    await this.admins.logout(admin.jti);
+  async logout(@CurrentAdmin() admin: AuthenticatedAdmin, @Ip() ip: string): Promise<{ ok: true }> {
+    await this.admins.logout(admin, ip ?? null);
     return { ok: true };
   }
 

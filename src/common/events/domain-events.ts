@@ -9,6 +9,31 @@
  */
 export const USER_REGISTERED = 'user.registered';
 
+/**
+ * Someone used the app: a sign-in, or a session refreshed while the app was
+ * open. Emitted on every one — the analytics listener keeps the first per
+ * person per day, which is what "active" means in the numbers.
+ */
+export const USER_ACTIVE = 'user.active';
+
+export interface UserActiveEvent {
+  userId: string;
+}
+
+/**
+ * A shared wishlist link was opened by somebody other than its owner — the
+ * one sign the server ever gets that a list was shared, since sharing itself
+ * happens in the phone's share sheet.
+ */
+export const WISHLIST_LINK_OPENED = 'wishlist.link_opened';
+
+export interface WishlistLinkOpenedEvent {
+  wishlistId: string;
+  ownerId: string;
+  /** Null for somebody not signed in. */
+  viewerUserId: string | null;
+}
+
 export interface UserRegisteredEvent {
   userId: string;
   email?: string;

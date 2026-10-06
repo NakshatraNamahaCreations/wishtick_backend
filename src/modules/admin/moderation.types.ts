@@ -18,6 +18,7 @@ export enum ReportTargetType {
 
 export enum ReportStatus {
   OPEN = 'open',
+  /** In progress. No action sets it any more; reports flagged before that was removed (Oct 2026) keep it. */
   REVIEWING = 'reviewing',
   RESOLVED = 'resolved',
   DISMISSED = 'dismissed',
@@ -36,10 +37,6 @@ export enum ModerationAction {
   APPROVE = 'approve',
   /** Take the content down (soft-hide / regenerate / suspend as appropriate). */
   REMOVE = 'remove',
-  /** Leave it up but keep it flagged for a second look. */
-  FLAG = 'flag',
-  /** Bump severity for a senior reviewer. */
-  ESCALATE = 'escalate',
 }
 
 /** Higher = reviewed sooner. Auto-flagged content and reports on people rank up. */

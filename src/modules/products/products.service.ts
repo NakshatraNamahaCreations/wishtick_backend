@@ -29,6 +29,17 @@ export interface SearchResponse extends ProductSearchResult {
   freshness: ResultFreshness;
 }
 
+/** One day of search counters, as the admin panel reads them. */
+export interface SearchDayStats {
+  day: string;
+  hits: number;
+  misses: number;
+  /** First pages that came back with nothing. */
+  empty: number;
+  /** Searches on each store tab. */
+  platforms: Record<string, number>;
+}
+
 @Injectable()
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
@@ -45,7 +56,89 @@ export class ProductsService {
     return this.config.get('products', { infer: true });
   }
 
+  // ── Counters ──────────────────────────────────────────────────────────────
+  //
+  // Per-day Redis counters the admin panel reads: searches answered from cache
+  // and sent on, searches that found nothing, and searches on each store tab.
+  // A prewarm refresh is not a person's search and is never counted.
+
+  /** Searches answered from cache vs. sent on, per day, for the last [days]. */
+  async lookupStats(days: number): Promise<{ day: string; hits: number; misses: number }[]> {
+    return (await this.searchStats(days)).map(({ day, hits, misses }) => ({ day, hits, misses }));
+  }
+
+  /** Every per-day search counter for the last [days], oldest first. */
+  async searchStats(days: number): Promise<SearchDayStats[]> {
+    const list = Array.from({ length: days }, (_, i) =>
+      new Date(Date.now() - (days - 1 - i) * 86_400_000).toISOString().slice(0, 10),
+    );
+    return this.searchStatsOn(list);
+  }
+
+  /** Every per-day search counter on [days] (`YYYY-MM-DD`), in that order. */
+  async searchStatsOn(days: string[]): Promise<SearchDayStats[]> {
+    const out: SearchDayStats[] = [];
+    for (const day of days) {
+      const [hits, misses, empty] = await this.cache.client.mget(
+        `products:lookups:${day}:hit`,
+        `products:lookups:${day}:miss`,
+        `products:lookups:${day}:empty`,
+      );
+      const platforms = await this.cache.client.hgetall(`products:platforms:${day}`);
+      out.push({
+        day,
+        hits: Number(hits) || 0,
+        misses: Number(misses) || 0,
+        empty: Number(empty) || 0,
+        platforms: Object.fromEntries(
+          Object.entries(platforms ?? {}).map(([k, v]) => [k, Number(v) || 0]),
+        ),
+      });
+    }
+    return out;
+  }
+
+  private async countPlatform(platform: string): Promise<void> {
+    const key = `products:platforms:${new Date().toISOString().slice(0, 10)}`;
+    try {
+      const n = await this.cache.client.hincrby(key, platform, 1);
+      if (n === 1) await this.cache.client.expire(key, 100 * 86_400);
+    } catch {
+      // A counter must never stop a search.
+    }
+  }
+
+  private async countLookup(outcome: 'hit' | 'miss' | 'empty'): Promise<void> {
+    const key = `products:lookups:${new Date().toISOString().slice(0, 10)}:${outcome}`;
+    try {
+      const n = await this.cache.client.incr(key);
+      if (n === 1) await this.cache.client.expire(key, 100 * 86_400);
+    } catch {
+      // A counter must never stop a search.
+    }
+  }
+
   // ── Search ────────────────────────────────────────────────────────────────
+
+  /**
+   * The cached answer to [query], however stale — or null if there is none.
+   *
+   * Never calls the provider and never writes. For a caller that has decided
+   * it may not spend another vendor search but would still rather show
+   * yesterday's shelf than an empty one; the freshness it returns says which
+   * it is, so nothing downstream has to pretend the result is live.
+   */
+  async cachedSearch(query: ProductSearchQuery): Promise<SearchResponse | null> {
+    const cached = await this.cache.get<CacheEnvelope<ProductSearchResult>>(
+      ProductsService.searchKey(query),
+    );
+    if (!cached) return null;
+    const fresh = Date.now() - cached.cachedAt < this.cfg.cacheTtlSeconds * 1_000;
+    return {
+      ...cached.data,
+      freshness: fresh ? ResultFreshness.CACHED : ResultFreshness.STALE,
+    };
+  }
 
   /**
    * Searches the catalogue, **stale-while-error**.
@@ -62,53 +155,21 @@ export class ProductsService {
    * price is a much smaller problem than a search page that does not load — and
    * the price is re-checked at import anyway.
    */
-  /**
-   * The cached answer to [query], however stale — or null if there is none.
-   *
-   * Never calls the provider and never writes. For a caller that has decided
-   * it may not spend another vendor search but would still rather show
-   * yesterday's shelf than an empty one; the freshness it returns says which
-   * it is, so nothing downstream has to pretend the result is live.
-   */
-  /** Searches answered from cache vs. sent on, per day, for the last [days]. */
-  async lookupStats(days: number): Promise<{ day: string; hits: number; misses: number }[]> {
-    const out: { day: string; hits: number; misses: number }[] = [];
-    for (let i = days - 1; i >= 0; i--) {
-      const day = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
-      const [hits, misses] = await this.cache.client.mget(
-        `products:lookups:${day}:hit`,
-        `products:lookups:${day}:miss`,
-      );
-      out.push({ day, hits: Number(hits) || 0, misses: Number(misses) || 0 });
-    }
-    return out;
-  }
-
-  private async countLookup(outcome: 'hit' | 'miss'): Promise<void> {
-    const key = `products:lookups:${new Date().toISOString().slice(0, 10)}:${outcome}`;
-    try {
-      const n = await this.cache.client.incr(key);
-      if (n === 1) await this.cache.client.expire(key, 40 * 86_400);
-    } catch {
-      // A counter must never stop a search.
-    }
-  }
-
-  async cachedSearch(query: ProductSearchQuery): Promise<SearchResponse | null> {
-    const cached = await this.cache.get<CacheEnvelope<ProductSearchResult>>(
-      ProductsService.searchKey(query),
-    );
-    if (!cached) return null;
-    const fresh = Date.now() - cached.cachedAt < this.cfg.cacheTtlSeconds * 1_000;
-    return {
-      ...cached.data,
-      freshness: fresh ? ResultFreshness.CACHED : ResultFreshness.STALE,
-    };
-  }
-
   async search(
     query: ProductSearchQuery,
     opts: { refresh?: boolean } = {},
+  ): Promise<SearchResponse> {
+    const result = await this.searchUncounted(query, opts);
+    if (!opts.refresh) {
+      if (query.platform) await this.countPlatform(query.platform);
+      if (result.items.length === 0 && query.page <= 1) await this.countLookup('empty');
+    }
+    return result;
+  }
+
+  private async searchUncounted(
+    query: ProductSearchQuery,
+    opts: { refresh?: boolean },
   ): Promise<SearchResponse> {
     if (query.platform) return this.searchOnPlatform(query, query.platform, opts);
     const key = ProductsService.searchKey(query);

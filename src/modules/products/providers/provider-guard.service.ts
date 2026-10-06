@@ -135,12 +135,28 @@ export class ProviderGuard {
     return Number(n) || 0;
   }
 
+  /** Requests sent to [provider] on each of [days] (`YYYY-MM-DD`). */
+  async requestsOnDays(provider: string, days: string[]): Promise<number[]> {
+    if (days.length === 0) return [];
+    const values = await this.cache.client.mget(
+      ...days.map((d) => ProviderGuard.usageKey(provider, `day:${d}`)),
+    );
+    return values.map((v) => Number(v) || 0);
+  }
+
   private async countRequest(provider: string): Promise<void> {
-    const key = ProviderGuard.usageKey(provider, new Date().toISOString().slice(0, 7));
+    const now = new Date().toISOString();
+    const month = ProviderGuard.usageKey(provider, now.slice(0, 7));
+    const day = ProviderGuard.usageKey(provider, `day:${now.slice(0, 10)}`);
     try {
-      const n = await this.cache.client.incr(key);
-      // Kept a little over a year, so last year's same month can be compared.
-      if (n === 1) await this.cache.client.expire(key, 400 * 86_400);
+      const [m, d] = await Promise.all([
+        this.cache.client.incr(month),
+        this.cache.client.incr(day),
+      ]);
+      // Months kept a little over a year, so last year's same month can be
+      // compared; days long enough for a quarter's chart.
+      if (m === 1) await this.cache.client.expire(month, 400 * 86_400);
+      if (d === 1) await this.cache.client.expire(day, 100 * 86_400);
     } catch {
       // A counter must never stop a search.
     }

@@ -718,15 +718,6 @@ export class ModerationService {
         report.status = ReportStatus.RESOLVED;
         resolution = resolution ?? 'Content removed';
         break;
-      case ModerationAction.FLAG:
-        report.status = ReportStatus.REVIEWING;
-        resolution = resolution ?? 'Flagged for a second look';
-        break;
-      case ModerationAction.ESCALATE:
-        report.severity += 5;
-        report.status = ReportStatus.REVIEWING;
-        resolution = resolution ?? 'Escalated';
-        break;
     }
 
     report.resolution = resolution;

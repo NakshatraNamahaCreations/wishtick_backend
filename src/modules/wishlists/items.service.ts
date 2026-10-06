@@ -8,6 +8,7 @@ import { MediaPurpose } from 'src/modules/media/schemas/media.schema';
 import { TaxonomyService } from 'src/modules/taxonomy/taxonomy.service';
 import { TaxonomyKind } from 'src/modules/taxonomy/taxonomy.types';
 import { AccessPolicyService } from './access/access-policy.service';
+import { byImportance } from './item-order';
 import type { AccessContext } from './access/access.types';
 import type { CreateItemDto, ListItemsQueryDto, UpdateItemDto } from './dto/wishlist.dto';
 import { WishlistItem, type WishlistItemDocument } from './schemas/wishlist-item.schema';
@@ -95,11 +96,15 @@ export class ItemsService {
       ...(query.priority ? { priority: query.priority } : {}),
     };
 
-    const items = await this.model
-      .find(filter)
-      .sort({ position: 1, _id: 1 })
-      .limit(MAX_ITEMS_PER_WISHLIST)
-      .exec();
+    // Fetched in the order they were added, then ranked by how much the
+    // creator wants each — the most wanted first, for everyone who looks.
+    const items = byImportance(
+      await this.model
+        .find(filter)
+        .sort({ position: 1, _id: 1 })
+        .limit(MAX_ITEMS_PER_WISHLIST)
+        .exec(),
+    );
 
     const viewer = await this.viewerOf(wishlist, ctx.userId, items);
     return items.map((item) => toItemView(item, viewer));

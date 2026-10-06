@@ -256,6 +256,14 @@ export class AuditQueryDto {
   @IsString()
   actorAdminId?: string;
 
+  @ApiPropertyOptional({
+    enum: ['read', 'change'],
+    description: 'read: reveals of private data and exports. change: everything else.',
+  })
+  @IsOptional()
+  @IsIn(['read', 'change'])
+  kind?: 'read' | 'change';
+
   @ApiPropertyOptional({ description: 'Start day, YYYY-MM-DD (UTC), inclusive.' })
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
@@ -1058,4 +1066,54 @@ export class TaxonomyReorderDto extends CatalogNoteDto {
   @ArrayMaxSize(500)
   @IsMongoId({ each: true })
   ids!: string[];
+}
+
+export class RetentionQueryDto {
+  @ApiPropertyOptional({ minimum: 2, maximum: 26, default: 8 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2)
+  @Max(26)
+  weeks?: number;
+}
+
+/** The raw analytics event stream's filters. */
+export class RawEventsQueryDto extends PageQueryDto {
+  @ApiPropertyOptional({ description: 'Event name, exactly.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  name?: string;
+
+  @ApiPropertyOptional({ description: 'User id.' })
+  @IsOptional()
+  @IsMongoId()
+  user?: string;
+
+  @ApiPropertyOptional({ description: 'Part of an anonymous (signed-out) id.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  q?: string;
+
+  @ApiPropertyOptional({ description: 'YYYY-MM-DD' })
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'YYYY-MM-DD' })
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  to?: string;
+}
+
+export class AdminActivityQueryDto {
+  @ApiPropertyOptional({ minimum: 1, maximum: 365, default: 30 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(365)
+  days?: number;
 }

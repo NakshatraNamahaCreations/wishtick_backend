@@ -2302,6 +2302,438 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
     });
   });
 
+  describe('analytics insights', () => {
+    const db = () => app.get<Connection>(getConnectionToken()).db!;
+    const today = () => new Date().toISOString().slice(0, 10);
+    const roleToken = async (role: string): Promise<string> => {
+      const email = `${role}-i${++seq}-${Date.now()}@wishtick.test`;
+      const password = 'a-long-enough-password';
+      await request(server())
+        .post(`${V1}/admin/admins`)
+        .set(auth(await adminToken()))
+        .send({ email, password, name: role, roles: [role] })
+        .expect(201);
+      return signIn(email, password);
+    };
+    const get = async <T>(path: string, query: Record<string, string> = {}): Promise<T> =>
+      (
+        (
+          await request(server())
+            .get(`${V1}/admin/analytics/${path}`)
+            .query(query)
+            .set(auth(await adminToken()))
+            .expect(200)
+        ).body as Envelope<T>
+      ).data;
+    /** Listeners record after the response; give them a moment. */
+    const eventually = async (check: () => Promise<boolean>) => {
+      for (let i = 0; i < 40; i++) {
+        if (await check()) return;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      throw new Error('never happened');
+    };
+    const clearCache = async () =>
+      request(server())
+        .post(`${V1}/admin/ops/caches/analytics/clear`)
+        .set(auth(await adminToken()))
+        .send({ reason: 'fresh numbers for the test' })
+        .expect(200);
+    const idem = () => ({ 'Idempotency-Key': `idem-${randomUUID()}` });
+
+    it('follows signups through onboarding, a wishlist, an item and a shared link', async () => {
+      await adminToken();
+      const owner = await newUser();
+      const visitor = await newUser();
+      await db()
+        .collection('user_profiles')
+        .updateOne(
+          { userId: new Types.ObjectId(owner.userId) },
+          { $set: { onboardingCompletedAt: new Date() } },
+          { upsert: true },
+        );
+      const list = (
+        await request(server())
+          .post(`${V1}/wishlists`)
+          .set(auth(owner.token))
+          .send({ title: `Funnel list ${seq}`, visibility: WishlistVisibility.PUBLIC })
+          .expect(201)
+      ).body as Envelope<{ id: string; share?: { slug: string } }>;
+      await request(server())
+        .post(`${V1}/wishlists/${list.data.id}/items`)
+        .set(auth(owner.token))
+        .send({ title: 'Kite' })
+        .expect(201);
+      // The owner opening their own link is not a share.
+      await request(server())
+        .get(`${V1}/public/wishlists/${list.data.share!.slug}`)
+        .set(auth(owner.token))
+        .expect(200);
+      await request(server())
+        .get(`${V1}/public/wishlists/${list.data.share!.slug}`)
+        .set(auth(visitor.token))
+        .expect(200);
+      await eventually(
+        async () =>
+          (await eventModel.countDocuments({
+            name: 'wishlist_link_opened',
+            'props.ownerId': owner.userId,
+          })) === 1,
+      );
+
+      await clearCache();
+      const funnel = await get<{
+        steps: { key: string; users: number; ofStart: number | null }[];
+        sharedSince: string | null;
+      }>('funnel', { from: today(), to: today() });
+      const step = (k: string) => funnel.steps.find((s) => s.key === k)!;
+      expect(funnel.steps.map((s) => s.key)).toEqual([
+        'signed_up',
+        'onboarded',
+        'wishlist',
+        'item',
+        'shared',
+      ]);
+      expect(step('signed_up').users).toBeGreaterThanOrEqual(2);
+      for (const k of ['onboarded', 'wishlist', 'item', 'shared']) {
+        expect(step(k).users).toBeGreaterThanOrEqual(1);
+      }
+      expect(step('shared').users).toBeLessThanOrEqual(step('signed_up').users);
+      expect(funnel.sharedSince).not.toBeNull();
+    });
+
+    it('counts a person active once a day however often they sign in, and builds cohorts', async () => {
+      const email = `active-${++seq}.${Date.now()}@example.com`;
+      const { user } = await authService.signup(
+        { email, password: PASSWORD, name: 'Active' },
+        { ip: '127.0.0.1', userAgent: 'e2e' },
+      );
+      for (let i = 0; i < 3; i++) {
+        await authService.login(
+          { identifier: email, password: PASSWORD },
+          { ip: '127.0.0.1', userAgent: 'e2e' },
+        );
+      }
+      await eventually(
+        async () =>
+          (await eventModel.countDocuments({
+            name: 'active',
+            userId: new Types.ObjectId(user.id),
+          })) >= 1,
+      );
+      await new Promise((r) => setTimeout(r, 200));
+      expect(
+        await eventModel.countDocuments({ name: 'active', userId: new Types.ObjectId(user.id) }),
+      ).toBe(1);
+
+      await clearCache();
+      const retention = await get<{
+        cohorts: { week: string; size: number; weeks: (number | null)[]; d1: number | null }[];
+        overall: { d1: number | null };
+        activeSince: string | null;
+      }>('retention', { weeks: '4' });
+      expect(retention.cohorts).toHaveLength(4);
+      const latest = retention.cohorts.at(-1)!;
+      expect(latest.size).toBeGreaterThanOrEqual(1);
+      // A week that has not happened yet is unknown, not zero.
+      expect(latest.weeks).toEqual([]);
+      expect(latest.d1).toBeNull();
+      expect(retention.cohorts[0].weeks).toHaveLength(3);
+      expect(retention.activeSince).not.toBeNull();
+
+      const raw = await get<{ items: { name: string; userId: string }[]; total: number }>('raw', {
+        name: 'active',
+        user: user.id,
+      });
+      expect(raw.total).toBe(1);
+      const names = await get<string[]>('raw/names');
+      expect(names).toEqual(expect.arrayContaining(['signup', 'active']));
+    });
+
+    it('reports gifting, group gifts, events and notifications for a range', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const list = (
+        await request(server())
+          .post(`${V1}/wishlists`)
+          .set(auth(owner.token))
+          .send({ title: `Gifting list ${seq}`, visibility: WishlistVisibility.PUBLIC })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      const itemId = (
+        (
+          await request(server())
+            .post(`${V1}/wishlists/${list.data.id}/items`)
+            .set(auth(owner.token))
+            .send({ title: 'Teapot' })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+      const giftId = (
+        (
+          await request(server())
+            .post(`${V1}/items/${itemId}/reserve`)
+            .set(auth(gifter.token))
+            .set(idem())
+            .send({})
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+      await request(server())
+        .post(`${V1}/gifts/${giftId}/purchase`)
+        .set(auth(gifter.token))
+        .set(idem())
+        .send({})
+        .expect(200);
+
+      await clearCache();
+      const range = { from: today(), to: today() };
+      const gifting = await get<{
+        reserved: number;
+        purchased: number;
+        purchaseRate: number | null;
+        days: { day: string; reserved: number }[];
+      }>('gifting', range);
+      expect(gifting.reserved).toBeGreaterThanOrEqual(1);
+      expect(gifting.purchased).toBeGreaterThanOrEqual(1);
+      expect(gifting.purchaseRate).not.toBeNull();
+      expect(gifting.days.at(-1)).toMatchObject({ day: today() });
+
+      const group = await get<{ started: number; fundedRate: number | null }>('group-gifts', range);
+      expect(typeof group.started).toBe('number');
+      const events = await get<{ created: number; replies: Record<string, number> }>(
+        'events',
+        range,
+      );
+      expect(events.replies).toEqual(expect.objectContaining({ yes: expect.any(Number) }));
+      const channels = await get<{ channel: string; sent: number }[]>('notifications', range);
+      expect(Array.isArray(channels)).toBe(true);
+    });
+
+    it('counts searches, empty results, store tabs and paid calls per day', async () => {
+      const user = await newUser();
+      const search = (query: Record<string, string>) =>
+        request(server())
+          .get(`${V1}/products/search`)
+          .query(query)
+          .set(auth(user.token))
+          .expect(200);
+      await search({ q: 'headphones' });
+      await search({ q: `nothing-matches-this-${seq}` });
+      await search({ q: 'headphones', platform: 'amazon' });
+
+      await clearCache();
+      const stats = await get<{
+        days: { day: string; searches: number; empty: number; providerCalls: number }[];
+        totals: { searches: number; empty: number; emptyRate: number | null };
+        platforms: { platform: string; searches: number }[];
+      }>('search', { from: today(), to: today() });
+      const day = stats.days.at(-1)!;
+      expect(day.day).toBe(today());
+      expect(day.searches).toBeGreaterThanOrEqual(2);
+      expect(day.empty).toBeGreaterThanOrEqual(1);
+      expect(day.providerCalls).toBeGreaterThanOrEqual(1);
+      expect(stats.platforms.find((p) => p.platform === 'amazon')?.searches).toBeGreaterThanOrEqual(
+        1,
+      );
+    });
+
+    it('is for analytics:view only', async () => {
+      await request(server())
+        .get(`${V1}/admin/analytics/funnel`)
+        .set(auth(await roleToken('support')))
+        .expect(403);
+      await request(server())
+        .get(`${V1}/admin/analytics/funnel`)
+        .set(auth(await roleToken('analyst')))
+        .expect(200);
+      await request(server())
+        .get(`${V1}/admin/analytics/retention`)
+        .query({ weeks: 99 })
+        .set(auth(await adminToken()))
+        .expect(400);
+    });
+  });
+
+  describe('governance', () => {
+    const password = 'a-long-enough-password';
+    // Sign the super admin in once: every sign-in counts against the login throttle.
+    let superToken: string | undefined;
+    const su = async () => (superToken ??= await adminToken());
+    const makeAdmin = async (role: string, ipAllowlist?: string[]) => {
+      const email = `${role}-g${++seq}-${Date.now()}@wishtick.test`;
+      const created = (
+        await request(server())
+          .post(`${V1}/admin/admins`)
+          .set(auth(await su()))
+          .send({ email, password, name: `Gov ${role}`, roles: [role], ipAllowlist })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      return { id: created.data.id, email };
+    };
+    const me = (token: string) => request(server()).get(`${V1}/admin/auth/me`).set(auth(token));
+    type Sessions = {
+      active: { id: string; ip: string | null; userAgent: string | null; active: boolean }[];
+      recent: { id: string; endedReason: string | null; endedBy: string | null }[];
+    };
+    const sessionsOf = async (id: string) =>
+      (
+        (
+          await request(server())
+            .get(`${V1}/admin/admins/${id}/sessions`)
+            .set(auth(await su()))
+            .expect(200)
+        ).body as Envelope<Sessions>
+      ).data;
+    const auditFor = async (targetId: string) =>
+      (
+        (
+          await request(server())
+            .get(`${V1}/admin/audit`)
+            .query({ targetId })
+            .set(auth(await su()))
+            .expect(200)
+        ).body as Envelope<{ items: { action: string }[] }>
+      ).data.items.map((a) => a.action);
+
+    it('records each sign-in as a session, and ends one or all of them on the record', async () => {
+      const mod = await makeAdmin('moderator');
+      const first = await signIn(mod.email, password);
+      const second = await signIn(mod.email, password);
+      let sessions = await sessionsOf(mod.id);
+      expect(sessions.active).toHaveLength(2);
+      expect(sessions.active[0].ip).toBeTruthy();
+
+      // End the older one: its token stops, the newer one carries on.
+      const older = sessions.active[1];
+      await request(server())
+        .post(`${V1}/admin/admins/${mod.id}/sessions/${older.id}/end`)
+        .set(auth(await su()))
+        .expect(200);
+      await me(first).expect(401);
+      await me(second).expect(200);
+      await request(server())
+        .post(`${V1}/admin/admins/${mod.id}/sessions/${older.id}/end`)
+        .set(auth(await su()))
+        .expect(409);
+      sessions = await sessionsOf(mod.id);
+      expect(sessions.active).toHaveLength(1);
+      expect(sessions.recent[0]).toMatchObject({ endedReason: 'ended_by_admin' });
+
+      // Everywhere: every token, recorded or not, stops.
+      const ended = (
+        await request(server())
+          .post(`${V1}/admin/admins/${mod.id}/logout-all`)
+          .set(auth(await su()))
+          .expect(200)
+      ).body as Envelope<{ ended: number }>;
+      expect(ended.data.ended).toBe(1);
+      await me(second).expect(401);
+      expect((await sessionsOf(mod.id)).active).toHaveLength(0);
+
+      expect(await auditFor(mod.id)).toEqual(
+        expect.arrayContaining(['admin.login', 'admin.session_end', 'admin.logout_all']),
+      );
+      // A moderator does not manage admins.
+      const third = await signIn(mod.email, password);
+      await request(server())
+        .get(`${V1}/admin/admins/${mod.id}/sessions`)
+        .set(auth(third))
+        .expect(403);
+    });
+
+    it('marks a session ended when its admin signs out', async () => {
+      const support = await makeAdmin('support');
+      const token = await signIn(support.email, password);
+      await request(server()).post(`${V1}/admin/auth/logout`).set(auth(token)).expect(200);
+      const sessions = await sessionsOf(support.id);
+      expect(sessions.active).toHaveLength(0);
+      expect(sessions.recent[0]).toMatchObject({ endedReason: 'logout' });
+      expect(await auditFor(support.id)).toEqual(
+        expect.arrayContaining(['admin.login', 'admin.logout']),
+      );
+    });
+
+    it('takes IP ranges in the allowlist and refuses anything that is not one', async () => {
+      const outside = await makeAdmin('support', ['10.0.0.0/8']);
+      await request(server())
+        .post(`${V1}/admin/auth/login`)
+        .send({ email: outside.email, password })
+        .expect(403);
+      // The test client connects from loopback, whichever family it reports.
+      const inside = await makeAdmin('support', ['127.0.0.0/8', '::1/128']);
+      await signIn(inside.email, password);
+      await request(server())
+        .patch(`${V1}/admin/admins/${inside.id}`)
+        .set(auth(await su()))
+        .send({ ipAllowlist: ['127.0.0.1', 'office-wifi'] })
+        .expect(400);
+    });
+
+    it('separates reads from changes, exports the trail, and sums up one admin', async () => {
+      const token = await su();
+      await request(server()).get(`${V1}/admin/users/export`).set(auth(token)).expect(200);
+
+      const reads = (
+        await request(server())
+          .get(`${V1}/admin/audit`)
+          .query({ kind: 'read', limit: 100 })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { action: string }[] }>;
+      expect(reads.data.items.length).toBeGreaterThan(0);
+      expect(reads.data.items.every((a) => /reveal|export/.test(a.action))).toBe(true);
+      const changes = (
+        await request(server())
+          .get(`${V1}/admin/audit`)
+          .query({ kind: 'change', limit: 100 })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { action: string }[] }>;
+      expect(changes.data.items.some((a) => /reveal|export/.test(a.action))).toBe(false);
+
+      const csv = await request(server())
+        .get(`${V1}/admin/audit/export`)
+        .query({ kind: 'read' })
+        .set(auth(token))
+        .expect(200);
+      expect(csv.headers['content-type']).toContain('text/csv');
+      expect(csv.text).toContain('when,admin,action,kind');
+      expect(csv.text).toContain('user.export');
+
+      const self = (await me(token).expect(200)).body as Envelope<{ id: string }>;
+      const activity = (
+        await request(server())
+          .get(`${V1}/admin/admins/${self.data.id}/activity`)
+          .query({ days: 7 })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{
+        total: number;
+        reads: number;
+        byDay: { day: string }[];
+        byAction: { action: string }[];
+        lastAt: string | null;
+      }>;
+      expect(activity.data.byDay).toHaveLength(7);
+      expect(activity.data.reads).toBeGreaterThanOrEqual(1);
+      expect(activity.data.byAction.map((a) => a.action)).toEqual(
+        expect.arrayContaining(['admin.login', 'audit.export']),
+      );
+      expect(activity.data.lastAt).not.toBeNull();
+    });
+
+    it('gives the finance role money and nothing else', async () => {
+      const finance = await makeAdmin('finance');
+      const token = await signIn(finance.email, password);
+      await request(server()).get(`${V1}/admin/money/gifts`).set(auth(token)).expect(200);
+      await request(server()).get(`${V1}/admin/users`).set(auth(token)).expect(200);
+      await request(server()).get(`${V1}/admin/content/wishlists`).set(auth(token)).expect(403);
+      await request(server()).get(`${V1}/admin/moderation/queue`).set(auth(token)).expect(403);
+      await request(server()).get(`${V1}/admin/admins`).set(auth(token)).expect(403);
+    });
+  });
+
   describe('moderation upgrades', () => {
     const reportWishlist = async (reporter: Actor, wishlistId: string) =>
       (
@@ -2796,6 +3228,51 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
   });
 
   describe('moderation flow', () => {
+    it('offers approve and remove — flag and escalate are gone, one at a time or in bulk', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const reporter = await newUser();
+      const wl = (
+        await request(server())
+          .post(`${V1}/wishlists`)
+          .set(auth(owner.token))
+          .send({ title: 'Escalation check', visibility: WishlistVisibility.PUBLIC })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      const report = (
+        await request(server())
+          .post(`${V1}/reports`)
+          .set(auth(reporter.token))
+          .send({ targetType: 'wishlist', targetId: wl.data.id, reason: 'spam' })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      for (const action of ['escalate', 'flag']) {
+        await request(server())
+          .post(`${V1}/admin/moderation/reports/${report.data.id}/act`)
+          .set(auth(token))
+          .send({ action })
+          .expect(400);
+        await request(server())
+          .post(`${V1}/admin/moderation/reports/bulk`)
+          .set(auth(token))
+          .send({ ids: [report.data.id], action })
+          .expect(400);
+      }
+      // The same bulk call with a real action goes through — so the 400 was the action.
+      await request(server())
+        .post(`${V1}/admin/moderation/reports/bulk`)
+        .set(auth(token))
+        .send({ ids: [report.data.id], action: 'approve' })
+        .expect((res) => expect([200, 201]).toContain(res.status));
+      const decided = (
+        await request(server())
+          .get(`${V1}/admin/moderation/reports/${report.data.id}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ status: string }>;
+      expect(decided.data.status).toBe('dismissed');
+    });
+
     it('carries a user report through the queue to a removal, deduped and audited', async () => {
       const token = await adminToken();
       const owner = await newUser();

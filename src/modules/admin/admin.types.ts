@@ -3,6 +3,8 @@ export enum AdminRole {
   MODERATOR = 'moderator',
   SUPPORT = 'support',
   ANALYST = 'analyst',
+  /** Gifts, orders, group gifts and affiliate money — and nothing else. */
+  FINANCE = 'finance',
 }
 
 /**
@@ -67,6 +69,12 @@ export const ROLE_PERMISSIONS: Record<AdminRole, AdminPermission[]> = {
     AdminPermission.MONEY_VIEW,
     AdminPermission.NOTIFICATIONS_VIEW,
     AdminPermission.SENSITIVE_VIEW,
+  ],
+  [AdminRole.FINANCE]: [
+    AdminPermission.MONEY_VIEW,
+    AdminPermission.MONEY_MANAGE,
+    AdminPermission.USERS_VIEW,
+    AdminPermission.EXPORT_DATA,
   ],
   [AdminRole.ANALYST]: [
     AdminPermission.ANALYTICS_VIEW,

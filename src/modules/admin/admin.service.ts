@@ -6,7 +6,9 @@ import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import type { AppConfig } from 'src/config/configuration';
 import { PasswordService } from 'src/modules/auth/services/password.service';
+import { AdminSessionsService } from './admin-sessions.service';
 import { AdminTokenService } from './admin-token.service';
+import { ipAllowed, isAllowlistEntry } from './ip-allowlist';
 import { AdminRole, AdminStatus, type AuthenticatedAdmin, permissionsFor } from './admin.types';
 import { Admin, type AdminDocument } from './schemas/admin.schema';
 
@@ -31,6 +33,7 @@ export class AdminService implements OnModuleInit {
     private readonly passwords: PasswordService,
     private readonly tokens: AdminTokenService,
     private readonly config: ConfigService<AppConfig, true>,
+    private readonly sessions: AdminSessionsService,
   ) {}
 
   /** Seeds the first super-admin from env if none exists — the only bootstrap. */
@@ -61,6 +64,7 @@ export class AdminService implements OnModuleInit {
   async login(
     input: { email: string; password: string },
     ip: string | null,
+    userAgent: string | null = null,
   ): Promise<{
     accessToken: string;
     expiresInSeconds: number;
@@ -76,15 +80,18 @@ export class AdminService implements OnModuleInit {
     }
     admin.lastLoginAt = new Date();
     await admin.save();
-    const token = await this.tokens.mint(admin);
-    return { ...token, admin: AdminService.toView(admin) };
+    const { accessToken, expiresInSeconds, jti } = await this.tokens.mint(admin);
+    await this.sessions.start(admin, jti, expiresInSeconds, ip, userAgent);
+    return { accessToken, expiresInSeconds, admin: AdminService.toView(admin) };
   }
 
-  async logout(jti: string): Promise<void> {
+  async logout(actor: AuthenticatedAdmin, ip: string | null): Promise<void> {
+    const jti = actor.jti;
     // Denylist for the full session length — the jti is single-use, so
     // over-covering costs nothing and there is no exp to read off the payload.
     const ttlSeconds = this.config.get('admin.accessTtlHours', { infer: true }) * 3600;
     await this.tokens.denylist(jti, Math.floor(Date.now() / 1000) + ttlSeconds);
+    await this.sessions.signedOut(actor, ip);
   }
 
   // ── CRUD ─────────────────────────────────────────────────────────────────────
@@ -103,7 +110,7 @@ export class AdminService implements OnModuleInit {
         passwordHash,
         name: input.name,
         roles: input.roles,
-        ipAllowlist: input.ipAllowlist ?? [],
+        ipAllowlist: AdminService.assertAllowlist(input.ipAllowlist) ?? [],
       });
     } catch (err) {
       if ((err as { code?: number })?.code === 11000) {
@@ -155,7 +162,9 @@ export class AdminService implements OnModuleInit {
 
     if (input.name !== undefined) admin.name = input.name;
     if (input.roles !== undefined) admin.roles = input.roles;
-    if (input.ipAllowlist !== undefined) admin.ipAllowlist = input.ipAllowlist;
+    if (input.ipAllowlist !== undefined) {
+      admin.ipAllowlist = AdminService.assertAllowlist(input.ipAllowlist) ?? [];
+    }
     if (input.status !== undefined) {
       admin.status = input.status;
       // Disabling must end their live sessions, not just block the next login.
@@ -177,6 +186,7 @@ export class AdminService implements OnModuleInit {
     admin.passwordHash = await this.passwords.hash(password);
     admin.tokensInvalidBefore = new Date();
     await admin.save();
+    await this.sessions.endAllFor(admin._id, 'password_reset', null);
     return admin;
   }
 
@@ -243,8 +253,24 @@ export class AdminService implements OnModuleInit {
     return admin;
   }
 
+  /** Refuses an allowlist with an entry that is neither an address nor a CIDR range. */
+  static assertAllowlist(entries: string[] | undefined): string[] | undefined {
+    if (entries === undefined) return undefined;
+    const clean = [...new Set(entries.map((e) => e.trim()).filter(Boolean))];
+    const bad = clean.filter((e) => !isAllowlistEntry(e));
+    if (bad.length) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        `Not an IP address or range: ${bad.join(', ')}`,
+        400,
+        { invalid: bad },
+      );
+    }
+    return clean;
+  }
+
   assertIpAllowed(admin: AdminDocument, ip: string | null): void {
-    if (admin.ipAllowlist.length > 0 && (!ip || !admin.ipAllowlist.includes(ip))) {
+    if (!ipAllowed(admin.ipAllowlist, ip)) {
       throw new AppException(ErrorCode.ADMIN_IP_NOT_ALLOWED, 'Your IP is not allowed', 403);
     }
   }

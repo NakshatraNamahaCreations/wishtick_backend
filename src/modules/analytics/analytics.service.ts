@@ -92,6 +92,25 @@ export class AnalyticsService {
     });
   }
 
+  /**
+   * One `active` event per person per UTC day, however often they sign in or
+   * their session refreshes. The marker lives outside the `analytics:` cache
+   * prefix so clearing the dashboard caches cannot double-count a day.
+   */
+  async recordActive(userId: string, now = new Date()): Promise<boolean> {
+    const day = bucketOf(now);
+    const first = await this.cache.client.set(
+      `analytics-active:${day}:${userId}`,
+      '1',
+      'EX',
+      2 * 24 * 60 * 60,
+      'NX',
+    );
+    if (first !== 'OK') return false;
+    await this.record({ userId, name: 'active', ts: now });
+    return true;
+  }
+
   // ── Rollup (the worker) ──────────────────────────────────────────────────────
 
   /** Recompute the metrics for the last two days (today + yesterday for late events). */

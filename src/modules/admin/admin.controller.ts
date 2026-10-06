@@ -446,7 +446,7 @@ export class AdminController {
   @Post('moderation/reports/:id/act')
   @RequirePermission(AdminPermission.MODERATION_ACT)
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'approve | remove | flag | escalate a report' })
+  @ApiOperation({ summary: 'approve | remove a report' })
   act(
     @CurrentAdmin() actor: AuthenticatedAdmin,
     @Param('id') id: string,

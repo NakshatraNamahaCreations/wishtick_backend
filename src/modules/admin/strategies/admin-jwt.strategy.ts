@@ -6,6 +6,7 @@ import type { Request } from 'express';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import type { AppConfig } from 'src/config/configuration';
+import { AdminSessionsService } from '../admin-sessions.service';
 import { AdminTokenService } from '../admin-token.service';
 import { AdminService } from '../admin.service';
 import { permissionsFor, type AdminTokenPayload, type AuthenticatedAdmin } from '../admin.types';
@@ -23,6 +24,7 @@ export class AdminJwtStrategy extends PassportStrategy(Strategy, 'admin-jwt') {
     config: ConfigService<AppConfig, true>,
     private readonly admins: AdminService,
     private readonly tokens: AdminTokenService,
+    private readonly sessions: AdminSessionsService,
   ) {
     const adminCfg = config.get('admin', { infer: true });
     const jwtCfg = config.get('jwt', { infer: true });
@@ -45,6 +47,7 @@ export class AdminJwtStrategy extends PassportStrategy(Strategy, 'admin-jwt') {
       throw new AppException(ErrorCode.ADMIN_UNAUTHENTICATED, 'This session has ended', 401);
     }
     this.admins.assertIpAllowed(admin, req.ip ?? null);
+    await this.sessions.touch(payload.jti);
     return {
       id: admin._id.toString(),
       email: admin.email,

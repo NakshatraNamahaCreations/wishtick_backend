@@ -9,6 +9,8 @@ import type { AdminDocument } from './schemas/admin.schema';
 export interface AdminTokenResult {
   accessToken: string;
   expiresInSeconds: number;
+  /** The token's id — what a session record and the denylist key on. */
+  jti: string;
 }
 
 /**
@@ -33,10 +35,11 @@ export class AdminTokenService {
     const adminCfg = this.config.get('admin', { infer: true });
     const jwtCfg = this.config.get('jwt', { infer: true });
     const ttlSeconds = adminCfg.accessTtlHours * 3600;
+    const jti = randomUUID();
     const accessToken = await this.jwt.signAsync(
       {
         sub: admin._id.toString(),
-        jti: randomUUID(),
+        jti,
         email: admin.email,
         roles: admin.roles,
         ims: Date.now(),
@@ -48,7 +51,7 @@ export class AdminTokenService {
         audience: adminCfg.jwtAudience,
       },
     );
-    return { accessToken, expiresInSeconds: ttlSeconds };
+    return { accessToken, expiresInSeconds: ttlSeconds, jti };
   }
 
   /** Denylists a jti until the token would have expired anyway. */

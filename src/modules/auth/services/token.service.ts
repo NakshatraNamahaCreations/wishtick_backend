@@ -2,10 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Model, Types } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
+import { USER_ACTIVE, type UserActiveEvent } from 'src/common/events/domain-events';
 import type { AppConfig } from 'src/config/configuration';
 import { CacheService } from 'src/infra/redis/cache.service';
 import type { UserDocument } from 'src/modules/users/schemas/user.schema';
@@ -41,6 +43,7 @@ export class TokenService {
     private readonly cache: CacheService,
     @InjectModel(RefreshToken.name)
     private readonly refreshModel: Model<RefreshTokenDocument>,
+    private readonly emitter: EventEmitter2,
   ) {}
 
   // ── Issuing ────────────────────────────────────────────────────────────────
@@ -56,6 +59,10 @@ export class TokenService {
     ctx: RequestContext,
   ): Promise<TokenPair> {
     const jwtCfg = this.config.get('jwt', { infer: true });
+    // Every sign-in and every refresh comes through here, so this is where
+    // "this person used the app" is said — once per session token, deduped
+    // to once a day by the analytics listener.
+    this.emitter.emit(USER_ACTIVE, { userId: user._id.toString() } satisfies UserActiveEvent);
 
     const accessToken = await this.jwt.signAsync(
       {
