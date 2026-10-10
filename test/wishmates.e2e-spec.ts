@@ -816,4 +816,182 @@ describe('WishMates (e2e)', () => {
       expect(res.body.error.code).toBe('NOT_WISHMATES');
     });
   });
+
+  // ── Blocking ──────────────────────────────────────────────────────────────
+
+  describe('blocking', () => {
+    type Person = { userId: string };
+    type Profile = {
+      relationship: string;
+      mutuals: unknown[];
+      taste: unknown;
+      recentActivity: unknown[];
+    };
+
+    const ids = async (a: Actor, path: string): Promise<string[]> =>
+      ((await get(a, path).expect(200)).body as Envelope<Person[]>).data.map((p) => p.userId);
+
+    /** Two WishMates, connected through the API. */
+    const mates = async (x: string, y: string): Promise<[Actor, Actor]> => {
+      const a = await someone(x);
+      const b = await someone(y);
+      await post(a, `/people/${b.userId}/request`).expect(201);
+      const linkId = (
+        (await get(b, '/wishlinks/received').expect(200)).body as Envelope<{ linkId: string }[]>
+      ).data[0].linkId;
+      await post(b, `/wishlinks/${linkId}/accept`).expect(201);
+      return [a, b];
+    };
+
+    it('ends the connection, and lists who was blocked', async () => {
+      const [a, b] = await mates('alice_bk1', 'bob_bk1');
+
+      await post(a, `/people/${b.userId}/block`).expect(204);
+
+      expect(await ids(a, '/wishmates')).not.toContain(b.userId);
+      expect(await ids(b, '/wishmates')).not.toContain(a.userId);
+      expect(await ids(a, '/blocks')).toEqual([b.userId]);
+      // Blocking again changes nothing.
+      await post(a, `/people/${b.userId}/block`).expect(204);
+      expect(await ids(a, '/blocks')).toEqual([b.userId]);
+    });
+
+    it('drops a request waiting either way', async () => {
+      const a = await someone('alice_bk2');
+      const b = await someone('bob_bk2');
+      await post(b, `/people/${a.userId}/request`).expect(201);
+
+      await post(a, `/people/${b.userId}/block`).expect(204);
+
+      expect(await ids(a, '/wishlinks/received')).toEqual([]);
+    });
+
+    it('neither can find the other in search', async () => {
+      const a = await someone('alice_bk3');
+      const b = await someone('bob_bk3');
+      await post(a, `/people/${b.userId}/block`).expect(204);
+
+      expect(await ids(a, '/people/search?q=bob_bk3')).toEqual([]);
+      expect(await ids(b, '/people/search?q=alice_bk3')).toEqual([]);
+    });
+
+    it('is silent: to the blocked person, the blocker is not there', async () => {
+      const a = await someone('alice_bk4');
+      const b = await someone('bob_bk4');
+      await post(a, `/people/${b.userId}/block`).expect(204);
+
+      // The same answer a deleted account gives.
+      await get(b, `/people/${a.userId}`).expect(404);
+      await post(b, `/people/${a.userId}/request`).expect(404);
+    });
+
+    it('the blocker sees only enough to unblock', async () => {
+      const [a, b] = await mates('alice_bk5', 'bob_bk5');
+      await post(a, `/people/${b.userId}/block`).expect(204);
+
+      const profile = ((await get(a, `/people/${b.userId}`).expect(200)).body as Envelope<Profile>)
+        .data;
+      expect(profile.relationship).toBe('blocked');
+      expect(profile.mutuals).toEqual([]);
+      expect(profile.recentActivity).toEqual([]);
+      expect(profile.taste).toBeNull();
+
+      // And cannot send a request without unblocking first.
+      const refused = await post(a, `/people/${b.userId}/request`).expect(409);
+      expect((refused.body as Envelope<unknown>).error?.code).toBe('USER_BLOCKED');
+    });
+
+    it('unblocking lets them find and ask each other again', async () => {
+      const a = await someone('alice_bk6');
+      const b = await someone('bob_bk6');
+      await post(a, `/people/${b.userId}/block`).expect(204);
+
+      await del(a, `/people/${b.userId}/block`).expect(204);
+
+      expect(await ids(a, '/blocks')).toEqual([]);
+      expect(await ids(b, '/people/search?q=alice_bk6')).toEqual([a.userId]);
+      await post(b, `/people/${a.userId}/request`).expect(201);
+    });
+
+    it("one side's unblock leaves the other's block standing", async () => {
+      const a = await someone('alice_bk7');
+      const b = await someone('bob_bk7');
+      await post(a, `/people/${b.userId}/block`).expect(204);
+      await post(b, `/people/${a.userId}/block`).expect(204);
+
+      await del(a, `/people/${b.userId}/block`).expect(204);
+
+      expect(await ids(a, '/people/search?q=bob_bk7')).toEqual([]);
+      await get(a, `/people/${b.userId}`).expect(404);
+    });
+
+    it('cannot block yourself', async () => {
+      const a = await someone('alice_bk8');
+
+      await post(a, `/people/${a.userId}/block`).expect(400);
+    });
+  });
+
+  // ── Finding someone by their mobile number ────────────────────────────────
+
+  describe('search by mobile number', () => {
+    type Person = { userId: string };
+
+    const found = async (a: Actor, q: string): Promise<string[]> =>
+      (
+        (await get(a, `/people/search?q=${encodeURIComponent(q)}`).expect(200)).body as Envelope<
+          Person[]
+        >
+      ).data.map((p) => p.userId);
+
+    /** An account with a handle and this number on it. */
+    const withNumber = async (username: string, phone: string): Promise<Actor> => {
+      const actor = await someone(username);
+      const users = app.get<Model<UserDocument>>(getModelToken(User.name));
+      await users.updateOne({ _id: new Types.ObjectId(actor.userId) }, { phone }).exec();
+      return actor;
+    };
+
+    it('finds the account a whole number belongs to, however it is typed', async () => {
+      const viewer = await someone('viewer_ph1');
+      const owner = await withNumber('owner_ph1', '+919876543210');
+
+      for (const typed of [
+        '9876543210',
+        '98765 43210',
+        '+91 98765 43210',
+        '+919876543210',
+        '919876543210',
+        '09876543210',
+      ]) {
+        expect(await found(viewer, typed)).toEqual([owner.userId]);
+      }
+    });
+
+    it('never matches part of a number', async () => {
+      const viewer = await someone('viewer_ph2');
+      await withNumber('owner_ph2', '+919876543211');
+
+      // Walking the number a digit at a time finds nobody.
+      expect(await found(viewer, '98765')).toEqual([]);
+      expect(await found(viewer, '987654321')).toEqual([]);
+      expect(await found(viewer, '98765432')).toEqual([]);
+    });
+
+    it('does not hand the number back', async () => {
+      const viewer = await someone('viewer_ph3');
+      await withNumber('owner_ph3', '+919876543212');
+
+      const res = await get(viewer, '/people/search?q=9876543212').expect(200);
+      expect(JSON.stringify(res.body)).not.toContain('9876543212');
+    });
+
+    it('is blocked like any other search', async () => {
+      const viewer = await someone('viewer_ph4');
+      const owner = await withNumber('owner_ph4', '+919876543213');
+      await post(owner, `/people/${viewer.userId}/block`).expect(204);
+
+      expect(await found(viewer, '9876543213')).toEqual([]);
+    });
+  });
 });

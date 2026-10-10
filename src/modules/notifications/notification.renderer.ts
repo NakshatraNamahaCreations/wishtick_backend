@@ -206,10 +206,19 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
       Number.isFinite(age) && age > 0
         ? `${person} turns ${age} ${when}`
         : `${person}'s ${s(p, 'occasionLabel', 'celebration')} is ${when}`;
+    // A WishMate reminded of somebody's shared date is told whose it is —
+    // "Ananya" alone is a stranger to them; "Suma's Mother" is not.
+    const owner = s(p, 'ownerName', '');
+    const relation = s(p, 'relation', '');
+    const whose = owner
+      ? relation
+        ? ` — ${owner}'s ${relation}`
+        : ` — from ${owner}'s dates`
+      : '';
     return {
       subject: headline,
       title: headline,
-      lines: [`${headline}. Time to find something.`],
+      lines: [`${headline}${whose}. Time to find something.`],
     };
   },
   [NotificationType.EVENT_INVITE]: (p) => ({

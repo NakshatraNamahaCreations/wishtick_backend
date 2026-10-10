@@ -58,6 +58,13 @@ export enum WishmateRelationship {
   WISHMATES = 'wishmates',
   /** The viewer looking at themselves. No relationship buttons at all. */
   SELF = 'self',
+  /**
+   * The viewer has blocked this person — the profile offers only "Unblock".
+   *
+   * Never the other way round: someone who has blocked the viewer reads as
+   * an account that does not exist, so blocking stays silent.
+   */
+  BLOCKED = 'blocked',
 }
 
 /** One pending request, in either direction. */

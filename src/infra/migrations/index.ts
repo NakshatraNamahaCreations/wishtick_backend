@@ -37,6 +37,7 @@ import { migration035 } from './scripts/035-cancelled-orders';
 import { migration036 } from './scripts/036-event-join-requests';
 import { migration037 } from './scripts/037-gift-delivery-date';
 import { migration038 } from './scripts/038-remove-admin-totp';
+import { migration039 } from './scripts/039-important-date-follows';
 
 /** Every migration must be registered here to run. Order comes from the id. */
 export const MIGRATIONS: Migration[] = [
@@ -78,6 +79,7 @@ export const MIGRATIONS: Migration[] = [
   migration036,
   migration037,
   migration038,
+  migration039,
 ];
 
 export { MigrationRunner } from './migration.runner';

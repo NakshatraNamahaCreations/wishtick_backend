@@ -15,6 +15,12 @@ import { CelebrationRemindersService } from './celebration-reminders.service';
 import { AddressesController } from './addresses.controller';
 import { AddressesService } from './addresses.service';
 import { DataExportService } from './data-export.service';
+import {
+  ImportantDateFollow,
+  ImportantDateFollowSchema,
+} from './schemas/important-date-follow.schema';
+import { SharedDatesController } from './shared-dates.controller';
+import { SharedDatesService } from './shared-dates.service';
 import { ImportantDatesController } from './important-dates.controller';
 import { ImportantDatesService } from './important-dates.service';
 import { ProfileController } from './profile.controller';
@@ -28,6 +34,7 @@ import { UserProfile, UserProfileSchema } from './schemas/user-profile.schema';
     MongooseModule.forFeature([
       { name: UserProfile.name, schema: UserProfileSchema },
       { name: ImportantDate.name, schema: ImportantDateSchema },
+      { name: ImportantDateFollow.name, schema: ImportantDateFollowSchema },
       { name: Address.name, schema: AddressSchema },
     ]),
     BullModule.registerQueue({ name: QUEUE.SCHEDULER }),
@@ -46,12 +53,14 @@ import { UserProfile, UserProfileSchema } from './schemas/user-profile.schema';
   controllers: [
     ProfileController,
     ImportantDatesController,
+    SharedDatesController,
     AddressesController,
     AccountRestoreController,
   ],
   providers: [
     ProfileService,
     ImportantDatesService,
+    SharedDatesService,
     AddressesService,
     AccountLifecycleService,
     AccountLifecycleRegistrar,

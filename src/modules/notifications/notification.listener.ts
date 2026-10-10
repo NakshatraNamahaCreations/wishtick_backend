@@ -654,6 +654,8 @@ export class NotificationListener {
           whenText: celebrationWhenText(e.offset),
           daysAway: e.daysAway,
           turningAge: e.turningAge,
+          // Set when a WishMate is being reminded of somebody's shared date.
+          ownerName: e.ownerName ?? null,
         },
       });
     });
@@ -734,7 +736,9 @@ export class NotificationListener {
         await this.notifications.enqueue({
           userId,
           type: NotificationType.MEMORY_REPLY,
-          refId: e.replyId,
+          // Memory first, as every memory refId; the reply after it is what
+          // the app opens — the thank-you itself, played full screen.
+          refId: `${e.capsuleId}:${e.replyId}`,
           payload: {
             authorName: e.authorName,
             capsuleTitle: e.capsuleTitle,

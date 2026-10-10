@@ -40,7 +40,14 @@ describe('CelebrationRemindersService', () => {
    * `profiles` answers the two questions the scan asks of it — which zones
    * exist, and who is in one — and `dates` answers the single `$in` query.
    */
-  const build = (opts: { zones: string[]; dates: ReturnType<typeof savedDate>[] }) => {
+  const build = (opts: {
+    zones: string[];
+    dates: ReturnType<typeof savedDate>[];
+    /** "Remind me" rows: this test's user following other people's dates. */
+    follows?: { importantDateId: Types.ObjectId; ownerId: Types.ObjectId }[];
+    /** Owners the user is still WishMates with. */
+    mates?: Types.ObjectId[];
+  }) => {
     const emitted: CelebrationReminderDueEvent[] = [];
     const emitter = {
       emit: (name: string, payload: CelebrationReminderDueEvent) => {
@@ -54,19 +61,53 @@ describe('CelebrationRemindersService', () => {
       find: () => ({
         select: () => ({
           lean: () => ({
+            // Who is in the zone: just this test's user.
             cursor: () => [{ userId }][Symbol.iterator](),
+            // Owners' names, for a follower's reminder.
+            exec: () =>
+              Promise.resolve(opts.dates.map((d) => ({ userId: d.userId, displayName: 'Suma' }))),
           }),
         }),
       }),
     };
 
     const dates = {
-      find: (query: { monthDay: { $in: number[] } }) => ({
+      find: (query: {
+        monthDay: { $in: number[] };
+        userId?: unknown;
+        _id?: { $in: Types.ObjectId[] };
+        visibility?: string;
+      }) => ({
         lean: () => ({
           exec: () =>
-            Promise.resolve(opts.dates.filter((d) => query.monthDay.$in.includes(d.monthDay))),
+            Promise.resolve(
+              opts.dates.filter(
+                (d) =>
+                  query.monthDay.$in.includes(d.monthDay) &&
+                  // The owner's own dates, or — for a follow — the ones named.
+                  (query._id
+                    ? query._id.$in.some((id) => id.equals(d._id)) &&
+                      (d as { visibility?: string }).visibility === query.visibility
+                    : d.userId.equals(userId)),
+              ),
+            ),
         }),
       }),
+    };
+
+    const follows = {
+      find: () => ({
+        lean: () => ({
+          exec: () => Promise.resolve((opts.follows ?? []).map((f) => ({ ...f, userId }))),
+        }),
+      }),
+    };
+
+    const links = {
+      acceptedAmong: (owner: Types.ObjectId, candidates: string[]) =>
+        Promise.resolve(
+          new Set((opts.mates ?? []).some((m) => m.equals(owner)) ? candidates : ([] as string[])),
+        ),
     };
 
     const taxonomy = {
@@ -76,6 +117,8 @@ describe('CelebrationRemindersService', () => {
     const service = new CelebrationRemindersService(
       dates as never,
       profiles as never,
+      follows as never,
+      links as never,
       taxonomy as never,
       emitter,
     );
@@ -276,7 +319,57 @@ describe('CelebrationRemindersService', () => {
     // An offset written by a previous deploy can reach a running worker, and
     // "Siya turns 25 d-3" must never be a sentence anybody reads.
     it('still reads as English for an offset it has never heard of', () => {
-      expect(celebrationWhenText('d-3')).toBe('soon');
+      expect(celebrationWhenText('d-5')).toBe('soon');
+    });
+
+    it('says three days before as a person would', () => {
+      expect(celebrationWhenText('d-3')).toBe('in 3 days');
+    });
+  });
+
+  describe('a WishMate who pressed "Remind me"', () => {
+    const owner = new Types.ObjectId();
+    const shared = savedDate('1999-07-17', { userId: owner, visibility: 'wishmates' });
+    const follow = { importantDateId: shared._id, ownerId: owner };
+
+    const scanOn = async (iso: string, over: Partial<Parameters<typeof build>[0]> = {}) => {
+      const { service, emitted } = build({
+        zones: ['Asia/Kolkata'],
+        dates: [shared],
+        follows: [follow],
+        mates: [owner],
+        ...over,
+      });
+      await service.scan(morningInKolkata(iso));
+      return emitted;
+    };
+
+    it('is reminded a week before, three days before and on the day', async () => {
+      expect((await scanOn('2026-07-10'))[0]).toMatchObject({ offset: 'd-7', daysAway: 7 });
+      expect((await scanOn('2026-07-14'))[0]).toMatchObject({ offset: 'd-3', daysAway: 3 });
+      expect((await scanOn('2026-07-17'))[0]).toMatchObject({ offset: 'd-0', daysAway: 0 });
+    });
+
+    it('is not reminded the day before — that one is the owner’s', async () => {
+      expect(await scanOn('2026-07-16')).toHaveLength(0);
+    });
+
+    it('is told whose date it is', async () => {
+      const [e] = await scanOn('2026-07-14');
+      expect(e).toMatchObject({ userId: userId.toString(), ownerName: 'Suma', personName: 'Siya' });
+    });
+
+    it('hears nothing once the date is no longer shared', async () => {
+      const kept = { ...shared, visibility: 'private' };
+      expect(await scanOn('2026-07-14', { dates: [kept] })).toHaveLength(0);
+    });
+
+    it('hears nothing once they are no longer WishMates', async () => {
+      expect(await scanOn('2026-07-14', { mates: [] })).toHaveLength(0);
+    });
+
+    it('every year, not once', async () => {
+      expect((await scanOn('2027-07-14'))[0]).toMatchObject({ occurrenceYear: 2027 });
     });
   });
 });

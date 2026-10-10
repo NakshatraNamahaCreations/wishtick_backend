@@ -1,11 +1,16 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Model, Types } from 'mongoose';
 import { isLeapYear, zonedNow } from 'src/common/time/zoned';
 import { TaxonomyService } from 'src/modules/taxonomy/taxonomy.service';
 import { TaxonomyKind } from 'src/modules/taxonomy/taxonomy.types';
+import { WISHMATE_LINK, type IWishmateLink } from 'src/modules/wishlists/access/wishmate-link.port';
 import { OTHER_OCCASION_KEY } from './important-dates.service';
+import {
+  ImportantDateFollow,
+  type ImportantDateFollowDocument,
+} from './schemas/important-date-follow.schema';
 import {
   ImportantDate,
   type ImportantDateDocument,
@@ -32,9 +37,14 @@ export interface CelebrationReminderDueEvent {
   daysAway: number;
   /** Which anniversary this is, when the stored year is a real one. */
   turningAge: number | null;
+  /**
+   * Whose date it is, when [userId] is not its owner but a WishMate who asked
+   * to be reminded of it. Absent for the owner's own reminders.
+   */
+  ownerName?: string | null;
 }
 
-export type CelebrationOffset = 'd-7' | 'd-1' | 'd-0';
+export type CelebrationOffset = 'd-7' | 'd-3' | 'd-1' | 'd-0';
 
 /** What a day of the year means on this tick, for the zone being scanned. */
 interface Target {
@@ -58,6 +68,16 @@ export const OFFSETS: { key: CelebrationOffset; days: number }[] = [
 ];
 
 /**
+ * When a WishMate who pressed "Remind me" on a shared date hears about it: a
+ * week before, three days before, and on the day.
+ */
+export const FOLLOW_OFFSETS: { key: CelebrationOffset; days: number }[] = [
+  { key: 'd-7', days: 7 },
+  { key: 'd-3', days: 3 },
+  { key: 'd-0', days: 0 },
+];
+
+/**
  * The offset as a person would say it.
  *
  * Plain English is decided here rather than in the renderer, the way the event
@@ -66,7 +86,7 @@ export const OFFSETS: { key: CelebrationOffset; days: number }[] = [
  * can reach a running worker.
  */
 export const celebrationWhenText = (offset: string): string =>
-  ({ 'd-7': 'in a week', 'd-1': 'tomorrow', 'd-0': 'today' })[offset] ?? 'soon';
+  ({ 'd-7': 'in a week', 'd-3': 'in 3 days', 'd-1': 'tomorrow', 'd-0': 'today' })[offset] ?? 'soon';
 
 /**
  * The local hours at which a reminder may go out.
@@ -116,6 +136,9 @@ export class CelebrationRemindersService {
     private readonly dates: Model<ImportantDateDocument>,
     @InjectModel(UserProfile.name)
     private readonly profiles: Model<UserProfileDocument>,
+    @InjectModel(ImportantDateFollow.name)
+    private readonly follows: Model<ImportantDateFollowDocument>,
+    @Inject(WISHMATE_LINK) private readonly links: IWishmateLink,
     private readonly taxonomy: TaxonomyService,
     private readonly emitter: EventEmitter2,
   ) {}
@@ -161,6 +184,12 @@ export class CelebrationRemindersService {
   private async scanZone(zone: string, now: Date): Promise<number> {
     const local = zonedNow(zone, now);
     const targets = CelebrationRemindersService.targetsFor(local.year, local.month, local.day);
+    const followTargets = CelebrationRemindersService.targetsFor(
+      local.year,
+      local.month,
+      local.day,
+      FOLLOW_OFFSETS,
+    );
 
     let emitted = 0;
     // Streamed: the number of people in one zone is unbounded, and loading
@@ -172,10 +201,14 @@ export class CelebrationRemindersService {
       batch.push(profile.userId);
       if (batch.length >= BATCH) {
         emitted += await this.remindBatch(batch, targets);
+        emitted += await this.remindFollowers(batch, followTargets);
         batch = [];
       }
     }
-    if (batch.length > 0) emitted += await this.remindBatch(batch, targets);
+    if (batch.length > 0) {
+      emitted += await this.remindBatch(batch, targets);
+      emitted += await this.remindFollowers(batch, followTargets);
+    }
     return emitted;
   }
 
@@ -190,9 +223,14 @@ export class CelebrationRemindersService {
    * different days — and reminders for everyone born on a leap day would
    * simply never arrive, three years in four.
    */
-  private static targetsFor(year: number, month: number, day: number): Map<number, Target> {
+  private static targetsFor(
+    year: number,
+    month: number,
+    day: number,
+    offsets: { key: CelebrationOffset; days: number }[] = OFFSETS,
+  ): Map<number, Target> {
     const targets = new Map<number, Target>();
-    for (const { key, days } of OFFSETS) {
+    for (const { key, days } of offsets) {
       // UTC arithmetic on the *local* calendar date: this is date maths, not
       // an instant, so the zone has already done its work. Day overflow
       // carries the month and the year, so 26 December + 7 is 2 January of
@@ -247,6 +285,89 @@ export class CelebrationRemindersService {
       } satisfies CelebrationReminderDueEvent);
     }
     return due.length;
+  }
+
+  /**
+   * Reminds the WishMates who pressed "Remind me" on somebody's shared date.
+   *
+   * [userIds] are the followers whose morning it is. Checked on every send,
+   * not trusted from when they followed: the date has to still be shared, and
+   * the two still WishMates — so taking a date back, or a WishMate leaving,
+   * stops the reminders at once.
+   */
+  private async remindFollowers(
+    userIds: Types.ObjectId[],
+    targets: Map<number, Target>,
+  ): Promise<number> {
+    const follows = await this.follows
+      .find({ userId: { $in: userIds } })
+      .lean()
+      .exec();
+    if (follows.length === 0) return 0;
+
+    const dates = await this.dates
+      .find({
+        _id: { $in: follows.map((f) => f.importantDateId) },
+        visibility: 'wishmates',
+        monthDay: { $in: [...targets.keys()] },
+      })
+      .lean()
+      .exec();
+    if (dates.length === 0) return 0;
+    const byId = new Map(dates.map((d) => [d._id.toString(), d]));
+
+    // Whose dates these are, by name, and which followers are still WishMates
+    // of each owner — one question per owner, not per follow.
+    const ownerIds = [...new Set(dates.map((d) => d.userId.toString()))];
+    const owners = await this.profiles
+      .find({ userId: { $in: ownerIds.map((id) => new Types.ObjectId(id)) } })
+      .select('userId displayName')
+      .lean()
+      .exec();
+    const ownerName = new Map(
+      owners.map((o) => [o.userId.toString(), o.displayName?.trim() || 'A WishMate']),
+    );
+    const stillMates = new Map<string, Set<string>>();
+    for (const ownerId of ownerIds) {
+      const followers = follows
+        .filter((f) => f.ownerId.toString() === ownerId)
+        .map((f) => f.userId.toString());
+      stillMates.set(
+        ownerId,
+        await this.links.acceptedAmong(new Types.ObjectId(ownerId), followers),
+      );
+    }
+
+    const labels = await this.occasionLabels();
+    let emitted = 0;
+    for (const follow of follows) {
+      const date = byId.get(follow.importantDateId.toString());
+      if (!date) continue;
+      const target = targets.get(date.monthDay);
+      if (!target) continue;
+      const ownerId = date.userId.toString();
+      if (!stillMates.get(ownerId)?.has(follow.userId.toString())) continue;
+
+      const age = target.occurrenceYear - date.date.getUTCFullYear();
+      this.emitter.emit(CELEBRATION_REMINDER_DUE, {
+        userId: follow.userId.toString(),
+        importantDateId: date._id.toString(),
+        offset: target.offset,
+        occurrenceYear: target.occurrenceYear,
+        monthDay: date.monthDay,
+        personName: date.personName,
+        relation: date.relation,
+        occasionLabel:
+          date.occasionKey === OTHER_OCCASION_KEY
+            ? (date.customOccasion ?? 'celebration')
+            : (labels.get(date.occasionKey) ?? date.occasionKey),
+        daysAway: target.daysAway,
+        turningAge: age > 0 ? age : null,
+        ownerName: ownerName.get(ownerId) ?? 'A WishMate',
+      } satisfies CelebrationReminderDueEvent);
+      emitted += 1;
+    }
+    return emitted;
   }
 
   /** Occasion key → the word a person would read. Cached by the taxonomy. */

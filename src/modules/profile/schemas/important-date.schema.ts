@@ -1,6 +1,11 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 
+/** Who can see a saved date. */
+export type ImportantDateVisibility = 'private' | 'wishmates';
+
+export const IMPORTANT_DATE_VISIBILITIES: ImportantDateVisibility[] = ['private', 'wishmates'];
+
 export type ImportantDateDocument = HydratedDocument<ImportantDate>;
 
 /**
@@ -83,6 +88,20 @@ export class ImportantDate {
    */
   @Prop({ type: Number, required: true })
   monthDay!: number;
+
+  /**
+   * Who can see it. Only its owner by default; shared, it shows on the
+   * owner's profile to their WishMates, who can ask to be reminded of it.
+   *
+   * Rows saved before this existed have no value, which reads as private —
+   * nothing that was never shared starts being shown.
+   */
+  @Prop({
+    type: String,
+    enum: ['private', 'wishmates'],
+    default: 'private',
+  })
+  visibility!: ImportantDateVisibility;
 
   createdAt!: Date;
   updatedAt!: Date;

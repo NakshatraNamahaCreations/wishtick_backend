@@ -801,6 +801,37 @@ describe('Memories (e2e)', () => {
       }
     });
 
+    // "Thank-yous" on the Memories tab: every reply sent to you, with the
+    // memory it answers and who wrote it — the way back to one.
+    it('lists each thank-you for the people it went to, and nobody else', async () => {
+      const { host, friend, recipient, memory } = await openedMemoryWithAWish();
+      await request(app.getHttpServer())
+        .post(`${V1}/memories/replies`)
+        .set(auth(recipient.token))
+        .send({ kind: 'text', text: 'Thank you!', recipientIds: [friend.userId] })
+        .expect(201);
+
+      const forMe = async (actor: Actor) =>
+        (
+          (
+            await request(app.getHttpServer())
+              .get(`${V1}/memories/replies/for-me`)
+              .set(auth(actor.token))
+              .expect(200)
+          ).body as Envelope<
+            { text: string; authorId: string; memories: { id: string; title: string }[] }[]
+          >
+        ).data;
+
+      const mine = await forMe(friend);
+      expect(mine).toHaveLength(1);
+      expect(mine[0].text).toBe('Thank you!');
+      expect(mine[0].authorId).toBe(recipient.userId);
+      expect(mine[0].memories).toEqual([{ id: memory.id, title: memory.title }]);
+      // Not sent to the host, so not theirs to see.
+      expect(await forMe(host)).toHaveLength(0);
+    });
+
     it('refuses to address somebody who has sent you nothing', async () => {
       const { recipient } = await openedMemoryWithAWish();
       const stranger = await newUser();
@@ -1463,6 +1494,51 @@ describe('Memories (e2e)', () => {
         .set(auth(host.token))
         .send({ title: 'Renamed' })
         .expect(409);
+    });
+
+    // Its creator may still take it back after it was delivered — for
+    // everyone, the person it was for included.
+    it('the host may delete it even once it has opened', async () => {
+      const { host, recipient } = await hostAndRecipient();
+      const memory = await createMemory(host, {}, recipient);
+      await request(app.getHttpServer())
+        .post(`${V1}/memories/${memory.id}/unlock`)
+        .set(auth(host.token))
+        .expect(200);
+      await request(app.getHttpServer())
+        .delete(`${V1}/memories/${memory.id}`)
+        .set(auth(host.token))
+        .expect(204);
+      await request(app.getHttpServer())
+        .get(`${V1}/memories/${memory.id}`)
+        .set(auth(recipient.token))
+        .expect(404);
+    });
+
+    // Until it is sent, the host may change their mind about all of it.
+    it('the host may edit and delete it while it is still sealed', async () => {
+      const host = await newUser();
+      const memory = await createMemory(host);
+      const later = new Date(Date.now() + 10 * 86_400_000).toISOString();
+
+      const edited = (
+        await request(app.getHttpServer())
+          .patch(`${V1}/memories/${memory.id}`)
+          .set(auth(host.token))
+          .send({ title: 'Renamed', unlockAt: later })
+          .expect(200)
+      ).body as Envelope<MemoryView>;
+      expect(edited.data.title).toBe('Renamed');
+      expect(new Date(edited.data.unlockAt).toISOString()).toBe(later);
+
+      await request(app.getHttpServer())
+        .delete(`${V1}/memories/${memory.id}`)
+        .set(auth(host.token))
+        .expect(204);
+      await request(app.getHttpServer())
+        .get(`${V1}/memories/${memory.id}`)
+        .set(auth(host.token))
+        .expect(404);
     });
 
     it('stops accepting wishes once it is open', async () => {

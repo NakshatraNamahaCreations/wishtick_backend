@@ -173,4 +173,29 @@ export class WishmatesController {
   remove(@CurrentUser('id') viewerId: string, @Param('userId') targetId: string): Promise<void> {
     return this.wishmates.remove(viewerId, targetId);
   }
+
+  // ── Blocking ──────────────────────────────────────────────────────────────
+
+  @Get('blocks')
+  @ApiOperation({ summary: 'The people I have blocked' })
+  blocked(@CurrentUser('id') viewerId: string): Promise<WishmateView[]> {
+    return this.wishmates.listBlocked(viewerId);
+  }
+
+  @Post('people/:userId/block')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Block someone — ends any connection, and neither can reach the other',
+  })
+  @ApiResponseDoc({ status: 400, description: 'BLOCK_SELF' })
+  block(@CurrentUser('id') viewerId: string, @Param('userId') targetId: string): Promise<void> {
+    return this.wishmates.block(viewerId, targetId);
+  }
+
+  @Delete('people/:userId/block')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Unblock someone' })
+  unblock(@CurrentUser('id') viewerId: string, @Param('userId') targetId: string): Promise<void> {
+    return this.wishmates.unblock(viewerId, targetId);
+  }
 }

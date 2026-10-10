@@ -4,6 +4,7 @@ import { TasteModule } from '../taste/taste.module';
 import { EventParticipationModule } from 'src/modules/events/event-participation.module';
 import { UserProfile, UserProfileSchema } from 'src/modules/profile/schemas/user-profile.schema';
 import { User, UserSchema } from 'src/modules/users/schemas/user.schema';
+import { UserBlock, UserBlockSchema } from './schemas/user-block.schema';
 import { WishLink, WishLinkSchema } from './schemas/wish-link.schema';
 import { PresenceService } from './presence.service';
 import { WishmatesController } from './wishmates.controller';
@@ -22,6 +23,7 @@ import { WishmatesService } from './wishmates.service';
   imports: [
     MongooseModule.forFeature([
       { name: WishLink.name, schema: WishLinkSchema },
+      { name: UserBlock.name, schema: UserBlockSchema },
       // Read-only here: the profile is where a handle and photo live, and the
       // graph has no business writing either beyond claiming the handle.
       { name: UserProfile.name, schema: UserProfileSchema },

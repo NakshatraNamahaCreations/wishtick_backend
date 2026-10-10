@@ -144,6 +144,8 @@ export interface WishlistView {
 
 /** The unauthenticated share-link view. Deliberately a different, smaller shape. */
 export interface PublicWishlistView {
+  /** Lets a signed-in viewer open an item to reserve/gift it (web /w/:slug). Safe: the list is already shared by link. */
+  wishlistId: string;
   title: string;
   description: string | null;
   coverUrl: string | null;

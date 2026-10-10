@@ -2,12 +2,17 @@ import { ApiProperty, ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
   IsDateString,
+  IsIn,
   IsMongoId,
   IsOptional,
   IsString,
   MaxLength,
   MinLength,
 } from 'class-validator';
+import {
+  IMPORTANT_DATE_VISIBILITIES,
+  type ImportantDateVisibility,
+} from '../schemas/important-date.schema';
 
 export class CreateImportantDateDto {
   @ApiProperty({ example: 'Ananya' })
@@ -47,6 +52,17 @@ export class CreateImportantDateDto {
   @MaxLength(60)
   @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
   customOccasion?: string;
+
+  @ApiPropertyOptional({
+    enum: IMPORTANT_DATE_VISIBILITIES,
+    default: 'private',
+    description:
+      "'private' (only you) or 'wishmates' — shown on your profile to your WishMates, " +
+      'who can ask to be reminded of it.',
+  })
+  @IsOptional()
+  @IsIn(IMPORTANT_DATE_VISIBILITIES)
+  visibility?: ImportantDateVisibility;
 }
 
 /**

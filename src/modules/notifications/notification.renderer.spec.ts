@@ -136,6 +136,33 @@ describe('NotificationRenderer', () => {
         "Siya's Naming ceremony is in a week",
       );
     });
+
+    // A WishMate reminded of somebody's shared date: "Siya" alone is a
+    // stranger to them, so the body says whose she is.
+    describe('to a WishMate who asked to be reminded', () => {
+      const text = (over: Record<string, unknown>) =>
+        renderer.content(NotificationType.CELEBRATION_REMINDER, {
+          personName: 'Siya',
+          occasionLabel: 'Birthday',
+          whenText: 'in 3 days',
+          ownerName: 'Suma',
+          ...over,
+        }).text;
+
+      it('names whose person it is', () => {
+        expect(text({ relation: 'Mother' })).toContain(
+          "Siya's Birthday is in 3 days — Suma's Mother.",
+        );
+      });
+
+      it('names whose dates it came from when there is no relation', () => {
+        expect(text({ relation: '' })).toContain("— from Suma's dates.");
+      });
+
+      it("says nothing of the sort on the owner's own reminder", () => {
+        expect(text({ ownerName: null, relation: 'Mother' })).not.toContain('Suma');
+      });
+    });
   });
 
   it('compiles responsive HTML with the unsubscribe footer', async () => {

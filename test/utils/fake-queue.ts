@@ -62,6 +62,13 @@ export class FakeQueue {
     });
   }
 
+  /** `Queue.remove(jobId)` — what deleting a sealed memory cancels its unlock by. */
+  async remove(jobId: string): Promise<number> {
+    const job = await this.getJob(jobId);
+    await job?.remove();
+    return job ? 1 : 0;
+  }
+
   getJobCounts(): Promise<Record<string, number>> {
     return Promise.resolve({ waiting: this.added.length, active: 0, failed: 0, delayed: 0 });
   }

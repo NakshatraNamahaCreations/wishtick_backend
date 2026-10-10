@@ -254,6 +254,55 @@ export class MemoryRepliesService {
     return replies.map((r) => toMemoryReplyView(r, userId));
   }
 
+  /**
+   * Every thank-you sent to the caller, newest first — what "Thank-yous" on
+   * the Memories tab lists, across all the memories they wished in.
+   *
+   * Each names only the memories the caller had a part in (hosted, or wrote a
+   * wish in), as [listForCapsule] shows a reply only on those: one sent across
+   * several memories does not tell this person the others exist. One with
+   * none left — the caller's wish since withdrawn — is not listed.
+   */
+  async listForMe(userId: string): Promise<MemoryReplyView[]> {
+    const viewer = new Types.ObjectId(userId);
+    const replies = await this.replyModel
+      .find({ recipientIds: viewer })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .exec();
+    if (replies.length === 0) return [];
+
+    const capsuleIds = [...new Set(replies.flatMap((r) => r.capsuleIds.map(String)))].map(
+      (id) => new Types.ObjectId(id),
+    );
+    const [capsules, wishedIn] = await Promise.all([
+      this.capsuleModel
+        .find({ _id: { $in: capsuleIds } })
+        .select('title hostId')
+        .exec(),
+      this.wishModel
+        .find({ capsuleId: { $in: capsuleIds }, contributorId: viewer })
+        .distinct('capsuleId')
+        .exec(),
+    ]);
+    const wished = new Set(wishedIn.map(String));
+    const mine = new Map(
+      capsules
+        .filter((c) => c.hostId.toString() === userId || wished.has(c._id.toString()))
+        .map((c) => [c._id.toString(), c.title]),
+    );
+
+    const views: MemoryReplyView[] = [];
+    for (const reply of replies) {
+      const memories = reply.capsuleIds
+        .map(String)
+        .filter((id) => mine.has(id))
+        .map((id) => ({ id, title: mine.get(id)! }));
+      if (memories.length > 0) views.push(toMemoryReplyView(reply, userId, memories));
+    }
+    return views;
+  }
+
   /** The author withdrawing their own reply. It vanishes for everyone at once. */
   async remove(replyId: string, userId: string): Promise<void> {
     if (!Types.ObjectId.isValid(replyId)) {

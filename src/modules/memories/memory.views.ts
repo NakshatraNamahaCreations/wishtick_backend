@@ -54,6 +54,14 @@ export interface MemoryShareView {
  */
 export interface MemoryReplyView {
   id: string;
+  /** Who wrote it — the person the memories it answers were for. */
+  authorId: string;
+  /**
+   * The memories it answers that the caller had a part in, for "Thank-yous"
+   * to say which. Only those: a reply sent across several memories must not
+   * tell one host the others exist. Empty where the screen already knows.
+   */
+  memories: { id: string; title: string }[];
   authorName: string;
   authorAvatarUrl: string | null;
   kind: string;
@@ -164,8 +172,11 @@ const contributorNames = (wishes: MemoryWishDocument[]): string[] => [
 export const toMemoryReplyView = (
   reply: MemoryReplyDocument,
   viewerId: string,
+  memories: { id: string; title: string }[] = [],
 ): MemoryReplyView => ({
   id: reply._id.toString(),
+  authorId: reply.authorId.toString(),
+  memories,
   authorName: reply.authorName,
   authorAvatarUrl: reply.authorAvatarUrl,
   kind: reply.kind,

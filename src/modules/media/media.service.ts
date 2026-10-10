@@ -443,6 +443,16 @@ export class MediaService {
       if (media.status === MediaStatus.FAILED) {
         throw new AppException(ErrorCode.MEDIA_NOT_FOUND, 'This video could not be processed', 404);
       }
+      // Still encoding: the original plays meanwhile. It is the file the
+      // transcoder is pulling from, already on the CDN, and the app has made
+      // it a 720p MP4 before it was ever uploaded. Bunny's shared queue held
+      // clips for 11–13 minutes before starting them (the encode itself takes
+      // seconds) — a wish nobody could watch for that long, and then longer,
+      // since the app only asks again when tapped. This link is never cached,
+      // so the next play after the encode lands gets the ladder instead.
+      if (media.status === MediaStatus.PROCESSING) {
+        return this.storage.getPublicUrl(media.storageKey);
+      }
       if (media.status !== MediaStatus.READY) {
         throw new AppException(
           ErrorCode.MEDIA_NOT_UPLOADED,
@@ -474,6 +484,11 @@ export class MediaService {
     const media = await this.syncVideo(found);
 
     if (media.videoId && this.video.enabled) {
+      // Still encoding: the original is the one file there is, and the
+      // file to save or share — see [playbackUrl].
+      if (media.status === MediaStatus.PROCESSING) {
+        return this.storage.getPublicUrl(media.storageKey);
+      }
       if (media.status !== MediaStatus.READY) {
         throw new AppException(
           ErrorCode.MEDIA_NOT_UPLOADED,

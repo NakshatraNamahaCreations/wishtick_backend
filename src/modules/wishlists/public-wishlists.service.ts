@@ -148,6 +148,7 @@ export class PublicWishlistsService {
     };
 
     return {
+      wishlistId: wishlist._id.toString(),
       title: wishlist.title,
       description: wishlist.description,
       coverUrl: wishlist.coverUrl,

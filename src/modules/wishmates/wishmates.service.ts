@@ -18,6 +18,7 @@ import {
 import { User, type UserDocument } from 'src/modules/users/schemas/user.schema';
 import { TasteService } from '../taste/taste.service';
 import { PresenceService } from './presence.service';
+import { UserBlock, type UserBlockDocument } from './schemas/user-block.schema';
 import { WishLink, WishLinkStatus, type WishLinkDocument } from './schemas/wish-link.schema';
 import {
   WishmateRelationship,
@@ -57,6 +58,7 @@ export class WishmatesService {
   constructor(
     private readonly emitter: EventEmitter2,
     @InjectModel(WishLink.name) private readonly links: Model<WishLinkDocument>,
+    @InjectModel(UserBlock.name) private readonly blocks: Model<UserBlockDocument>,
     @InjectModel(UserProfile.name) private readonly profiles: Model<UserProfileDocument>,
     @InjectModel(User.name) private readonly users: Model<UserDocument>,
     private readonly presence: PresenceService,
@@ -130,15 +132,30 @@ export class WishmatesService {
     const safe = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(safe, 'i');
 
+    // Neither side of a block can find the other.
+    const blocked = await this.blockedIdsEitherWay(viewerId);
+    // A mobile number finds its account too — exactly, never in part.
+    const byPhone = await this.userIdsByPhone(term);
     const found = await this.profiles
       .find({
         username: { $ne: null },
-        userId: { $ne: new Types.ObjectId(viewerId) },
-        $or: [{ username: pattern }, { displayName: pattern }],
+        userId: { $ne: new Types.ObjectId(viewerId), $nin: blocked },
+        $or: [
+          { username: pattern },
+          { displayName: pattern },
+          ...(byPhone.length > 0 ? [{ userId: { $in: byPhone } }] : []),
+        ],
       })
       .limit(limit)
       .exec();
 
+    // The number's owner first: typing a whole number is asking for one
+    // particular person, ahead of any name that happens to contain digits.
+    const phoneIds = new Set(byPhone.map((id) => id.toString()));
+    found.sort(
+      (a, b) =>
+        Number(phoneIds.has(b.userId.toString())) - Number(phoneIds.has(a.userId.toString())),
+    );
     return this.withMutualCounts(viewerId, found);
   }
 
@@ -156,7 +173,12 @@ export class WishmatesService {
     if (mateIds.length === 0) return [];
 
     const linked = await this.linkedIds(viewerId);
-    const exclude = new Set([viewerId, ...linked.map((id) => id.toString())]);
+    const blocked = await this.blockedIdsEitherWay(viewerId);
+    const exclude = new Set([
+      viewerId,
+      ...linked.map((id) => id.toString()),
+      ...blocked.map((id) => id.toString()),
+    ]);
 
     // Everyone my wishmates are connected to, tallied by how many of my
     // wishmates they appear with.
@@ -216,6 +238,7 @@ export class WishmatesService {
       );
     }
     await this.assertUserExists(targetId);
+    await this.assertNotBlocked(viewerId, targetId);
 
     const existing = await this.links.findOne(this.pairFilter(viewerId, targetId)).exec();
 
@@ -376,9 +399,37 @@ export class WishmatesService {
 
   async profileOf(viewerId: string, targetId: string): Promise<WishmateProfileView> {
     const user = await this.assertUserExists(targetId);
+    // Someone who blocked the viewer is not there, as far as the viewer can
+    // tell — the same 404 a missing account gives.
+    if (viewerId !== targetId && (await this.hasBlocked(targetId, viewerId))) {
+      throw new AppException(ErrorCode.NOT_FOUND, 'User not found.', 404);
+    }
     const profile = await this.profiles.findOne({ userId: new Types.ObjectId(targetId) }).exec();
 
     const relationship = await this.relationshipWith(viewerId, targetId);
+    if (relationship === WishmateRelationship.BLOCKED) {
+      // Enough to recognise them and unblock; nothing about who they know,
+      // what they like or what the two share.
+      return {
+        person: {
+          userId: targetId,
+          username: profile?.username ?? null,
+          displayName: profile?.displayName ?? null,
+          photoUrl: profile?.photoUrl ?? null,
+          avatarKey: profile?.avatarKey ?? null,
+          mutualCount: 0,
+          online: false,
+          lastSeenAt: null,
+        },
+        relationship,
+        city: null,
+        country: null,
+        joinedAt: user.createdAt.toISOString(),
+        mutuals: [],
+        recentActivity: [],
+        taste: null,
+      };
+    }
     const mutualIds = await this.mutualIds(viewerId, targetId);
     const mutualProfiles =
       mutualIds.length === 0
@@ -467,6 +518,7 @@ export class WishmatesService {
 
   async relationshipWith(viewerId: string, targetId: string): Promise<WishmateRelationship> {
     if (viewerId === targetId) return WishmateRelationship.SELF;
+    if (await this.hasBlocked(viewerId, targetId)) return WishmateRelationship.BLOCKED;
 
     const link = await this.links.findOne(this.pairFilter(viewerId, targetId)).exec();
     if (!link) return WishmateRelationship.NONE;
@@ -506,6 +558,154 @@ export class WishmatesService {
       .findOne({ ...this.pairFilter(a, b), status: WishLinkStatus.ACCEPTED })
       .exec();
     return link !== null;
+  }
+
+  /**
+   * The accounts registered to the mobile number [term] reads as, if it
+   * reads as one.
+   *
+   * Exact matches only. A partial match would let anyone walk the number
+   * space a digit at a time and learn who is on Wishtick; whole numbers only
+   * find someone whose number you already have. The number itself is never
+   * returned — the result is the same public identity a handle search gives.
+   *
+   * Numbers are stored in E.164 (`+919876543210`). What people type varies,
+   * so each plausible reading is tried: as given with a `+`, and — for the
+   * Indian numbers this app is for — a bare ten digits, a leading `0`, or a
+   * leading `91` without the `+`.
+   */
+  private async userIdsByPhone(term: string): Promise<Types.ObjectId[]> {
+    const raw = term.trim();
+    if (!/^\+?[\d\s()-]+$/.test(raw)) return [];
+    const digits = raw.replace(/\D/g, '');
+    if (digits.length < 10 || digits.length > 15) return [];
+
+    const candidates = new Set<string>([`+${digits}`]);
+    if (digits.length === 10) candidates.add(`+91${digits}`);
+    if (digits.length === 11 && digits.startsWith('0')) {
+      candidates.add(`+91${digits.slice(1)}`);
+    }
+
+    const users = await this.users
+      .find({ phone: { $in: [...candidates] }, deletedAt: null }, { _id: 1 })
+      .exec();
+    return users.map((u) => u._id);
+  }
+
+  // ── Blocking ──────────────────────────────────────────────────────────────
+
+  /**
+   * Blocks someone.
+   *
+   * Ends whatever was between the two — a connection, a request either way,
+   * a remembered decline — so nothing is left for either to act on: no chat
+   * (that needs an accepted link), no WishMates-only lists, no pending
+   * request to accept later. Silent: nobody is told.
+   *
+   * Idempotent: blocking someone already blocked changes nothing.
+   */
+  async block(viewerId: string, targetId: string): Promise<void> {
+    if (viewerId === targetId) {
+      throw new AppException(ErrorCode.BLOCK_SELF, 'You cannot block yourself.', 400);
+    }
+    await this.assertUserExists(targetId);
+    await this.blocks
+      .updateOne(
+        {
+          blockerId: new Types.ObjectId(viewerId),
+          blockedId: new Types.ObjectId(targetId),
+        },
+        { $setOnInsert: { createdAt: new Date() } },
+        { upsert: true },
+      )
+      .exec();
+    await this.links.deleteMany(this.pairFilter(viewerId, targetId)).exec();
+  }
+
+  /**
+   * Lifts the viewer's own block. Nothing comes back with it — the old
+   * connection stays ended; either can send a new request.
+   *
+   * Their block on the viewer, if they made one, is theirs and stays.
+   */
+  async unblock(viewerId: string, targetId: string): Promise<void> {
+    if (!Types.ObjectId.isValid(targetId)) return;
+    await this.blocks
+      .deleteOne({
+        blockerId: new Types.ObjectId(viewerId),
+        blockedId: new Types.ObjectId(targetId),
+      })
+      .exec();
+  }
+
+  /** The people the viewer has blocked, most recent first — to unblock. */
+  async listBlocked(viewerId: string): Promise<WishmateView[]> {
+    const rows = await this.blocks
+      .find({ blockerId: new Types.ObjectId(viewerId) })
+      .sort({ createdAt: -1 })
+      .exec();
+    if (rows.length === 0) return [];
+    const profiles = await this.profiles
+      .find({ userId: { $in: rows.map((r) => r.blockedId) } })
+      .exec();
+    const byUser = new Map(profiles.map((p) => [p.userId.toString(), p]));
+    // Without presence: whether someone you blocked is online is not yours
+    // to see.
+    return rows.flatMap((r) => {
+      const profile = byUser.get(r.blockedId.toString());
+      return profile ? [{ ...this.toView(profile, 0), online: false, lastSeenAt: null }] : [];
+    });
+  }
+
+  /** Whether either of the two has blocked the other. */
+  async blockedEitherWay(a: string, b: string): Promise<boolean> {
+    if (!Types.ObjectId.isValid(a) || !Types.ObjectId.isValid(b)) return false;
+    const [x, y] = [new Types.ObjectId(a), new Types.ObjectId(b)];
+    const row = await this.blocks
+      .exists({
+        $or: [
+          { blockerId: x, blockedId: y },
+          { blockerId: y, blockedId: x },
+        ],
+      })
+      .exec();
+    return row !== null;
+  }
+
+  private async hasBlocked(blockerId: string, blockedId: string): Promise<boolean> {
+    if (!Types.ObjectId.isValid(blockerId) || !Types.ObjectId.isValid(blockedId)) return false;
+    const row = await this.blocks
+      .exists({
+        blockerId: new Types.ObjectId(blockerId),
+        blockedId: new Types.ObjectId(blockedId),
+      })
+      .exec();
+    return row !== null;
+  }
+
+  /** Everyone the viewer has blocked, and everyone who has blocked them. */
+  private async blockedIdsEitherWay(viewerId: string): Promise<Types.ObjectId[]> {
+    const me = new Types.ObjectId(viewerId);
+    const rows = await this.blocks.find({ $or: [{ blockerId: me }, { blockedId: me }] }).exec();
+    return rows.map((r) => (r.blockerId.equals(me) ? r.blockedId : r.blockerId));
+  }
+
+  /**
+   * Refuses to reach across a block. Someone who blocked the viewer reads as
+   * missing (404, as for a deleted account); someone the viewer blocked says
+   * so, since the viewer knows and can undo it.
+   */
+  private async assertNotBlocked(viewerId: string, targetId: string): Promise<void> {
+    if (await this.hasBlocked(targetId, viewerId)) {
+      throw new AppException(ErrorCode.NOT_FOUND, 'User not found.', 404);
+    }
+    if (await this.hasBlocked(viewerId, targetId)) {
+      throw new AppException(
+        ErrorCode.USER_BLOCKED,
+        'You have blocked this person. Unblock them to send a request.',
+        409,
+      );
+    }
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────

@@ -158,6 +158,9 @@ export class MemoriesService {
 
   async remove(id: string, userId: string): Promise<void> {
     const capsule = await this.findOwnedOrFail(id, userId);
+    // Its creator may delete it at any time, delivered or not — and it goes
+    // for everyone, the person it was for included. The app says so before
+    // it asks. (Editing is different: an opened memory can no longer change.)
     // Their files go with them. Left READY, they would count against everyone
     // who recorded one for as long as the account lived, and stay billed.
     const wishMedia = await this.wishModel

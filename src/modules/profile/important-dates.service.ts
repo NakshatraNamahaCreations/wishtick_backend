@@ -7,7 +7,15 @@ import { TaxonomyService } from 'src/modules/taxonomy/taxonomy.service';
 import { WISHMATE_LINK, type IWishmateLink } from 'src/modules/wishlists/access/wishmate-link.port';
 import { TaxonomyKind } from 'src/modules/taxonomy/taxonomy.types';
 import type { CreateImportantDateDto, UpdateImportantDateDto } from './dto/important-date.dto';
-import { ImportantDate, type ImportantDateDocument } from './schemas/important-date.schema';
+import {
+  ImportantDateFollow,
+  type ImportantDateFollowDocument,
+} from './schemas/important-date-follow.schema';
+import {
+  ImportantDate,
+  type ImportantDateDocument,
+  type ImportantDateVisibility,
+} from './schemas/important-date.schema';
 
 export interface ImportantDateView {
   id: string;
@@ -27,6 +35,8 @@ export interface ImportantDateView {
    * ideas drawn from the taste of somebody who has since disconnected.
    */
   linkedUserId: string | null;
+  /** Only the owner, or shown to their WishMates too. */
+  visibility: ImportantDateVisibility;
 }
 
 /**
@@ -66,6 +76,8 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 export class ImportantDatesService {
   constructor(
     @InjectModel(ImportantDate.name) private readonly model: Model<ImportantDateDocument>,
+    @InjectModel(ImportantDateFollow.name)
+    private readonly follows: Model<ImportantDateFollowDocument>,
     private readonly taxonomy: TaxonomyService,
     @Inject(WISHMATE_LINK) private readonly links: IWishmateLink,
   ) {}
@@ -187,6 +199,7 @@ export class ImportantDatesService {
       customOccasion: customOccasion || null,
       // `monthDay` is not set here — the schema derives it from this.
       date: ImportantDatesService.parseDateOnly(dto.date),
+      visibility: dto.visibility ?? 'private',
     });
     return ImportantDatesService.toView(doc.toObject());
   }
@@ -214,6 +227,7 @@ export class ImportantDatesService {
 
     if (dto.personName !== undefined) doc.personName = dto.personName;
     if (dto.relation !== undefined) doc.relation = dto.relation;
+    if (dto.visibility !== undefined) doc.visibility = dto.visibility;
     // `monthDay` follows on its own — the schema derives it before validation,
     // so it cannot be left pointing at the old day.
     if (dto.date !== undefined) doc.date = ImportantDatesService.parseDateOnly(dto.date);
@@ -234,6 +248,11 @@ export class ImportantDatesService {
     }
 
     await doc.save();
+    // Taken back from the WishMates: whoever asked to be reminded of it no
+    // longer can be.
+    if (doc.visibility !== 'wishmates') {
+      await this.follows.deleteMany({ importantDateId: doc._id }).exec();
+    }
     const [view] = await this.toViews(userId, [doc.toObject()]);
     return view;
   }
@@ -250,6 +269,7 @@ export class ImportantDatesService {
     if (result.deletedCount === 0) {
       throw new AppException(ErrorCode.NOT_FOUND, 'Date not found', 404);
     }
+    await this.follows.deleteMany({ importantDateId: new Types.ObjectId(id) }).exec();
   }
 
   /**
@@ -276,12 +296,13 @@ export class ImportantDatesService {
   }
 
   /** Today at UTC midnight — the same basis stored dates use. */
-  private static utcToday(): Date {
+  static utcToday(): Date {
     const now = new Date();
     return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   }
 
-  private static toUpcoming(entry: ImportantDateView, today: Date): UpcomingOccasionView {
+  /** Shared with [SharedDatesService], which orders a WishMate's dates the same way. */
+  static toUpcoming(entry: ImportantDateView, today: Date): UpcomingOccasionView {
     const original = ImportantDatesService.parseDateOnly(entry.date);
     const month = original.getUTCMonth();
     const day = original.getUTCDate();
@@ -309,7 +330,7 @@ export class ImportantDatesService {
     return new Date(`${iso.slice(0, 10)}T00:00:00.000Z`);
   }
 
-  private static toView(doc: ImportantDate): ImportantDateView {
+  static toView(doc: ImportantDate): ImportantDateView {
     return {
       id: doc._id.toString(),
       personName: doc.personName,
@@ -322,6 +343,8 @@ export class ImportantDatesService {
       // Rows saved before this field existed have no such key at all; never
       // trusted on its own — [toViews] is what decides whether it survives.
       linkedUserId: doc.linkedUserId?.toString() ?? null,
+      // Rows saved before sharing existed read as private.
+      visibility: doc.visibility ?? 'private',
     };
   }
 }
