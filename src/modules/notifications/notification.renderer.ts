@@ -475,6 +475,12 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     ],
     cta: { label: 'Read the reply', url: s(p, 'url') },
   }),
+  [NotificationType.MEMORY_WISH_LOVED]: (p) => ({
+    subject: `${s(p, 'lovedByName', 'Someone')} loved your wish ❤️`,
+    title: `${s(p, 'lovedByName', 'Someone')} loved your wish ❤️`,
+    lines: [`Your wish in ${s(p, 'capsuleTitle', 'their memory')} made their day.`],
+    cta: { label: 'See your wish', url: s(p, 'url') },
+  }),
   [NotificationType.ADMIN_ANNOUNCEMENT]: (p) => ({
     subject: s(p, 'title', 'News from Wishtick'),
     title: s(p, 'title', 'News from Wishtick'),

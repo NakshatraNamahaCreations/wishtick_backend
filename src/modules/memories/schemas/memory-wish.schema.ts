@@ -56,9 +56,19 @@ export class MemoryWish {
   @Prop({ type: Number, default: 0 })
   order!: number;
 
-  /** "React" on the viewer (`2078:357`) — a count, not a per-user reaction log. */
+  /**
+   * "React" on the viewer (`2078:357`): 1 once the person the memory is for
+   * has loved it, 0 otherwise. Kept as a count for the clients that read it.
+   */
   @Prop({ type: Number, default: 0 })
   reactionCount!: number;
+
+  /**
+   * When the person the memory is for loved this wish, or null. Only they can,
+   * and only once — a love, not a tally — and they may take it back.
+   */
+  @Prop({ type: Date, default: null })
+  lovedAt!: Date | null;
 
   createdAt!: Date;
   updatedAt!: Date;

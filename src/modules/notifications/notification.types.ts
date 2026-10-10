@@ -78,6 +78,8 @@ export enum NotificationType {
   REEL_RELEASED = 'reel_released',
   MEMORY_UNLOCKED = 'memory_unlocked',
   MEMORY_REPLY = 'memory_reply',
+  /** The person a memory was for loved your wish in it. */
+  MEMORY_WISH_LOVED = 'memory_wish_loved',
   MEMORY_SHARED = 'memory_shared',
   CONTENT_REMOVED = 'content_removed',
   /** A message from Wishtick to a group of people, written by an admin. */
@@ -398,6 +400,13 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.MEMORIES,
     template: 'memory-reply',
+  },
+  [NotificationType.MEMORY_WISH_LOVED]: {
+    // A small, warm piece of news: on the phone and in the app, not an email.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.MEMORIES,
+    template: 'memory-wish-loved',
   },
   [NotificationType.CONTENT_REMOVED]: {
     // A moderation notice is account business and cannot be unsubscribed.

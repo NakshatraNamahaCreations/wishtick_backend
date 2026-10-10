@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { MEMORY_WISH_LOVED, type MemoryWishLovedEvent } from 'src/common/events/domain-events';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { MediaPurpose } from 'src/modules/media/schemas/media.schema';
@@ -33,6 +35,7 @@ export class MemoryWishesService {
     private readonly capsules: MemoriesService,
     private readonly media: MediaService,
     private readonly users: UsersService,
+    private readonly emitter: EventEmitter2,
   ) {}
 
   /**
@@ -172,7 +175,11 @@ export class MemoryWishesService {
     ).map(toMemoryWishView);
   }
 
-  /** A contributor may withdraw their own wish while the capsule is still open. */
+  /**
+   * A contributor may withdraw their own wish at any time — before the
+   * memory is sent, or after, when it goes from the recipient's story too.
+   * The same as the host, who may delete the whole memory whenever they like.
+   */
   async remove(capsuleId: string, wishId: string, userId: string): Promise<void> {
     const capsule = await this.capsules.loadOrFail(capsuleId);
     if (!Types.ObjectId.isValid(wishId)) {
@@ -190,13 +197,6 @@ export class MemoryWishesService {
     if (!isHost && wish.contributorId?.toString() !== userId) {
       throw new AppException(ErrorCode.MEMORY_WISH_NOT_FOUND, 'Wish not found', 404);
     }
-    if (!MEMORY_SUBMITTABLE.includes(capsule.status)) {
-      throw new AppException(
-        ErrorCode.MEMORY_NOT_ACCEPTING_WISHES,
-        'This memory is sealed; its wishes can no longer change',
-        409,
-      );
-    }
 
     await wish.deleteOne();
     // Frees the space it took from the contributor's allowance, and the bytes.
@@ -204,26 +204,84 @@ export class MemoryWishesService {
     await this.capsuleModel.updateOne({ _id: capsule._id }, { $inc: { wishCount: -1 } }).exec();
   }
 
-  /** "React" on the story viewer (`2078:357`). Only on an open capsule. */
-  async react(capsuleId: string, wishId: string): Promise<{ reactionCount: number }> {
+  /**
+   * "React" on the story viewer (`2078:357`): the person the memory is for
+   * loves a wish. Only them, only once it has opened, and only once per wish —
+   * pressing it again changes nothing. The first love tells its writer.
+   */
+  async react(
+    capsuleId: string,
+    wishId: string,
+    userId: string,
+  ): Promise<{ reactionCount: number; loved: boolean }> {
+    const { capsule, wishOid } = await this.loadForLove(capsuleId, wishId, userId);
+    const loved = await this.wishModel
+      .findOneAndUpdate(
+        { _id: wishOid, capsuleId: capsule._id, lovedAt: null },
+        { $set: { lovedAt: new Date(), reactionCount: 1 } },
+        { new: true },
+      )
+      .exec();
+    if (loved) {
+      if (loved.contributorId && loved.contributorId.toString() !== userId) {
+        this.emitter.emit(MEMORY_WISH_LOVED, {
+          capsuleId: capsule._id.toString(),
+          wishId: loved._id.toString(),
+          contributorId: loved.contributorId.toString(),
+          lovedByName: capsule.personName,
+          capsuleTitle: capsule.title,
+        } satisfies MemoryWishLovedEvent);
+      }
+      return { reactionCount: 1, loved: true };
+    }
+    // Not changed: already loved, or not one of this memory's wishes.
+    const exists = await this.wishModel.exists({ _id: wishOid, capsuleId: capsule._id }).exec();
+    if (!exists) {
+      throw new AppException(ErrorCode.MEMORY_WISH_NOT_FOUND, 'Wish not found', 404);
+    }
+    return { reactionCount: 1, loved: true };
+  }
+
+  /** Takes a love back. Its writer is not told; nothing was taken from them. */
+  async unreact(
+    capsuleId: string,
+    wishId: string,
+    userId: string,
+  ): Promise<{ reactionCount: number; loved: boolean }> {
+    const { capsule, wishOid } = await this.loadForLove(capsuleId, wishId, userId);
+    const res = await this.wishModel
+      .updateOne(
+        { _id: wishOid, capsuleId: capsule._id },
+        { $set: { lovedAt: null, reactionCount: 0 } },
+      )
+      .exec();
+    if (res.matchedCount === 0) {
+      throw new AppException(ErrorCode.MEMORY_WISH_NOT_FOUND, 'Wish not found', 404);
+    }
+    return { reactionCount: 0, loved: false };
+  }
+
+  /** The capsule behind a love, after checking it is open and the caller's. */
+  private async loadForLove(
+    capsuleId: string,
+    wishId: string,
+    userId: string,
+  ): Promise<{ capsule: MemoryCapsuleDocument; wishOid: Types.ObjectId }> {
     const capsule = await this.capsules.loadOrFail(capsuleId);
     if (!MEMORY_CONTENT_VISIBLE.includes(capsule.status)) {
       throw new AppException(ErrorCode.MEMORY_LOCKED, 'This memory has not opened yet', 409);
     }
+    if (capsule.recipientUserId?.toString() !== userId) {
+      throw new AppException(
+        ErrorCode.FORBIDDEN,
+        'Only the person this memory is for can react to it',
+        403,
+      );
+    }
     if (!Types.ObjectId.isValid(wishId)) {
       throw new AppException(ErrorCode.MEMORY_WISH_NOT_FOUND, 'Wish not found', 404);
     }
-    const wish = await this.wishModel
-      .findOneAndUpdate(
-        { _id: new Types.ObjectId(wishId), capsuleId: capsule._id },
-        { $inc: { reactionCount: 1 } },
-        { new: true },
-      )
-      .exec();
-    if (!wish) {
-      throw new AppException(ErrorCode.MEMORY_WISH_NOT_FOUND, 'Wish not found', 404);
-    }
-    return { reactionCount: wish.reactionCount };
+    return { capsule, wishOid: new Types.ObjectId(wishId) };
   }
 
   /**

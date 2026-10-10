@@ -404,6 +404,23 @@ export interface MemoryReplySentEvent {
 }
 
 /**
+ * The person a memory was for loved one of its wishes. Its writer is told —
+ * once: the notification ledger keys on the wish, so taking the love back and
+ * giving it again does not tell them twice.
+ */
+export const MEMORY_WISH_LOVED = 'memory.wish_loved';
+
+export interface MemoryWishLovedEvent {
+  capsuleId: string;
+  wishId: string;
+  /** Who wrote the wish, and is told. */
+  contributorId: string;
+  /** Who loved it: the person the memory was for. */
+  lovedByName: string;
+  capsuleTitle: string;
+}
+
+/**
  * A user was suspended or force-logged-out by an admin. Their access is already
  * revoked at the guard layer (status + tokensInvalidBefore); the chat gateway
  * additionally drops their live sockets so a websocket cannot outlive the ban.

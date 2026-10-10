@@ -395,6 +395,17 @@ Open the memory: https://app.wishtick.test/x",
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: memory_wish_loved 1`] = `
+{
+  "sms": "Someone loved your wish ❤️ — https://app.wishtick.test/x",
+  "subject": "Someone loved your wish ❤️",
+  "text": "Your wish in their memory made their day.
+
+See your wish: https://app.wishtick.test/x",
+  "title": "Someone loved your wish ❤️",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: reel_released 1`] = `
 {
   "sms": "Your reel is ready! — https://app.wishtick.test/x",

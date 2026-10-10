@@ -37,6 +37,8 @@ export interface MemoryWishView {
   contentType: string | null;
   durationMs: number;
   reactionCount: number;
+  /** The person it was for loved it — their heart, and its writer's news. */
+  loved: boolean;
   createdAt: Date;
 }
 
@@ -199,6 +201,9 @@ export const toMemoryWishView = (wish: MemoryWishDocument): MemoryWishView => ({
   contentType: wish.contentType,
   durationMs: wish.durationMs,
   reactionCount: wish.reactionCount,
+  // A count above zero from before loves were recorded is a love too: the
+  // only button that raised it was the recipient's.
+  loved: wish.lovedAt != null || wish.reactionCount > 0,
   createdAt: wish.createdAt,
 });
 

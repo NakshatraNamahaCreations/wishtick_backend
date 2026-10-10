@@ -31,6 +31,7 @@ import {
   MEMORY_REPLY_SENT,
   MEMORY_SHARED,
   MEMORY_UNLOCKED,
+  MEMORY_WISH_LOVED,
   REEL_RELEASED,
   USER_REGISTERED,
   WISHMATE_ACCEPTED,
@@ -60,6 +61,7 @@ import {
   type MemoryReplySentEvent,
   type MemorySharedEvent,
   type MemoryUnlockedEvent,
+  type MemoryWishLovedEvent,
   type ReelReleasedEvent,
   type UserRegisteredEvent,
   type WishmateAcceptedEvent,
@@ -837,6 +839,27 @@ export class NotificationListener {
           },
         });
       }
+    });
+  }
+
+  /**
+   * The person a memory was for loved a wish in it: its writer is told. Keyed
+   * on the wish, so a love taken back and given again tells them only once.
+   */
+  @OnEvent(MEMORY_WISH_LOVED)
+  async onMemoryWishLoved(e: MemoryWishLovedEvent): Promise<void> {
+    await this.guard('memory-wish-loved', async () => {
+      await this.notifications.enqueue({
+        userId: e.contributorId,
+        type: NotificationType.MEMORY_WISH_LOVED,
+        // Memory first, as every memory refId; the wish keeps it unique.
+        refId: `${e.capsuleId}:${e.wishId}`,
+        payload: {
+          lovedByName: e.lovedByName,
+          capsuleTitle: e.capsuleTitle,
+          url: `${this.web}/memories/${e.capsuleId}`,
+        },
+      });
     });
   }
 

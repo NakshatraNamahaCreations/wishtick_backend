@@ -1663,34 +1663,173 @@ describe('Memories (e2e)', () => {
       expect(after.data.wishCount).toBe(0);
     });
 
-    it('counts a reaction, and refuses one while the capsule is sealed', async () => {
-      const host = await newUser();
-      const memory = await createMemory(host);
-      const wish = (
+    // Your words stay yours: even once delivered, a wish can be taken back,
+    // and it leaves the recipient's story with it.
+    it('lets a contributor withdraw their wish after the memory has opened', async () => {
+      const { host, recipient } = await hostAndRecipient();
+      const priya = await newUser();
+      const memory = await createMemory(host, {}, recipient);
+      const mine = (
         await request(app.getHttpServer())
           .post(`${V1}/memories/${memory.id}/wishes`)
-          .set(auth(host.token))
-          .send({ kind: 'text', text: 'Happy Birthday!' })
+          .set(auth(priya.token))
+          .send({ kind: 'text', text: 'From Priya' })
           .expect(201)
       ).body as Envelope<{ id: string }>;
-
-      await request(app.getHttpServer())
-        .post(`${V1}/memories/${memory.id}/wishes/${wish.data.id}/react`)
-        .set(auth(host.token))
-        .expect(409);
-
       await request(app.getHttpServer())
         .post(`${V1}/memories/${memory.id}/unlock`)
         .set(auth(host.token))
         .expect(200);
 
-      const reacted = (
+      await request(app.getHttpServer())
+        .delete(`${V1}/memories/${memory.id}/wishes/${mine.data.id}`)
+        .set(auth(priya.token))
+        .expect(204);
+
+      const seen = (
         await request(app.getHttpServer())
-          .post(`${V1}/memories/${memory.id}/wishes/${wish.data.id}/react`)
-          .set(auth(host.token))
+          .get(`${V1}/memories/${memory.id}`)
+          .set(auth(recipient.token))
           .expect(200)
-      ).body as Envelope<{ reactionCount: number }>;
-      expect(reacted.data.reactionCount).toBe(1);
+      ).body as Envelope<MemoryView>;
+      expect(seen.data.wishCount).toBe(0);
+      expect(seen.data.wishes ?? []).toHaveLength(0);
+    });
+
+    // React is the recipient's love for one wish: theirs alone, once per
+    // wish, and news to whoever wrote it.
+    describe('loving a wish', () => {
+      const lovePath = (memoryId: string, wishId: string): string =>
+        `${V1}/memories/${memoryId}/wishes/${wishId}/react`;
+
+      const setUp = async (): Promise<{
+        host: Actor;
+        recipient: Actor;
+        priya: Actor;
+        memory: MemoryView;
+        wishId: string;
+      }> => {
+        const { host, recipient } = await hostAndRecipient();
+        const priya = await newUser();
+        const memory = await createMemory(host, {}, recipient);
+        const wish = (
+          await request(app.getHttpServer())
+            .post(`${V1}/memories/${memory.id}/wishes`)
+            .set(auth(priya.token))
+            .send({ kind: 'text', text: 'Happy Birthday!' })
+            .expect(201)
+        ).body as Envelope<{ id: string }>;
+        return { host, recipient, priya, memory, wishId: wish.data.id };
+      };
+
+      const unlock = (host: Actor, memoryId: string) =>
+        request(app.getHttpServer())
+          .post(`${V1}/memories/${memoryId}/unlock`)
+          .set(auth(host.token))
+          .expect(200);
+
+      const lovesFor = async (actor: Actor): Promise<{ title: string }[]> => {
+        await new Promise((r) => setTimeout(r, 150));
+        await ctx.drainNotifications();
+        return (
+          (
+            await request(app.getHttpServer())
+              .get(`${V1}/notifications`)
+              .set(auth(actor.token))
+              .expect(200)
+          ).body as Envelope<{ type: string; title: string }[]>
+        ).data.filter((n) => n.type === 'memory_wish_loved');
+      };
+
+      const wishesSeenBy = async (
+        actor: Actor,
+        memoryId: string,
+      ): Promise<{ loved: boolean; reactionCount: number }[]> =>
+        (
+          (
+            await request(app.getHttpServer())
+              .get(`${V1}/memories/${memoryId}`)
+              .set(auth(actor.token))
+              .expect(200)
+          ).body as Envelope<{ wishes: { loved: boolean; reactionCount: number }[] }>
+        ).data.wishes;
+
+      it('is refused while the memory is sealed', async () => {
+        const { recipient, memory, wishId } = await setUp();
+        await request(app.getHttpServer())
+          .post(lovePath(memory.id, wishId))
+          .set(auth(recipient.token))
+          .expect(409);
+      });
+
+      it('is only for the person the memory is for', async () => {
+        const { host, priya, memory, wishId } = await setUp();
+        await unlock(host, memory.id);
+        await request(app.getHttpServer())
+          .post(lovePath(memory.id, wishId))
+          .set(auth(host.token))
+          .expect(403);
+        await request(app.getHttpServer())
+          .post(lovePath(memory.id, wishId))
+          .set(auth(priya.token))
+          .expect(403);
+      });
+
+      it('shows, counts once however often it is pressed, and tells the writer once', async () => {
+        const { host, recipient, priya, memory, wishId } = await setUp();
+        await unlock(host, memory.id);
+
+        for (let i = 0; i < 3; i++) {
+          const res = (
+            await request(app.getHttpServer())
+              .post(lovePath(memory.id, wishId))
+              .set(auth(recipient.token))
+              .expect(200)
+          ).body as Envelope<{ loved: boolean; reactionCount: number }>;
+          expect(res.data).toEqual({ loved: true, reactionCount: 1 });
+        }
+        expect(await wishesSeenBy(recipient, memory.id)).toEqual([
+          expect.objectContaining({ loved: true, reactionCount: 1 }),
+        ]);
+
+        const told = await lovesFor(priya);
+        expect(told).toHaveLength(1);
+        expect(told[0].title).toContain('loved your wish');
+
+        // Taken back, and given again: still only the one notification.
+        const back = (
+          await request(app.getHttpServer())
+            .delete(lovePath(memory.id, wishId))
+            .set(auth(recipient.token))
+            .expect(200)
+        ).body as Envelope<{ loved: boolean }>;
+        expect(back.data.loved).toBe(false);
+        expect(await wishesSeenBy(recipient, memory.id)).toEqual([
+          expect.objectContaining({ loved: false, reactionCount: 0 }),
+        ]);
+        await request(app.getHttpServer())
+          .post(lovePath(memory.id, wishId))
+          .set(auth(recipient.token))
+          .expect(200);
+        expect(await lovesFor(priya)).toHaveLength(1);
+      });
+
+      it('lets the writer see it on their own wish', async () => {
+        const { host, recipient, priya, memory, wishId } = await setUp();
+        await unlock(host, memory.id);
+        await request(app.getHttpServer())
+          .post(lovePath(memory.id, wishId))
+          .set(auth(recipient.token))
+          .expect(200);
+
+        const mine = (
+          await request(app.getHttpServer())
+            .get(`${V1}/memories/${memory.id}/wishes/mine`)
+            .set(auth(priya.token))
+            .expect(200)
+        ).body as Envelope<{ loved: boolean }[]>;
+        expect(mine.data).toEqual([expect.objectContaining({ loved: true })]);
+      });
     });
   });
 

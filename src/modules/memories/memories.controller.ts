@@ -277,12 +277,29 @@ export class MemoriesController {
 
   @Post(':id/wishes/:wishId/react')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: '"React" on the story viewer (`2078:357`)' })
+  @ApiOperation({
+    summary: '"React" on the story viewer (`2078:357`): the recipient loves a wish',
+    description: 'Idempotent. The first love notifies the wish’s writer.',
+  })
+  @ApiResponseDoc({ status: 403, description: 'FORBIDDEN — not the person it is for' })
   react(
+    @CurrentUser('id') userId: string,
     @Param('id') id: string,
     @Param('wishId') wishId: string,
-  ): Promise<{ reactionCount: number }> {
-    return this.wishes.react(id, wishId);
+  ): Promise<{ reactionCount: number; loved: boolean }> {
+    return this.wishes.react(id, wishId, userId);
+  }
+
+  @Delete(':id/wishes/:wishId/react')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Take a love back' })
+  @ApiResponseDoc({ status: 403, description: 'FORBIDDEN — not the person it is for' })
+  unreact(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Param('wishId') wishId: string,
+  ): Promise<{ reactionCount: number; loved: boolean }> {
+    return this.wishes.unreact(id, wishId, userId);
   }
 }
 
