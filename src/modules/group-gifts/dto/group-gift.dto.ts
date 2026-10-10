@@ -35,6 +35,17 @@ export class AddChargeDto {
   @IsInt()
   @Min(1)
   amountMinor!: number;
+
+  @ApiPropertyOptional({
+    example: 'The courier charges more for a fragile parcel',
+    description:
+      'Why the total is going up. Required once anybody has paid — they are told, with it.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(280)
+  @Transform(trim)
+  reason?: string;
 }
 
 export class CreateGroupGiftDto {

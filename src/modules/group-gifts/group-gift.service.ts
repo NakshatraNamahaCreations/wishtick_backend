@@ -13,9 +13,13 @@ import {
   GROUP_GIFT_FUNDED,
   GROUP_GIFT_JOINED,
   GROUP_GIFT_PURCHASED,
+  GROUP_GIFT_CHARGE_ADDED,
   GROUP_GIFT_PAYMENT_CLAIMED,
   GROUP_GIFT_PAYMENT_DISPUTED,
   GROUP_GIFT_PAYMENT_REVIEWED,
+  GROUP_GIFT_SETTLED,
+  type GroupGiftChargeAddedEvent,
+  type GroupGiftSettledEvent,
   type GroupGiftContributionReceivedEvent,
   type GroupGiftFulfilledEvent,
   type GroupGiftCancelledEvent,
@@ -1105,6 +1109,10 @@ export class GroupGiftService {
     if (c.userId.toString() !== userId) {
       throw new AppException(ErrorCode.NOT_THE_CONTRIBUTOR, 'This is not your payment', 403);
     }
+    const gift = await this.loadOrFail(groupGiftId);
+    if (INACTIVE_GROUP_GIFT_STATUSES.includes(gift.status)) {
+      throw new AppException(ErrorCode.GROUP_GIFT_NOT_OPEN, 'This group gift was cancelled', 409);
+    }
     return c;
   }
 
@@ -1240,6 +1248,17 @@ export class GroupGiftService {
         409,
       );
     }
+    if (await this.billLocked(gift)) {
+      throw new AppException(
+        ErrorCode.GROUP_GIFT_BILL_LOCKED,
+        'The bill is fixed once people start contributing — add a charge, with a reason, instead',
+        409,
+      );
+    }
+  }
+
+  /** Whether anybody but the host has paid, or says they have. */
+  private async billLocked(gift: GroupGiftDocument): Promise<boolean> {
     // The host's own share of an equal split is on record from the moment
     // anybody is invited. It is not somebody else committing against the old
     // total, so it does not lock the bill — money from anyone else does.
@@ -1253,38 +1272,226 @@ export class GroupGiftService {
     const claims = await this.contributionModel
       .countDocuments({ groupGiftId: gift._id, status: ContributionStatus.PLEDGED })
       .exec();
-    if (gift.collectedAmountMinor - (hostShare?.amountMinor ?? 0) > 0 || claims > 0) {
-      throw new AppException(
-        ErrorCode.GROUP_GIFT_BILL_LOCKED,
-        'The bill is fixed once people start contributing — raise a contribution request instead',
-        409,
-      );
-    }
+    return gift.collectedAmountMinor - (hostShare?.amountMinor ?? 0) > 0 || claims > 0;
   }
 
-  /** Adds a non-item cost — delivery, packaging (`4007:568`, `4007:628`). */
+  /**
+   * Adds a non-item cost — delivery, packaging (`4007:568`, `4007:628`).
+   *
+   * Before anybody has paid it is part of building the bill. After, it is
+   * the one change the host can still make — a cost they could not have known
+   * about — and only with a reason: it raises what people who already paid
+   * owe, so they are told what for. A funded gift it takes past its total
+   * opens again for the difference. Never once the gift is bought or
+   * cancelled.
+   */
   async addCharge(
     groupGiftId: string,
     userId: string,
-    input: { label: string; amountMinor: number },
+    input: { label: string; amountMinor: number; reason?: string },
   ): Promise<GroupGiftView> {
     const gift = await this.loadOrFail(groupGiftId);
     if (gift.initiatorId.toString() !== userId) {
       throw new AppException(ErrorCode.FORBIDDEN, 'Only the initiator can add a charge', 403);
     }
-    await this.assertBillEditable(gift);
+    if (![GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED].includes(gift.status)) {
+      throw new AppException(
+        ErrorCode.GROUP_GIFT_NOT_OPEN,
+        'Charges can only be added until the gift is bought',
+        409,
+        { status: gift.status },
+      );
+    }
+    const reason = input.reason?.trim() || null;
+    const locked = await this.billLocked(gift);
+    if (locked && !reason) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        'People have already paid — say why the total is going up',
+        400,
+      );
+    }
     const primary = GroupGiftService.primaryItemMinor(gift);
 
+    const chargeId = new Types.ObjectId();
     gift.charges.push({
-      _id: new Types.ObjectId(),
+      _id: chargeId,
       label: input.label,
       amountMinor: input.amountMinor,
       addedBy: new Types.ObjectId(userId),
       addedAt: new Date(),
+      reason,
     });
     GroupGiftService.recomputeTarget(gift, primary);
+    if (
+      gift.status === GroupGiftStatus.FUNDED &&
+      gift.collectedAmountMinor < gift.targetAmountMinor
+    ) {
+      // Funded on the old total: open again for what the charge added.
+      this.pushStatus(gift, GroupGiftStatus.OPEN, `user:${userId}`, `charge added: ${input.label}`);
+    }
     await gift.save();
+
+    if (locked) {
+      this.emitter.emit(GROUP_GIFT_CHARGE_ADDED, {
+        groupGiftId,
+        chargeId: chargeId.toString(),
+        hostId: userId,
+        title: gift.title,
+        label: input.label,
+        amountMinor: input.amountMinor,
+        reason: reason!,
+        targetAmountMinor: gift.targetAmountMinor,
+        currency: gift.currency,
+        memberIds: await this.membersToTell(gift),
+      } satisfies GroupGiftChargeAddedEvent);
+    }
     return this.afterTargetChange(gift, userId);
+  }
+
+  /** Everybody in the group but the host and the person it is for. */
+  private async membersToTell(gift: GroupGiftDocument): Promise<string[]> {
+    const host = gift.initiatorId.toString();
+    const recipient = gift.recipientId.toString();
+    return (await this.shares.othersIn(gift)).filter((id) => id !== host && id !== recipient);
+  }
+
+  /**
+   * "Settle up": the host pays whatever is left themselves, and the gift is
+   * fully funded.
+   *
+   * Their own money, so it counts at once. Not while any member's payment is
+   * still waiting for them to confirm: what is left is not known until they
+   * have said what arrived. Everybody else is told nothing more is needed.
+   */
+  async settle(groupGiftId: string, hostId: string): Promise<GroupGiftView> {
+    const gift = await this.loadOrFail(groupGiftId);
+    if (gift.initiatorId.toString() !== hostId) {
+      throw new AppException(ErrorCode.NOT_THE_INITIATOR, 'Only the host can settle up', 403);
+    }
+    if (gift.status !== GroupGiftStatus.OPEN) {
+      throw new AppException(
+        ErrorCode.GROUP_GIFT_NOT_OPEN,
+        gift.status === GroupGiftStatus.FUNDED
+          ? 'This group gift is already fully funded'
+          : 'Only a group gift that is still collecting can be settled',
+        409,
+        { status: gift.status },
+      );
+    }
+    const waiting = await this.contributionModel
+      .countDocuments({ groupGiftId: gift._id, status: ContributionStatus.PLEDGED })
+      .exec();
+    if (waiting > 0) {
+      throw new AppException(
+        ErrorCode.CONFLICT,
+        'Confirm the payments waiting for you first — what is left depends on them',
+        409,
+        { waiting },
+      );
+    }
+
+    let paid = 0;
+    let collected = 0;
+    await this.locks.withBestEffortLock(
+      `group-gift:${groupGiftId}`,
+      async () => {
+        const session = await this.connection.startSession();
+        try {
+          await session.withTransaction(async () => {
+            const gg = await this.groupGiftModel.findById(gift._id).session(session).exec();
+            if (!gg || gg.status !== GroupGiftStatus.OPEN) {
+              throw new AppException(
+                ErrorCode.GROUP_GIFT_NOT_OPEN,
+                'Only a group gift that is still collecting can be settled',
+                409,
+              );
+            }
+            const left = gg.targetAmountMinor - gg.collectedAmountMinor;
+            if (left <= 0) {
+              throw new AppException(ErrorCode.CONFLICT, 'Nothing is left to pay', 409);
+            }
+            const now = new Date();
+            const host = new Types.ObjectId(hostId);
+            const before = await this.contributionModel
+              .countDocuments({
+                groupGiftId: gg._id,
+                userId: host,
+                status: ContributionStatus.CONFIRMED,
+              })
+              .session(session);
+            await this.contributionModel.create(
+              [
+                {
+                  groupGiftId: gg._id,
+                  userId: host,
+                  amountMinor: left,
+                  claimedMinor: left,
+                  status: ContributionStatus.CONFIRMED,
+                  anonymous: false,
+                  message: null,
+                  // One settling per total: a retry of the same tap is the
+                  // same row, a settle after a later charge is a new one.
+                  idempotencyKey: `settle:${gg._id.toString()}:${gg.targetAmountMinor}`,
+                  reviewedAt: now,
+                },
+              ],
+              { session },
+            );
+            const inc: Record<string, number> = { collectedAmountMinor: left };
+            if (before === 0) inc.contributorCount = 1;
+            await this.groupGiftModel
+              .updateOne(
+                { _id: gg._id },
+                {
+                  $inc: inc,
+                  $set: { status: GroupGiftStatus.FUNDED },
+                  $push: {
+                    history: {
+                      status: GroupGiftStatus.FUNDED,
+                      at: now,
+                      by: `user:${hostId}`,
+                      note: 'settled: the host paid what was left',
+                    },
+                  },
+                },
+                { session },
+              )
+              .exec();
+            paid = left;
+            collected = gg.collectedAmountMinor + left;
+          });
+        } catch (err) {
+          if (GroupGiftService.isDuplicateKey(err)) {
+            throw new AppException(ErrorCode.CONFLICT, 'Already settled', 409);
+          }
+          throw err;
+        } finally {
+          await session.endSession();
+        }
+      },
+      { ttlMs: 5_000, retries: 15, retryDelayMs: 40 },
+    );
+
+    this.emitter.emit(GROUP_GIFT_SETTLED, {
+      groupGiftId,
+      hostId,
+      title: gift.title,
+      amountMinor: paid,
+      currency: gift.currency,
+      memberIds: await this.membersToTell(gift),
+    } satisfies GroupGiftSettledEvent);
+    this.emitter.emit(GROUP_GIFT_FUNDED, {
+      groupGiftId,
+      itemId: gift.itemId.toString(),
+      wishlistId: gift.wishlistId.toString(),
+      initiatorId: hostId,
+      targetAmountMinor: gift.targetAmountMinor,
+      collectedAmountMinor: collected,
+      currency: gift.currency,
+      contributorCount: 0,
+    } satisfies GroupGiftFundedEvent);
+    return this.assembleView(await this.loadOrFail(groupGiftId), hostId);
   }
 
   /**
@@ -1816,6 +2023,9 @@ export class GroupGiftService {
     dto: ShareGroupGiftDto,
   ): Promise<GroupGiftShareView> {
     const gift = await this.loadOrFail(groupGiftId);
+    if (INACTIVE_GROUP_GIFT_STATUSES.includes(gift.status)) {
+      throw new AppException(ErrorCode.GROUP_GIFT_NOT_OPEN, 'This group gift was cancelled', 409);
+    }
     if (gift.initiatorId.toString() !== userId) {
       throw new AppException(
         ErrorCode.NOT_THE_INITIATOR,

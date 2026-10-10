@@ -248,16 +248,21 @@ describe('Group-gift settle-up (e2e)', () => {
       expect((await balanceOf(gg.data.id, host)).differenceMinor).toBe(-1_734_700);
     });
 
-    it('freezes the bill once someone has contributed', async () => {
+    it('takes a new charge once someone has contributed only with a reason', async () => {
       const { ggId, host } = await givenFundedGroup(300_000, 3);
 
-      // Changing the target now would move the goalposts under people who
-      // already committed against the old number.
+      // Raising the total under people who already paid needs a reason they
+      // are told; without one it is refused.
       await http()
         .post(`${V1}/group-gifts/${ggId}/charges`)
         .set(auth(host.token))
         .send({ label: 'Delivery', amountMinor: 20_000 })
-        .expect(409);
+        .expect(400);
+      await http()
+        .post(`${V1}/group-gifts/${ggId}/charges`)
+        .set(auth(host.token))
+        .send({ label: 'Delivery', amountMinor: 20_000, reason: 'Courier to another city' })
+        .expect(201);
     });
 
     it('over-collection shows as a surplus the host owes back', async () => {

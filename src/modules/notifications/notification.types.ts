@@ -56,6 +56,8 @@ export enum NotificationType {
   GROUP_GIFT_PAYMENT_REVIEWED = 'group_gift_payment_reviewed',
   GROUP_GIFT_PAYMENT_DISPUTED = 'group_gift_payment_disputed',
   GROUP_GIFT_CONFIRM_REMINDER = 'group_gift_confirm_reminder',
+  GROUP_GIFT_CHARGE_ADDED = 'group_gift_charge_added',
+  GROUP_GIFT_SETTLED = 'group_gift_settled',
   GROUP_GIFT_PURCHASED = 'group_gift_purchased',
   GROUP_GIFT_FULFILLED = 'group_gift_fulfilled',
   EVENT_REMINDER = 'event_reminder',
@@ -203,6 +205,20 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.GROUP_GIFTS,
     template: 'group-gift-confirm-reminder',
+  },
+  // The total went up after people paid, and why; or the host paid the rest
+  // and nobody owes anything. Both change what each member does next.
+  [NotificationType.GROUP_GIFT_CHARGE_ADDED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-charge-added',
+  },
+  [NotificationType.GROUP_GIFT_SETTLED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-settled',
   },
   [NotificationType.GROUP_GIFT_INVITE]: {
     // Not DIGEST, unlike the rest of this category: an invitation is a

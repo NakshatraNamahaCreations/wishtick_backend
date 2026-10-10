@@ -95,6 +95,39 @@ export interface GroupGiftCancelledEvent {
   members: { userId: string; refundedMinor: number; pendingMinor: number }[];
 }
 
+/**
+ * The host added a charge after people had paid — the total went up, and
+ * everybody in the group is told what for.
+ */
+export const GROUP_GIFT_CHARGE_ADDED = 'group_gift.charge_added';
+
+export interface GroupGiftChargeAddedEvent {
+  groupGiftId: string;
+  chargeId: string;
+  hostId: string;
+  title: string;
+  label: string;
+  amountMinor: number;
+  reason: string;
+  targetAmountMinor: number;
+  currency: string;
+  /** Everybody in the group but the host and the recipient. */
+  memberIds: string[];
+}
+
+/** The host paid what was left themselves, and the collection is done. */
+export const GROUP_GIFT_SETTLED = 'group_gift.settled';
+
+export interface GroupGiftSettledEvent {
+  groupGiftId: string;
+  hostId: string;
+  title: string;
+  /** What the host put in to finish it. */
+  amountMinor: number;
+  currency: string;
+  memberIds: string[];
+}
+
 export const GROUP_GIFT_FUNDED = 'group_gift.funded';
 
 export interface GroupGiftFundedEvent {

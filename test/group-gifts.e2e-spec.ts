@@ -1470,15 +1470,15 @@ describe('Group gifting (e2e)', () => {
         .expect(403);
     });
 
-    it('a claim awaiting the host locks the bill', async () => {
+    it('a claim awaiting the host locks the bill: a charge then needs a reason', async () => {
       const { host, member, ggId } = await setUp();
       await claim(member, ggId, 20_000);
       const res = await request(app.getHttpServer())
         .post(`${V1}/group-gifts/${ggId}/charges`)
         .set(auth(host.token))
         .send({ label: 'Delivery', amountMinor: 5_000 })
-        .expect(409);
-      expect((res.body as Envelope<never>).error?.code).toBe(ErrorCode.GROUP_GIFT_BILL_LOCKED);
+        .expect(400);
+      expect((res.body as Envelope<never>).error?.code).toBe(ErrorCode.VALIDATION_FAILED);
     });
 
     it('reminds the host every day while payments wait for them', async () => {
@@ -1496,6 +1496,138 @@ describe('Group gifting (e2e)', () => {
       await review(host, ggId, myPayments[0].id, 20_000).expect(200);
       await shares.remindHosts(new Date('2026-10-03T05:00:00Z'));
       expect(await inbox(host, 'group_gift_confirm_reminder', ggId)).toHaveLength(2);
+    });
+
+    // ── Settle up: the host pays what is left ──────────────────────────────
+
+    it('settle up: the host pays the rest, and the group is told nothing more is owed', async () => {
+      const { host, member, ggId } = await setUp();
+      const { myPayments } = await claim(member, ggId, 30_000);
+      await review(host, ggId, myPayments[0].id, 30_000).expect(200);
+
+      // Only the host.
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${ggId}/settle`)
+        .set(auth(member.token))
+        .expect(403);
+
+      const settled = (
+        await request(app.getHttpServer())
+          .post(`${V1}/group-gifts/${ggId}/settle`)
+          .set(auth(host.token))
+          .expect(200)
+      ).body as Envelope<GroupGiftView>;
+      expect(settled.data.status).toBe('funded');
+      expect(settled.data.collectedAmountMinor).toBe(100_000);
+
+      const told = await inbox(member, 'group_gift_settled', ggId);
+      expect(told).toHaveLength(1);
+      expect(told[0].body).toContain('paid the remaining INR 700.00');
+
+      // Funded already: nothing left to settle.
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${ggId}/settle`)
+        .set(auth(host.token))
+        .expect(409);
+    });
+
+    it('settle up waits until the payments waiting for the host are answered', async () => {
+      const { host, member, ggId } = await setUp();
+      await claim(member, ggId, 30_000);
+
+      const res = await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${ggId}/settle`)
+        .set(auth(host.token))
+        .expect(409);
+      expect((res.body as Envelope<never>).error?.code).toBe(ErrorCode.CONFLICT);
+    });
+
+    // ── A charge after people have paid ─────────────────────────────────────
+
+    it('a charge after people paid needs a reason, tells them, and reopens a funded gift', async () => {
+      const { host, member, ggId } = await setUp();
+      const { myPayments } = await claim(member, ggId, 100_000);
+      await review(host, ggId, myPayments[0].id, 100_000).expect(200);
+
+      const after = (
+        await request(app.getHttpServer())
+          .post(`${V1}/group-gifts/${ggId}/charges`)
+          .set(auth(host.token))
+          .send({
+            label: 'Delivery Charges',
+            amountMinor: 9_900,
+            reason: 'The courier charges extra for a fragile parcel',
+          })
+          .expect(201)
+      ).body as Envelope<
+        GroupGiftView & { charges: { id: string; label: string; reason: string | null }[] }
+      >;
+      expect(after.data.targetAmountMinor).toBe(109_900);
+      // Funded on the old total: open again for the ₹99.
+      expect(after.data.status).toBe('open');
+      expect(after.data.charges[0].reason).toBe('The courier charges extra for a fragile parcel');
+
+      const told = await inbox(member, 'group_gift_charge_added', ggId);
+      expect(told).toHaveLength(1);
+      expect(told[0].body).toContain('Reason: The courier charges extra for a fragile parcel');
+      expect(told[0].body).toContain('The total is now INR 1099.00');
+
+      // What was agreed stays as it was: an existing charge cannot be edited.
+      await request(app.getHttpServer())
+        .patch(`${V1}/group-gifts/${ggId}/charges/${after.data.charges[0].id}`)
+        .set(auth(host.token))
+        .send({ label: 'Delivery Charges', amountMinor: 1_000 })
+        .expect(409);
+    });
+
+    it('a charge before anybody paid needs no reason, and tells nobody', async () => {
+      const { host, member, ggId } = await setUp();
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${ggId}/charges`)
+        .set(auth(host.token))
+        .send({ label: 'Packaging', amountMinor: 5_000 })
+        .expect(201);
+      expect(await inbox(member, 'group_gift_charge_added', ggId)).toHaveLength(0);
+    });
+
+    // ── Cancelled: nothing changes ──────────────────────────────────────────
+
+    it('once cancelled, the host can change nothing about it', async () => {
+      const { host, member, ggId } = await setUp();
+      const { myPayments } = await claim(member, ggId, 30_000);
+      await review(host, ggId, myPayments[0].id, 0).expect(200);
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${ggId}/cancel`)
+        .set(auth(host.token))
+        .send({})
+        .expect(200);
+
+      const refused = [
+        request(app.getHttpServer())
+          .post(`${V1}/group-gifts/${ggId}/charges`)
+          .set(auth(host.token))
+          .send({ label: 'Delivery', amountMinor: 1_000, reason: 'Too late' }),
+        request(app.getHttpServer()).post(`${V1}/group-gifts/${ggId}/settle`).set(auth(host.token)),
+        request(app.getHttpServer())
+          .post(`${V1}/group-gifts/${ggId}/settlements/top-up`)
+          .set(auth(host.token))
+          .send({ additionalAmountMinor: 10_000 }),
+        request(app.getHttpServer())
+          .post(`${V1}/group-gifts/${ggId}/share`)
+          .set(auth(host.token))
+          .send({ rotate: true }),
+        review(host, ggId, myPayments[0].id, 30_000),
+        request(app.getHttpServer())
+          .post(`${V1}/group-gifts/${ggId}/contributions/${myPayments[0].id}/dispute`)
+          .set(auth(member.token))
+          .send({}),
+      ];
+      for (const call of refused) {
+        const res = await call;
+        expect(res.status).toBe(409);
+      }
+      // And the total never moved.
+      expect((await viewOf(host, ggId)).targetAmountMinor).toBe(100_000);
     });
   });
 

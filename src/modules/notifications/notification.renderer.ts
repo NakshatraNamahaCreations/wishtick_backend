@@ -211,6 +211,22 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     ],
     cta: { label: 'Confirm payments', url: s(p, 'url') },
   }),
+  [NotificationType.GROUP_GIFT_CHARGE_ADDED]: (p) => ({
+    subject: `${who(p, 'hostName')} added ${s(p, 'label', 'a charge')} to ${s(p, 'title', 'the group gift')}`,
+    title: `${s(p, 'label', 'A charge')} added: ${money(p, 'amountMinor')}`,
+    lines: [
+      `${who(p, 'hostName')} added ${s(p, 'label', 'a charge')} of ${money(p, 'amountMinor')} to ${s(p, 'title', 'the group gift')}. Reason: ${s(p, 'reason', 'not given')}. The total is now ${money(p, 'targetAmountMinor')}.`,
+    ],
+    cta: { label: 'See the group gift', url: s(p, 'url') },
+  }),
+  [NotificationType.GROUP_GIFT_SETTLED]: (p) => ({
+    subject: `${s(p, 'title', 'The group gift')} is fully funded`,
+    title: 'Nothing more to pay',
+    lines: [
+      `${who(p, 'hostName')} paid the remaining ${money(p, 'amountMinor')} for ${s(p, 'title', 'the group gift')}. It's fully funded — nothing more is needed from you.`,
+    ],
+    cta: { label: 'See the group gift', url: s(p, 'url') },
+  }),
   [NotificationType.GROUP_GIFT_JOINED]: (p) => ({
     subject: `A new member joined`,
     title: 'Someone joined the group gift',

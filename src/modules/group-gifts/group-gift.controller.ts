@@ -211,6 +211,21 @@ export class GroupGiftController {
     return this.groupGifts.disputeContribution(id, contributionId, userId, dto);
   }
 
+  @Post('group-gifts/:id/settle')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Settle up: the host pays what is left (host only)',
+    description:
+      'Records the host paying the rest of the total themselves; the gift is fully funded ' +
+      'and the group is told nothing more is needed. Refused while payments wait for the ' +
+      'host to confirm them.',
+  })
+  @ApiResponseDoc({ status: 403, description: 'NOT_THE_INITIATOR' })
+  @ApiResponseDoc({ status: 409, description: 'GROUP_GIFT_NOT_OPEN / CONFLICT' })
+  settle(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<GroupGiftView> {
+    return this.groupGifts.settle(id, userId);
+  }
+
   @Post('group-gifts/:id/purchase')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Purchase a funded group gift (initiator only)' })

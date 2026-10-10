@@ -10,6 +10,7 @@ import {
 import {
   ContributionStatus,
   GroupGiftStatus,
+  INACTIVE_GROUP_GIFT_STATUSES,
   SettlementDirection,
   SettlementStatus,
 } from './group-gift.types';
@@ -145,6 +146,7 @@ export class SettlementService {
   ): Promise<SettlementDocument[]> {
     const gg = await this.load(groupGiftId);
     this.assertHost(gg, hostId);
+    SettlementService.assertActive(gg);
 
     const balance = await this.balance(groupGiftId);
     if (balance.differenceMinor <= 0) {
@@ -208,6 +210,7 @@ export class SettlementService {
   ): Promise<SettlementDocument[]> {
     const gg = await this.load(groupGiftId);
     this.assertHost(gg, hostId);
+    SettlementService.assertActive(gg);
 
     if (input.additionalAmountMinor <= 0) {
       throw new AppException(
@@ -613,6 +616,11 @@ export class SettlementService {
     return gg;
   }
 
+  /**
+   * A settlement to act on — never one on a cancelled gift, which nothing
+   * about changes any more. Cancelling already counted every payment as
+   * refunded.
+   */
   private async loadSettlement(settlementId: string): Promise<SettlementDocument> {
     if (!Types.ObjectId.isValid(settlementId)) {
       throw new AppException(ErrorCode.NOT_FOUND, 'Settlement not found', 404);
@@ -621,7 +629,14 @@ export class SettlementService {
     if (!settlement) {
       throw new AppException(ErrorCode.NOT_FOUND, 'Settlement not found', 404);
     }
+    SettlementService.assertActive(await this.load(settlement.groupGiftId.toString()));
     return settlement;
+  }
+
+  private static assertActive(gg: GroupGiftDocument): void {
+    if (INACTIVE_GROUP_GIFT_STATUSES.includes(gg.status)) {
+      throw new AppException(ErrorCode.GROUP_GIFT_NOT_OPEN, 'This group gift was cancelled', 409);
+    }
   }
 
   private assertHost(gg: GroupGiftDocument, userId: string): void {

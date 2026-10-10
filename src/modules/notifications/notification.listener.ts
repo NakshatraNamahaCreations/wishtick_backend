@@ -17,7 +17,9 @@ import {
   GIFT_PURCHASED,
   GIFT_RESERVED,
   GROUP_GIFT_CANCELLED,
+  GROUP_GIFT_CHARGE_ADDED,
   GROUP_GIFT_CONFIRM_REMINDER_DUE,
+  GROUP_GIFT_SETTLED,
   GROUP_GIFT_CONTRIBUTION_RECEIVED,
   GROUP_GIFT_PAYMENT_CLAIMED,
   GROUP_GIFT_PAYMENT_DISPUTED,
@@ -47,7 +49,9 @@ import {
   type EventWishlistOfferedEvent,
   type GiftLifecycleEvent,
   type GroupGiftCancelledEvent,
+  type GroupGiftChargeAddedEvent,
   type GroupGiftConfirmReminderDueEvent,
+  type GroupGiftSettledEvent,
   type GroupGiftContributionReceivedEvent,
   type GroupGiftPaymentClaimedEvent,
   type GroupGiftPaymentDisputedEvent,
@@ -277,6 +281,51 @@ export class NotificationListener {
             reason: e.reason,
             refundedMinor: member.refundedMinor,
             pendingMinor: member.pendingMinor,
+            currency: e.currency,
+            url: `${this.web}/group-gifts/${e.groupGiftId}`,
+          },
+        });
+      }
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_CHARGE_ADDED)
+  async onChargeAdded(e: GroupGiftChargeAddedEvent): Promise<void> {
+    await this.guard('group-gift-charge-added', async () => {
+      const hostName = await this.userName(e.hostId);
+      for (const userId of e.memberIds) {
+        await this.notifications.enqueue({
+          userId,
+          type: NotificationType.GROUP_GIFT_CHARGE_ADDED,
+          refId: `${e.groupGiftId}:${e.chargeId}`,
+          payload: {
+            title: e.title,
+            hostName,
+            label: e.label,
+            amountMinor: e.amountMinor,
+            reason: e.reason,
+            targetAmountMinor: e.targetAmountMinor,
+            currency: e.currency,
+            url: `${this.web}/group-gifts/${e.groupGiftId}`,
+          },
+        });
+      }
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_SETTLED)
+  async onSettled(e: GroupGiftSettledEvent): Promise<void> {
+    await this.guard('group-gift-settled', async () => {
+      const hostName = await this.userName(e.hostId);
+      for (const userId of e.memberIds) {
+        await this.notifications.enqueue({
+          userId,
+          type: NotificationType.GROUP_GIFT_SETTLED,
+          refId: `${e.groupGiftId}:${userId}:${e.amountMinor}`,
+          payload: {
+            title: e.title,
+            hostName,
+            amountMinor: e.amountMinor,
             currency: e.currency,
             url: `${this.web}/group-gifts/${e.groupGiftId}`,
           },

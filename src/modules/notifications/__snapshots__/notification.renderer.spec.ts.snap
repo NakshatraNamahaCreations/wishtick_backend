@@ -204,6 +204,17 @@ See the group gift: https://app.wishtick.test/x",
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_charge_added 1`] = `
+{
+  "sms": "A charge added: INR 500.00 — https://app.wishtick.test/x",
+  "subject": "Someone added a charge to Password changed",
+  "text": "Someone added a charge of INR 500.00 to Password changed. Reason: not given. The total is now INR 2000.00.
+
+See the group gift: https://app.wishtick.test/x",
+  "title": "A charge added: INR 500.00",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_confirm_reminder 1`] = `
 {
   "sms": "0 payments to confirm — https://app.wishtick.test/x",
@@ -324,6 +335,17 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 
 View the group gift: https://app.wishtick.test/x",
   "title": "Group gift purchased",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_settled 1`] = `
+{
+  "sms": "Nothing more to pay — https://app.wishtick.test/x",
+  "subject": "Password changed is fully funded",
+  "text": "Someone paid the remaining INR 500.00 for Password changed. It's fully funded — nothing more is needed from you.
+
+See the group gift: https://app.wishtick.test/x",
+  "title": "Nothing more to pay",
 }
 `;
 

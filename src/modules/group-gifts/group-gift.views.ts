@@ -57,6 +57,8 @@ export interface GroupGiftChargeView {
   amountMinor: number;
   addedBy: string;
   addedAt: Date;
+  /** Why it was added, when it came after people had paid. */
+  reason: string | null;
 }
 
 /** An additional item beyond the primary one (`4007:720`). */
@@ -382,6 +384,7 @@ export function toGroupGiftView(input: {
       amountMinor: charge.amountMinor,
       addedBy: charge.addedBy.toString(),
       addedAt: charge.addedAt,
+      reason: charge.reason ?? null,
     })),
     lines: gift.lines.map((line) => ({
       id: line._id.toString(),

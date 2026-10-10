@@ -145,7 +145,12 @@ export class GroupGiftShareService {
       owesMinor: m.owesMinor,
       pendingMinor: pending.get(m.userId) ?? 0,
     });
-    const members = [row(split.host, true), ...split.others.map((m) => row(m, false))];
+    let members = [row(split.host, true), ...split.others.map((m) => row(m, false))];
+    // No longer collecting — funded, settled by the host, bought or called
+    // off: nobody is asked for anything more, whatever the even split says.
+    if (gift.status !== GroupGiftStatus.OPEN) {
+      members = members.map((m) => ({ ...m, owesMinor: 0 }));
+    }
     const mine = members.find((m) => m.userId === viewerId) ?? null;
     return {
       memberCount: split.memberCount,

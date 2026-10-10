@@ -82,6 +82,13 @@ export class GroupGiftCharge {
 
   @Prop({ type: Date, default: Date.now })
   addedAt!: Date;
+
+  /**
+   * Why it was added, in the host's words. Required for a charge added after
+   * people have paid: it raises what they owe, and they are told why.
+   */
+  @Prop({ type: String, default: null, trim: true, maxlength: 280 })
+  reason!: string | null;
 }
 
 export const GroupGiftChargeSchema = SchemaFactory.createForClass(GroupGiftCharge);
