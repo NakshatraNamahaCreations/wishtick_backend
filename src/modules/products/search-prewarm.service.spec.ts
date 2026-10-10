@@ -18,13 +18,16 @@ describe('SearchPrewarmService', () => {
       { key: 'books', label: 'Books' },
     ],
     search = jest.fn().mockResolvedValue({ items: [] }),
+    answersWhole = false,
   }: {
     prewarmEnabled?: boolean;
     categories?: { key: string; label: string }[];
     search?: jest.Mock;
+    answersWhole?: boolean;
   } = {}) => {
     const products = { search } as unknown as ProductsService;
     const provider = {
+      answersWhole,
       getCategories: jest.fn().mockResolvedValue(categories),
     } as unknown as IProductProvider;
     const config = {
@@ -53,6 +56,17 @@ describe('SearchPrewarmService', () => {
     expect(new Set(queries.map((q) => q.pageSize))).toEqual(new Set([4, 20]));
     // Only the first page is ever worth warming — nobody lands on page 3.
     expect(queries.every((q) => q.page === 1)).toBe(true);
+  });
+
+  it('warms each shelf once for a provider that answers whole', async () => {
+    const { service, search } = build({ answersWhole: true });
+
+    const report = await service.prewarm();
+
+    // Every page size is a slice of the one cached answer: warming each size
+    // would buy the same search again.
+    expect(report).toEqual({ warmed: 4, failed: 0, skipped: false });
+    expect(queriesFrom(search).filter((q) => q.category === 'electronics')).toHaveLength(1);
   });
 
   it('forces a refresh, or it could never renew what it had already warmed', async () => {

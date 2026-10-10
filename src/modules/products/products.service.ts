@@ -172,6 +172,9 @@ export class ProductsService {
     opts: { refresh?: boolean },
   ): Promise<SearchResponse> {
     if (query.platform) return this.searchOnPlatform(query, query.platform, opts);
+    if (this.provider.answersWhole && !ProductsService.isWhole(query)) {
+      return this.sliceOfWhole(query, opts);
+    }
     const key = ProductsService.searchKey(query);
     const cached = await this.cache.get<CacheEnvelope<ProductSearchResult>>(key);
 
@@ -194,8 +197,8 @@ export class ProductsService {
     }
 
     try {
-      const result = await this.guard.run(this.provider.name, 'search', () =>
-        this.provider.search(query),
+      const result = await this.once(key, () =>
+        this.guard.run(this.provider.name, 'search', () => this.provider.search(query)),
       );
 
       // Cached with the STALE ttl, not the fresh one: the envelope's timestamp
@@ -577,6 +580,59 @@ export class ProductsService {
 
   /** More than any provider answers in one search, so it is all of it. */
   private static readonly WHOLE_ANSWER = 100;
+
+  /** Vendor searches in flight, by cache key. See [once]. */
+  private readonly inFlight = new Map<string, Promise<ProductSearchResult>>();
+
+  /**
+   * One vendor call for the same search at the same time, however many ask.
+   *
+   * A double tap, a retry while the first is still running, or two people on
+   * the same shelf each sent their own paid search, and the cache could not
+   * help: it is only written once a search has answered.
+   */
+  private async once(
+    key: string,
+    call: () => Promise<ProductSearchResult>,
+  ): Promise<ProductSearchResult> {
+    const running = this.inFlight.get(key);
+    if (running) return running;
+    const promise = call().finally(() => this.inFlight.delete(key));
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+
+  private static isWhole(query: ProductSearchQuery): boolean {
+    return query.page === 1 && query.pageSize === ProductsService.WHOLE_ANSWER;
+  }
+
+  /**
+   * A page of [query], cut from the provider's whole answer.
+   *
+   * For a provider that answers whole, the page and its size used to be part
+   * of the cache key, so the same words asked 20 at a time by one screen and
+   * 50 at a time by another were two paid searches with one answer between
+   * them. Now there is one key per search, and every page is a slice of it.
+   */
+  private async sliceOfWhole(
+    query: ProductSearchQuery,
+    opts: { refresh?: boolean },
+  ): Promise<SearchResponse> {
+    const all = await this.searchUncounted(
+      { ...query, page: 1, pageSize: ProductsService.WHOLE_ANSWER },
+      opts,
+    );
+    const offset = (query.page - 1) * query.pageSize;
+    const items = all.items.slice(offset, offset + query.pageSize);
+    return {
+      ...all,
+      items,
+      page: query.page,
+      pageSize: query.pageSize,
+      totalEstimate: all.items.length,
+      hasMore: offset + items.length < all.items.length,
+    };
+  }
 
   private static searchKey(query: ProductSearchQuery): string {
     const canonical = JSON.stringify({

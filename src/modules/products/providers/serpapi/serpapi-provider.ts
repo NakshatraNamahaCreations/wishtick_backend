@@ -92,6 +92,8 @@ export interface SerpApiMeta {
 @Injectable()
 export class SerpApiProductProvider implements IProductProvider {
   readonly name = 'serpapi';
+  /** Google Shopping ignores paging: one search is the whole answer. */
+  readonly answersWhole = true;
   private readonly logger = new Logger(SerpApiProductProvider.name);
 
   constructor(private readonly client: SerpApiClient) {}

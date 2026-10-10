@@ -533,6 +533,23 @@ describe('Gift suggestions (e2e)', () => {
       expect(body.items.length).toBeGreaterThan(0);
     });
 
+    it('only where to search, without searching, when that is all that is asked', async () => {
+      const priyal = await someone('priyal_s3q', 'Priyal');
+      const rohan = await someone('rohan_s3q', 'Rohan');
+      await connect(rohan, priyal);
+      await setTaste(priyal, techLover);
+      const search = jest.spyOn(app.get(ProductsService), 'search');
+
+      const res = await suggestionsFor(rohan, priyal, '?queryOnly=true').expect(200);
+      const body = (res.body as Envelope<SuggestionsBody & { exploreQuery: unknown }>).data;
+
+      // The grid runs its own search next: no vendor calls in front of it.
+      expect(search).not.toHaveBeenCalled();
+      expect(body.items).toEqual([]);
+      expect(body.exploreQuery).toMatchObject({ recipientUserId: priyal.userId });
+      search.mockRestore();
+    });
+
     it('so is the person themself', async () => {
       const priyal = await someone('priyal_s4', 'Priyal');
 

@@ -58,6 +58,8 @@ export const DEFAULT_SUGGESTION_LIMIT = 12;
 const INVITE_SHELF_SIZE = 4;
 
 export interface SuggestionOptions {
+  /** Only the shelf to search — no products, no vendor calls. */
+  queryOnly?: boolean;
   occasionKey?: string | null;
   relation?: string | null;
   minPriceMinor?: number | null;
@@ -139,6 +141,41 @@ export class SuggestionsService {
       this.profiles.getOrCreate(targetId),
     ]);
     const displayName = profile.displayName?.trim() || null;
+    const exploreQuery = {
+      // The person travels with the query, so the grid behind "Explore
+      // More" goes on ranking for them page after page.
+      recipientUserId: targetId,
+      recipientName: displayName,
+      category: taste.shelves[0] ?? null,
+      // And what they like travels with it too. Without this the grid pages
+      // the shared category search: a jewellery lover and a painter are
+      // both "fashion", and both were handed the same page of scrunchies.
+      keywords: topSearchTerm(taste) ?? null,
+      minPriceMinor: null,
+      // The same rule as the searches: only a price somebody asked for.
+      maxPriceMinor:
+        taste.budget.source === 'explicit' ? (bandFor(taste.budget.maxMinor) ?? null) : null,
+    };
+    const title = isSelf ? 'Gift ideas for you' : `Gift ideas for ${displayName ?? 'them'}`;
+
+    // Only where to search, for a screen that runs its own search next. The
+    // products here would be thrown away, and finding them was up to three
+    // cold vendor calls in front of the search that is actually shown.
+    if (opts.queryOnly) {
+      return {
+        title,
+        person: { userId: targetId, displayName },
+        items: [],
+        personalised: taste.completeness > 0,
+        reasonCode: null,
+        note: null,
+        freshness: ResultFreshness.CACHED,
+        partial: false,
+        exploreQuery,
+        generatedAt: new Date().toISOString(),
+      };
+    }
+
     // Held below what the planner wanted, keep the plain shelf searches first:
     // they are the shared category queries Discover and the prewarm already
     // pay for, so one of them is usually a cache hit with a full page, while
@@ -165,25 +202,11 @@ export class SuggestionsService {
     );
 
     return {
-      title: isSelf ? 'Gift ideas for you' : `Gift ideas for ${displayName ?? 'them'}`,
+      title,
       person: { userId: targetId, displayName },
       ...ranked,
       note: this.noteFor(ranked.reasonCode, isSelf, displayName),
-      exploreQuery: {
-        // The person travels with the query, so the grid behind "Explore
-        // More" goes on ranking for them page after page.
-        recipientUserId: targetId,
-        recipientName: displayName,
-        category: taste.shelves[0] ?? null,
-        // And what they like travels with it too. Without this the grid pages
-        // the shared category search: a jewellery lover and a painter are
-        // both "fashion", and both were handed the same page of scrunchies.
-        keywords: topSearchTerm(taste) ?? null,
-        minPriceMinor: null,
-        // The same rule as the searches: only a price somebody asked for.
-        maxPriceMinor:
-          taste.budget.source === 'explicit' ? (bandFor(taste.budget.maxMinor) ?? null) : null,
-      },
+      exploreQuery,
       generatedAt: new Date().toISOString(),
     };
   }
@@ -230,7 +253,13 @@ export class SuggestionsService {
       this.budget.allowanceFor(viewerId),
     ]);
     const recipient = { userId: targetId, displayName: profile.displayName?.trim() || null };
-    const result = await this.searchTheirSection(query, taste);
+    // Both at once: the colour search does not need the first one's answer,
+    // and one after the other they were two cold vendor calls end to end —
+    // long enough on a first visit for the app to give up waiting.
+    const [result, inTheirColour] = await Promise.all([
+      this.searchTheirSection(query, taste),
+      this.colourPage(query, taste, allowance),
+    ]);
 
     // Nothing to rank by: the provider's own order, and an honest flag. A
     // known gender alone is something — it still orders the page.
@@ -244,7 +273,6 @@ export class SuggestionsService {
     }
 
     const rows: RetrievedRow[] = result.items.map((product) => ({ product, foundIn: [0] }));
-    const inTheirColour = await this.colourPage(query, taste, allowance);
     const seen = new Set(rows.map((row) => `${row.product.provider}:${row.product.externalId}`));
     for (const product of inTheirColour) {
       const id = `${product.provider}:${product.externalId}`;

@@ -1,6 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
 export class GiftSuggestionsQueryDto {
   @ApiPropertyOptional({ example: 'birthday', description: 'An occasion taxonomy key.' })
@@ -33,4 +33,15 @@ export class GiftSuggestionsQueryDto {
   @Min(1)
   @Max(24)
   limit?: number;
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'Only the explore query — where to search for them — with no products and no vendor ' +
+      'calls. For a screen that runs the search itself.',
+  })
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  queryOnly?: boolean;
 }

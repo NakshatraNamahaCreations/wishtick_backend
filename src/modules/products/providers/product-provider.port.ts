@@ -26,6 +26,13 @@ export interface IProductProvider {
   /** Stable identifier stored on every Product row. */
   readonly name: string;
 
+  /**
+   * True when one search returns every result there is and paging is done by
+   * slicing it — Google Shopping, through SerpApi. Then any page of any size
+   * is a slice of one cached answer, rather than a paid search of its own.
+   */
+  readonly answersWhole?: boolean;
+
   search(query: ProductSearchQuery): Promise<ProductSearchResult>;
 
   /** Null when the provider genuinely has no such product (not on failure). */

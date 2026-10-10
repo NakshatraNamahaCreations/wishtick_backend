@@ -102,7 +102,10 @@ export class SearchPrewarmService {
     const categories = await this.provider.getCategories();
     const queries: ProductSearchQuery[] = [];
 
-    for (const pageSize of PREWARM_PAGE_SIZES) {
+    // A provider that answers whole keeps one entry per search whatever the
+    // page size, so warming each size would buy the same answer again.
+    const sizes = this.provider.answersWhole ? PREWARM_PAGE_SIZES.slice(0, 1) : PREWARM_PAGE_SIZES;
+    for (const pageSize of sizes) {
       for (const { key } of categories) {
         queries.push({ category: key, page: 1, pageSize });
       }
