@@ -88,8 +88,11 @@ export interface GroupGiftCancelledEvent {
   hostId: string;
   reason: string | null;
   currency: string;
-  /** Everybody but the host, with what each had paid in (0 if nothing). */
-  members: { userId: string; refundedMinor: number }[];
+  /**
+   * Everybody but the host, with what each had paid in (0 if nothing) and
+   * what they said they sent that the host had not confirmed yet.
+   */
+  members: { userId: string; refundedMinor: number; pendingMinor: number }[];
 }
 
 export const GROUP_GIFT_FUNDED = 'group_gift.funded';
@@ -120,6 +123,74 @@ export interface GroupGiftContributionReceivedEvent {
   anonymous: boolean;
   collectedAmountMinor: number;
   targetAmountMinor: number;
+  /**
+   * The host confirming a member's payment, rather than money arriving on its
+   * own. The host has nothing to be told about it — they just did it.
+   */
+  reviewed?: boolean;
+}
+
+/**
+ * A member says they sent their money. It counts for nothing until the host
+ * confirms it, so the host is asked to.
+ */
+export const GROUP_GIFT_PAYMENT_CLAIMED = 'group_gift.payment_claimed';
+
+export interface GroupGiftPaymentClaimedEvent {
+  groupGiftId: string;
+  contributionId: string;
+  contributorId: string;
+  hostId: string;
+  title: string;
+  amountMinor: number;
+  currency: string;
+}
+
+/** The host said what arrived from a member's payment. The member is told. */
+export const GROUP_GIFT_PAYMENT_REVIEWED = 'group_gift.payment_reviewed';
+
+export interface GroupGiftPaymentReviewedEvent {
+  groupGiftId: string;
+  contributionId: string;
+  contributorId: string;
+  hostId: string;
+  title: string;
+  claimedMinor: number;
+  receivedMinor: number;
+  currency: string;
+  /** ISO time of this review — each review is its own notification. */
+  reviewedAt: string;
+}
+
+/** A member says they did pay, against what the host recorded. */
+export const GROUP_GIFT_PAYMENT_DISPUTED = 'group_gift.payment_disputed';
+
+export interface GroupGiftPaymentDisputedEvent {
+  groupGiftId: string;
+  contributionId: string;
+  contributorId: string;
+  hostId: string;
+  title: string;
+  claimedMinor: number;
+  receivedMinor: number;
+  paymentRef: string | null;
+  note: string | null;
+  currency: string;
+  disputedAt: string;
+}
+
+/** Once a day, to a host with payments still waiting for them to confirm. */
+export const GROUP_GIFT_CONFIRM_REMINDER_DUE = 'group_gift.confirm_reminder_due';
+
+export interface GroupGiftConfirmReminderDueEvent {
+  groupGiftId: string;
+  hostId: string;
+  title: string;
+  count: number;
+  totalMinor: number;
+  currency: string;
+  /** YYYY-MM-DD, UTC. */
+  day: string;
 }
 
 /**

@@ -49,6 +49,8 @@ export enum ContributionStatus {
   CONFIRMED = 'confirmed',
   /** Given back, or written off on cancellation. */
   REFUNDED = 'refunded',
+  /** The host says nothing arrived from this person for this payment. */
+  NOT_RECEIVED = 'not_received',
 }
 
 /**
@@ -117,7 +119,8 @@ export enum GroupGiftVisibility {
  * nothing else decides a legal move. Mirrors the GIFT_TRANSITIONS pattern.
  *
  *   open       → funded | cancelled | refunding
- *   funded     → purchasing | purchased | cancelled | refunding
+ *   funded     → open | purchasing | purchased | cancelled | refunding
+ *                (open = a payment the host confirmed turned out short)
  *   purchasing → purchased | funded            (funded = purchase aborted)
  *   purchased  → fulfilled
  *   refunding  → cancelled                     (once refund records are written)
@@ -130,6 +133,7 @@ export const GROUP_GIFT_TRANSITIONS: Record<GroupGiftStatus, GroupGiftStatus[]> 
     GroupGiftStatus.REFUNDING,
   ],
   [GroupGiftStatus.FUNDED]: [
+    GroupGiftStatus.OPEN,
     GroupGiftStatus.PURCHASING,
     GroupGiftStatus.PURCHASED,
     GroupGiftStatus.CANCELLED,

@@ -204,6 +204,17 @@ See the group gift: https://app.wishtick.test/x",
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_confirm_reminder 1`] = `
+{
+  "sms": "0 payments to confirm — https://app.wishtick.test/x",
+  "subject": "Payments waiting for you on Password changed",
+  "text": " for Password changed is waiting for you to confirm it arrived. It doesn't count until you do.
+
+Confirm payments: https://app.wishtick.test/x",
+  "title": "0 payments to confirm",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_contribution 1`] = `
 {
   "sms": "Someone chipped in",
@@ -269,6 +280,39 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
   "subject": "A new member joined",
   "text": "Rohan joined the group gift for Noise-cancelling headphones.",
   "title": "Someone joined the group gift",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_payment_disputed 1`] = `
+{
+  "sms": "Priya says they sent  — https://app.wishtick.test/x",
+  "subject": "Priya says they paid",
+  "text": "Priya says they sent  for Password changed; you recorded .
+
+Check the payment: https://app.wishtick.test/x",
+  "title": "Priya says they sent ",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_payment_reviewed 1`] = `
+{
+  "sms": "Payment confirmed — https://app.wishtick.test/x",
+  "subject": "Someone received your payment",
+  "text": "Someone received your  for Password changed.
+
+See the group gift: https://app.wishtick.test/x",
+  "title": "Payment confirmed",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_payment_to_confirm 1`] = `
+{
+  "sms": "Confirm Priya's payment — https://app.wishtick.test/x",
+  "subject": "Did Priya's INR 500.00 arrive?",
+  "text": "Priya says they sent you INR 500.00 for Password changed. Check it arrived and confirm.
+
+Confirm the payment: https://app.wishtick.test/x",
+  "title": "Confirm Priya's payment",
 }
 `;
 

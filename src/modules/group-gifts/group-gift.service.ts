@@ -13,9 +13,15 @@ import {
   GROUP_GIFT_FUNDED,
   GROUP_GIFT_JOINED,
   GROUP_GIFT_PURCHASED,
+  GROUP_GIFT_PAYMENT_CLAIMED,
+  GROUP_GIFT_PAYMENT_DISPUTED,
+  GROUP_GIFT_PAYMENT_REVIEWED,
   type GroupGiftContributionReceivedEvent,
   type GroupGiftFulfilledEvent,
   type GroupGiftCancelledEvent,
+  type GroupGiftPaymentClaimedEvent,
+  type GroupGiftPaymentDisputedEvent,
+  type GroupGiftPaymentReviewedEvent,
   type GroupGiftFundedEvent,
   type GroupGiftJoinedEvent,
   type GroupGiftPurchasedEvent,
@@ -52,6 +58,7 @@ import { GroupGiftPreviewService } from './group-gift-preview.service';
 import type {
   ContributeDto,
   CreateGroupGiftDto,
+  DisputePaymentDto,
   GroupGiftActionDto,
   ShareGroupGiftDto,
 } from './dto/group-gift.dto';
@@ -64,6 +71,8 @@ import {
   type GroupGiftShareView,
   type EqualSplitView,
   type GroupGiftView,
+  type PaymentClaimView,
+  type PaymentState,
   type PublicGroupGiftView,
 } from './group-gift.views';
 import { GroupGiftShareService, HOST_SHARE_KEY } from './group-gift-share.service';
@@ -101,7 +110,16 @@ interface ContributionOutcome {
   effectiveAmount: number;
   newCollected: number;
   funded: boolean;
+  /** A member's claim, awaiting the host — nothing was added to the total. */
+  pledged: boolean;
 }
+
+/** A payment the host can still say something about, and the contributor too. */
+const REVIEWABLE_STATUSES = [
+  ContributionStatus.PLEDGED,
+  ContributionStatus.CONFIRMED,
+  ContributionStatus.NOT_RECEIVED,
+];
 
 @Injectable()
 export class GroupGiftService {
@@ -497,6 +515,9 @@ export class GroupGiftService {
     const gift = await this.loadOrFail(groupGiftId);
     await this.acceptPendingInvite(gift, userId);
     const { ignoresDeadline } = await this.authorizeParticipation(gift, userId);
+    // The host's own money is in their own hands; everybody else's goes to the
+    // host outside the app, and counts once the host says it arrived.
+    const pledged = gift.initiatorId.toString() !== userId;
 
     // Fast path for a durable replay (Redis flushed between retries): the row is
     // already there, so return the current state without re-running anything.
@@ -538,7 +559,17 @@ export class GroupGiftService {
                 );
               }
 
-              const remaining = gg.targetAmountMinor - gg.collectedAmountMinor;
+              // What is already spoken for counts against the target too, or
+              // claims awaiting the host could promise it several times over.
+              const awaiting = await this.contributionModel
+                .aggregate<{ total: number }>([
+                  { $match: { groupGiftId: gg._id, status: ContributionStatus.PLEDGED } },
+                  { $group: { _id: null, total: { $sum: '$amountMinor' } } },
+                ])
+                .session(session)
+                .exec();
+              const remaining =
+                gg.targetAmountMinor - gg.collectedAmountMinor - (awaiting[0]?.total ?? 0);
               if (remaining <= 0) {
                 throw new AppException(
                   ErrorCode.GROUP_GIFT_NOT_OPEN,
@@ -568,9 +599,11 @@ export class GroupGiftService {
                       groupGiftId: gg._id,
                       userId: new Types.ObjectId(userId),
                       amountMinor: amount,
-                      status: ContributionStatus.CONFIRMED,
+                      claimedMinor: amount,
+                      status: pledged ? ContributionStatus.PLEDGED : ContributionStatus.CONFIRMED,
                       anonymous: dto.anonymous ?? false,
                       message: dto.message ?? null,
+                      paymentRef: dto.paymentRef || null,
                       idempotencyKey,
                     },
                   ],
@@ -579,6 +612,28 @@ export class GroupGiftService {
               } catch (err) {
                 if (GroupGiftService.isDuplicateKey(err)) throw new DuplicateContributionSignal();
                 throw err;
+              }
+
+              if (pledged) {
+                // Nothing to add yet: they are in the group, and the host is
+                // asked whether it came.
+                if (!(dto.anonymous ?? false)) {
+                  await this.groupGiftModel
+                    .updateOne(
+                      { _id: gg._id },
+                      { $addToSet: { participantIds: new Types.ObjectId(userId) } },
+                      { session },
+                    )
+                    .exec();
+                }
+                captured = {
+                  contributionId: contribution._id.toString(),
+                  effectiveAmount: amount,
+                  newCollected: gg.collectedAmountMinor,
+                  funded: false,
+                  pledged: true,
+                };
+                return;
               }
 
               // First confirmed contribution by this user? Then they are a new contributor.
@@ -618,6 +673,7 @@ export class GroupGiftService {
                 effectiveAmount: amount,
                 newCollected,
                 funded,
+                pledged: false,
               };
             });
             return captured;
@@ -633,7 +689,17 @@ export class GroupGiftService {
       if (!(err instanceof DuplicateContributionSignal)) throw err;
     }
 
-    if (outcome) {
+    if (outcome?.pledged) {
+      this.emitter.emit(GROUP_GIFT_PAYMENT_CLAIMED, {
+        groupGiftId,
+        contributionId: outcome.contributionId,
+        contributorId: userId,
+        hostId: gift.initiatorId.toString(),
+        title: gift.title,
+        amountMinor: outcome.effectiveAmount,
+        currency: gift.currency,
+      } satisfies GroupGiftPaymentClaimedEvent);
+    } else if (outcome) {
       // Announce, outside the transaction. Subscribers (Sprint 8/9) redact anonymity.
       this.emitter.emit(GROUP_GIFT_CONTRIBUTION_RECEIVED, {
         groupGiftId,
@@ -724,7 +790,7 @@ export class GroupGiftService {
             if (
               !contribution ||
               contribution.groupGiftId.toString() !== groupGiftId ||
-              contribution.status !== ContributionStatus.CONFIRMED
+              !REVIEWABLE_STATUSES.includes(contribution.status)
             ) {
               throw new AppException(
                 ErrorCode.CONTRIBUTION_NOT_FOUND,
@@ -749,10 +815,13 @@ export class GroupGiftService {
             }
 
             const now = new Date();
+            // Only confirmed money is in the total; a claim never was.
+            const counted = contribution.status === ContributionStatus.CONFIRMED;
             contribution.status = ContributionStatus.REFUNDED;
             contribution.refundedAt = now;
             contribution.refundRef = opts.refundRef;
             await contribution.save({ session });
+            if (!counted) return;
 
             // Fewer confirmed contributions may drop the contributor count.
             const stillHas = await this.contributionModel
@@ -777,6 +846,266 @@ export class GroupGiftService {
     );
 
     await this.shares.sync(groupGiftId);
+  }
+
+  // ── Confirming payments (host) ──────────────────────────────────────────────
+
+  /**
+   * The host saying what actually arrived from one member's payment: all of
+   * it, a different amount, or nothing.
+   *
+   * Only the host can — they are the one the money went to. It can be said
+   * again, to correct it, until the gift is bought; after that the difference
+   * is Settle up's business. The total moves by the difference, which can take
+   * a funded gift back to open when money it was funded on never came.
+   */
+  async reviewContribution(
+    groupGiftId: string,
+    contributionId: string,
+    hostId: string,
+    receivedMinor: number,
+  ): Promise<GroupGiftView> {
+    if (!Types.ObjectId.isValid(contributionId)) {
+      throw new AppException(ErrorCode.CONTRIBUTION_NOT_FOUND, 'Payment not found', 404);
+    }
+    const gift = await this.loadOrFail(groupGiftId);
+    if (gift.initiatorId.toString() !== hostId) {
+      throw new AppException(
+        ErrorCode.NOT_THE_INITIATOR,
+        'Only the host can confirm payments',
+        403,
+      );
+    }
+
+    let outcome: unknown = null;
+    await this.locks.withBestEffortLock(
+      `group-gift:${groupGiftId}`,
+      async () => {
+        const session = await this.connection.startSession();
+        try {
+          await session.withTransaction(async () => {
+            outcome = null;
+            const c = await this.contributionModel.findById(contributionId).session(session).exec();
+            if (
+              !c ||
+              c.groupGiftId.toString() !== groupGiftId ||
+              c.userId.toString() === hostId ||
+              c.idempotencyKey === HOST_SHARE_KEY ||
+              !REVIEWABLE_STATUSES.includes(c.status)
+            ) {
+              throw new AppException(ErrorCode.CONTRIBUTION_NOT_FOUND, 'Payment not found', 404);
+            }
+            const gg = await this.groupGiftModel.findById(gift._id).session(session).exec();
+            if (!gg || ![GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED].includes(gg.status)) {
+              throw new AppException(
+                ErrorCode.GROUP_GIFT_NOT_OPEN,
+                'Payments can be confirmed until the gift is bought — after that, use Settle up',
+                409,
+                { status: gg?.status },
+              );
+            }
+
+            const claimed = c.claimedMinor ?? c.amountMinor;
+            const before = c.status === ContributionStatus.CONFIRMED ? c.amountMinor : 0;
+            const otherConfirmed = await this.contributionModel
+              .countDocuments({
+                groupGiftId: gg._id,
+                userId: c.userId,
+                status: ContributionStatus.CONFIRMED,
+                _id: { $ne: c._id },
+              })
+              .session(session);
+
+            const now = new Date();
+            c.claimedMinor = claimed;
+            c.amountMinor = receivedMinor;
+            c.status =
+              receivedMinor > 0 ? ContributionStatus.CONFIRMED : ContributionStatus.NOT_RECEIVED;
+            c.reviewedAt = now;
+            await c.save({ session });
+
+            const delta = receivedMinor - before;
+            const inc: Record<string, number> = {};
+            if (delta !== 0) inc.collectedAmountMinor = delta;
+            const was = otherConfirmed > 0 || before > 0;
+            const is = otherConfirmed > 0 || receivedMinor > 0;
+            if (!was && is) inc.contributorCount = 1;
+            if (was && !is) inc.contributorCount = -1;
+
+            const collected = gg.collectedAmountMinor + delta;
+            const update: Record<string, unknown> = {};
+            if (Object.keys(inc).length > 0) update.$inc = inc;
+            let funded = false;
+            if (
+              gg.status === GroupGiftStatus.OPEN &&
+              gg.targetAmountMinor > 0 &&
+              collected >= gg.targetAmountMinor
+            ) {
+              update.$set = { status: GroupGiftStatus.FUNDED };
+              update.$push = {
+                history: {
+                  status: GroupGiftStatus.FUNDED,
+                  at: now,
+                  by: 'system:funded',
+                  note: null,
+                },
+              };
+              funded = true;
+            } else if (gg.status === GroupGiftStatus.FUNDED && collected < gg.targetAmountMinor) {
+              // Funded on money that did not all come: open again for the rest.
+              update.$set = { status: GroupGiftStatus.OPEN };
+              update.$push = {
+                history: {
+                  status: GroupGiftStatus.OPEN,
+                  at: now,
+                  by: `user:${hostId}`,
+                  note: 'a payment came up short',
+                },
+              };
+            }
+            if (Object.keys(update).length > 0) {
+              await this.groupGiftModel.updateOne({ _id: gg._id }, update, { session }).exec();
+            }
+            outcome = {
+              contributorId: c.userId.toString(),
+              anonymous: c.anonymous,
+              claimed,
+              collected,
+              funded,
+              at: now,
+            };
+          });
+        } finally {
+          await session.endSession();
+        }
+      },
+      { ttlMs: 5_000, retries: 15, retryDelayMs: 40 },
+    );
+
+    const done = outcome as {
+      contributorId: string;
+      anonymous: boolean;
+      claimed: number;
+      collected: number;
+      funded: boolean;
+      at: Date;
+    };
+    this.emitter.emit(GROUP_GIFT_PAYMENT_REVIEWED, {
+      groupGiftId,
+      contributionId,
+      contributorId: done.contributorId,
+      hostId,
+      title: gift.title,
+      claimedMinor: done.claimed,
+      receivedMinor,
+      currency: gift.currency,
+      reviewedAt: done.at.toISOString(),
+    } satisfies GroupGiftPaymentReviewedEvent);
+    if (receivedMinor > 0) {
+      // Into the group chat as money in, once — keyed on the payment.
+      this.emitter.emit(GROUP_GIFT_CONTRIBUTION_RECEIVED, {
+        groupGiftId,
+        contributionId,
+        contributorId: done.contributorId,
+        amountMinor: receivedMinor,
+        anonymous: done.anonymous,
+        collectedAmountMinor: done.collected,
+        targetAmountMinor: gift.targetAmountMinor,
+        reviewed: true,
+      } satisfies GroupGiftContributionReceivedEvent);
+    }
+    if (done.funded) {
+      this.emitter.emit(GROUP_GIFT_FUNDED, {
+        groupGiftId,
+        itemId: gift.itemId.toString(),
+        wishlistId: gift.wishlistId.toString(),
+        initiatorId: hostId,
+        targetAmountMinor: gift.targetAmountMinor,
+        collectedAmountMinor: done.collected,
+        currency: gift.currency,
+        contributorCount: 0,
+      } satisfies GroupGiftFundedEvent);
+    }
+
+    await this.shares.sync(groupGiftId);
+    return this.assembleView(await this.loadOrFail(groupGiftId), hostId);
+  }
+
+  /** The contributor adding the UPI transaction ID, so the host can find it. */
+  async setPaymentRef(
+    groupGiftId: string,
+    contributionId: string,
+    userId: string,
+    paymentRef: string,
+  ): Promise<GroupGiftView> {
+    const c = await this.ownPayment(groupGiftId, contributionId, userId);
+    c.paymentRef = paymentRef || null;
+    await c.save();
+    return this.assembleView(await this.loadOrFail(groupGiftId), userId);
+  }
+
+  /**
+   * "I did pay": the contributor answering a payment the host recorded as
+   * short, or as never arriving. Wishtick cannot see the money either way, so
+   * it does not decide — it puts the two accounts in front of the host. Once
+   * per answer from the host: saying it again before they reply nags.
+   */
+  async disputeContribution(
+    groupGiftId: string,
+    contributionId: string,
+    userId: string,
+    dto: DisputePaymentDto,
+  ): Promise<GroupGiftView> {
+    const c = await this.ownPayment(groupGiftId, contributionId, userId);
+    const state = GroupGiftService.paymentState(c);
+    if (state !== 'partial' && state !== 'not_received') {
+      throw new AppException(ErrorCode.CONFLICT, 'The host has not marked this payment short', 409);
+    }
+    if (c.disputedAt && c.reviewedAt && c.disputedAt > c.reviewedAt) {
+      throw new AppException(ErrorCode.CONFLICT, 'The host has already been told', 409);
+    }
+    const now = new Date();
+    c.disputedAt = now;
+    if (dto.paymentRef) c.paymentRef = dto.paymentRef;
+    await c.save();
+
+    const gift = await this.loadOrFail(groupGiftId);
+    this.emitter.emit(GROUP_GIFT_PAYMENT_DISPUTED, {
+      groupGiftId,
+      contributionId,
+      contributorId: userId,
+      hostId: gift.initiatorId.toString(),
+      title: gift.title,
+      claimedMinor: c.claimedMinor ?? c.amountMinor,
+      receivedMinor: state === 'not_received' ? 0 : c.amountMinor,
+      paymentRef: c.paymentRef,
+      note: dto.note || null,
+      currency: gift.currency,
+      disputedAt: now.toISOString(),
+    } satisfies GroupGiftPaymentDisputedEvent);
+    return this.assembleView(gift, userId);
+  }
+
+  private async ownPayment(
+    groupGiftId: string,
+    contributionId: string,
+    userId: string,
+  ): Promise<ContributionDocument> {
+    const c = Types.ObjectId.isValid(contributionId)
+      ? await this.contributionModel.findById(contributionId).exec()
+      : null;
+    if (
+      !c ||
+      c.groupGiftId.toString() !== groupGiftId ||
+      c.idempotencyKey === HOST_SHARE_KEY ||
+      !REVIEWABLE_STATUSES.includes(c.status)
+    ) {
+      throw new AppException(ErrorCode.CONTRIBUTION_NOT_FOUND, 'Payment not found', 404);
+    }
+    if (c.userId.toString() !== userId) {
+      throw new AppException(ErrorCode.NOT_THE_CONTRIBUTOR, 'This is not your payment', 403);
+    }
+    return c;
   }
 
   // ── Purchase / fulfil / cancel (initiator) ──────────────────────────────────
@@ -921,7 +1250,10 @@ export class GroupGiftService {
         status: ContributionStatus.CONFIRMED,
       })
       .exec();
-    if (gift.collectedAmountMinor - (hostShare?.amountMinor ?? 0) > 0) {
+    const claims = await this.contributionModel
+      .countDocuments({ groupGiftId: gift._id, status: ContributionStatus.PLEDGED })
+      .exec();
+    if (gift.collectedAmountMinor - (hostShare?.amountMinor ?? 0) > 0 || claims > 0) {
       throw new AppException(
         ErrorCode.GROUP_GIFT_BILL_LOCKED,
         'The bill is fixed once people start contributing — raise a contribution request instead',
@@ -1287,6 +1619,7 @@ export class GroupGiftService {
     // stop meaning anything.
     const others = await this.shares.othersIn(gift);
     let refunded = new Map<string, number>();
+    let unconfirmed = new Map<string, number>();
 
     await this.locks.withBestEffortLock(
       `group-gift:${groupGiftId}`,
@@ -1309,6 +1642,18 @@ export class GroupGiftService {
             for (const c of paid) {
               const id = c.userId.toString();
               refunded.set(id, (refunded.get(id) ?? 0) + c.amountMinor);
+            }
+            // Said they sent it, and the host never said whether it came. If
+            // it did, it is the host's to give back like the rest.
+            unconfirmed = new Map();
+            const claimed = await this.contributionModel
+              .find({ groupGiftId: gg._id, status: ContributionStatus.PLEDGED })
+              .select('userId amountMinor')
+              .session(session)
+              .exec();
+            for (const c of claimed) {
+              const id = c.userId.toString();
+              unconfirmed.set(id, (unconfirmed.get(id) ?? 0) + c.amountMinor);
             }
             gg.cancelReason = reason;
 
@@ -1359,7 +1704,7 @@ export class GroupGiftService {
     // Everybody but the host: the members, whoever was still only invited,
     // and anybody who paid without joining. Never the recipient.
     const hostId = gift.initiatorId.toString();
-    const told = new Set([...others, ...refunded.keys()]);
+    const told = new Set([...others, ...refunded.keys(), ...unconfirmed.keys()]);
     told.delete(hostId);
     told.delete(gift.recipientId.toString());
     this.emitter.emit(GROUP_GIFT_CANCELLED, {
@@ -1368,7 +1713,11 @@ export class GroupGiftService {
       hostId,
       reason,
       currency: gift.currency,
-      members: [...told].map((id) => ({ userId: id, refundedMinor: refunded.get(id) ?? 0 })),
+      members: [...told].map((id) => ({
+        userId: id,
+        refundedMinor: refunded.get(id) ?? 0,
+        pendingMinor: unconfirmed.get(id) ?? 0,
+      })),
     } satisfies GroupGiftCancelledEvent);
   }
 
@@ -1922,7 +2271,84 @@ export class GroupGiftService {
       view.myRefundedMinor = back[0]?.total ?? 0;
     }
     view.split = await this.splitView(gift, userId, names);
+    await this.attachPayments(view, gift, userId, names);
     return view;
+  }
+
+  /**
+   * Where everybody's payments stand: what is awaiting the host, the viewer's
+   * own, and — for the host alone — every member's, to confirm.
+   */
+  private async attachPayments(
+    view: GroupGiftView,
+    gift: GroupGiftDocument,
+    userId: string,
+    known: Map<string, string>,
+  ): Promise<void> {
+    const host = gift.initiatorId.toString();
+    const isHost = host === userId;
+    const rows = await this.contributionModel
+      .find({
+        groupGiftId: gift._id,
+        status: { $in: REVIEWABLE_STATUSES },
+        idempotencyKey: { $ne: HOST_SHARE_KEY },
+        userId: isHost ? { $ne: gift.initiatorId } : new Types.ObjectId(userId),
+      })
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .exec();
+    const awaiting = await this.contributionModel
+      .aggregate<{ total: number }>([
+        { $match: { groupGiftId: gift._id, status: ContributionStatus.PLEDGED } },
+        { $group: { _id: null, total: { $sum: '$amountMinor' } } },
+      ])
+      .exec();
+    view.pendingAmountMinor = awaiting[0]?.total ?? 0;
+
+    const missing = [...new Set(rows.map((r) => r.userId.toString()))].filter(
+      (id) => !known.has(id),
+    );
+    const names = missing.length
+      ? new Map([
+          ...known,
+          ...(await this.resolveNames(missing, await this.users.findManyByIds(missing))),
+        ])
+      : known;
+    const claims = rows.map((r) => GroupGiftService.toPaymentClaim(r, names));
+    // The ones still to answer first, newest first within each.
+    claims.sort((a, b) => Number(b.state === 'awaiting') - Number(a.state === 'awaiting'));
+
+    const mine = isHost ? [] : claims;
+    view.myPayments = mine;
+    view.myPendingMinor = mine
+      .filter((c) => c.state === 'awaiting')
+      .reduce((sum, c) => sum + c.claimedMinor, 0);
+    if (isHost) view.payments = claims;
+  }
+
+  private static paymentState(c: ContributionDocument): PaymentState {
+    if (c.status === ContributionStatus.PLEDGED) return 'awaiting';
+    if (c.status === ContributionStatus.NOT_RECEIVED) return 'not_received';
+    return c.amountMinor < (c.claimedMinor ?? c.amountMinor) ? 'partial' : 'received';
+  }
+
+  private static toPaymentClaim(
+    c: ContributionDocument,
+    names: Map<string, string>,
+  ): PaymentClaimView {
+    const state = GroupGiftService.paymentState(c);
+    return {
+      id: c._id.toString(),
+      contributor: { userId: c.userId.toString(), name: displayNameOf(names, c.userId.toString()) },
+      claimedMinor: c.claimedMinor ?? c.amountMinor,
+      receivedMinor: state === 'awaiting' ? null : c.amountMinor,
+      state,
+      paymentRef: c.paymentRef ?? null,
+      message: c.message,
+      createdAt: c.createdAt,
+      reviewedAt: c.reviewedAt ?? null,
+      disputedAt: c.disputedAt ?? null,
+    };
   }
 
   /**

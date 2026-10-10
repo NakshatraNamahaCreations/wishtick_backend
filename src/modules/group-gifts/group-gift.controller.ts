@@ -27,7 +27,10 @@ import {
   AddGiftLineDto,
   ContributeDto,
   CreateGroupGiftDto,
+  DisputePaymentDto,
   GroupGiftActionDto,
+  PaymentRefDto,
+  ReviewPaymentDto,
   ListMyGroupGiftsQueryDto,
   ShareGroupGiftDto,
   ThankYouDto,
@@ -158,6 +161,54 @@ export class GroupGiftController {
     @Param('contributionId') contributionId: string,
   ): Promise<GroupGiftView> {
     return this.groupGifts.removeContribution(id, contributionId, userId);
+  }
+
+  @Post('group-gifts/:id/contributions/:contributionId/review')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Say what arrived from a payment (host only)',
+    description:
+      'Members pay the host outside Wishtick, so a payment counts only once the host says ' +
+      'what came: all of it, a different amount, or 0. Can be changed until the gift is bought.',
+  })
+  @ApiResponseDoc({ status: 403, description: 'NOT_THE_INITIATOR' })
+  @ApiResponseDoc({ status: 409, description: 'GROUP_GIFT_NOT_OPEN — already bought' })
+  reviewContribution(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Param('contributionId') contributionId: string,
+    @Body() dto: ReviewPaymentDto,
+  ): Promise<GroupGiftView> {
+    return this.groupGifts.reviewContribution(id, contributionId, userId, dto.receivedMinor);
+  }
+
+  @Patch('group-gifts/:id/contributions/:contributionId')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Add the UPI transaction ID to your payment' })
+  @ApiResponseDoc({ status: 403, description: 'NOT_THE_CONTRIBUTOR' })
+  setPaymentRef(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Param('contributionId') contributionId: string,
+    @Body() dto: PaymentRefDto,
+  ): Promise<GroupGiftView> {
+    return this.groupGifts.setPaymentRef(id, contributionId, userId, dto.paymentRef);
+  }
+
+  @Post('group-gifts/:id/contributions/:contributionId/dispute')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Tell the host you did pay',
+    description: 'For a payment the host recorded as short or not received. The host is told.',
+  })
+  @ApiResponseDoc({ status: 409, description: 'CONFLICT — nothing to dispute, or already said' })
+  disputeContribution(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Param('contributionId') contributionId: string,
+    @Body() dto: DisputePaymentDto,
+  ): Promise<GroupGiftView> {
+    return this.groupGifts.disputeContribution(id, contributionId, userId, dto);
   }
 
   @Post('group-gifts/:id/purchase')

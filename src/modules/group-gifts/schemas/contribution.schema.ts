@@ -9,9 +9,14 @@ export type ContributionDocument = HydratedDocument<Contribution>;
  *
  * The set of `confirmed` contributions is the **source of truth** for how much
  * a group gift has raised; `GroupGift.collectedAmountMinor` is only a cache of
- * their sum, reconciled nightly. A contribution is confirmed on creation this
- * sprint — there is no payment processor yet, so `pledged` and `paymentRef`
- * exist for a later integration but are unused on the happy path.
+ * their sum, reconciled nightly.
+ *
+ * The money goes straight to the host's UPI, outside Wishtick, so the app
+ * cannot see it arrive. A member chipping in is a *claim* — `pledged`, awaiting
+ * the host — and counts for nothing until the host says what actually came:
+ * all of it (`confirmed`), part of it (`confirmed` at the smaller amount, the
+ * claim kept in [claimedMinor]), or none (`not_received`). The host's own
+ * money, and the share recorded for them, are confirmed from the start.
  */
 @Schema({ collection: 'contributions', timestamps: true })
 export class Contribution {
@@ -23,9 +28,28 @@ export class Contribution {
   @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true })
   userId!: Types.ObjectId;
 
-  /** Integer minor units. The effective amount after any over-target capping. */
+  /**
+   * Integer minor units. What counts: the amount claimed until the host
+   * reviews it, then what they say they received.
+   */
   @Prop({ type: Number, required: true })
   amountMinor!: number;
+
+  /**
+   * What the contributor said they sent, after any over-target capping. Kept
+   * when the host records a different amount, so both sides stay on record.
+   * Null on contributions from before payments were confirmed.
+   */
+  @Prop({ type: Number, default: null })
+  claimedMinor!: number | null;
+
+  /** When the host last said what arrived. Null while awaiting them. */
+  @Prop({ type: Date, default: null })
+  reviewedAt!: Date | null;
+
+  /** When the contributor last said "I did pay" against the host's figure. */
+  @Prop({ type: Date, default: null })
+  disputedAt!: Date | null;
 
   @Prop({
     type: String,
@@ -53,8 +77,11 @@ export class Contribution {
   @Prop({ type: String, required: true })
   idempotencyKey!: string;
 
-  /** Future payment-processor reference. Null this sprint. */
-  @Prop({ type: String, default: null })
+  /**
+   * The UPI transaction ID the contributor gave, so the host can match the
+   * payment in their bank app. Optional.
+   */
+  @Prop({ type: String, default: null, trim: true, maxlength: 64 })
   paymentRef!: string | null;
 
   /** Set when a cancellation enqueues this contribution for refund. */

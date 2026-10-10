@@ -52,6 +52,10 @@ export enum NotificationType {
   GROUP_GIFT_SHARE_REMINDER = 'group_gift_share_reminder',
   GROUP_GIFT_INVITE_REMINDER = 'group_gift_invite_reminder',
   GROUP_GIFT_CANCELLED = 'group_gift_cancelled',
+  GROUP_GIFT_PAYMENT_TO_CONFIRM = 'group_gift_payment_to_confirm',
+  GROUP_GIFT_PAYMENT_REVIEWED = 'group_gift_payment_reviewed',
+  GROUP_GIFT_PAYMENT_DISPUTED = 'group_gift_payment_disputed',
+  GROUP_GIFT_CONFIRM_REMINDER = 'group_gift_confirm_reminder',
   GROUP_GIFT_PURCHASED = 'group_gift_purchased',
   GROUP_GIFT_FULFILLED = 'group_gift_fulfilled',
   EVENT_REMINDER = 'event_reminder',
@@ -171,6 +175,32 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.GROUP_GIFTS,
     template: 'group-gift-cancelled',
+  },
+  // Payments go to the host outside Wishtick and count once the host says
+  // they arrived. Every step is somebody waiting on somebody, so all push.
+  [NotificationType.GROUP_GIFT_PAYMENT_TO_CONFIRM]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-payment-to-confirm',
+  },
+  [NotificationType.GROUP_GIFT_PAYMENT_REVIEWED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-payment-reviewed',
+  },
+  [NotificationType.GROUP_GIFT_PAYMENT_DISPUTED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-payment-disputed',
+  },
+  [NotificationType.GROUP_GIFT_CONFIRM_REMINDER]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-confirm-reminder',
   },
   [NotificationType.GROUP_GIFT_INVITE]: {
     // Not DIGEST, unlike the rest of this category: an invitation is a

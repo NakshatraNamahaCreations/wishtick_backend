@@ -18,6 +18,31 @@ export interface ContributionView {
   contributor: ParticipantView | null;
 }
 
+/**
+ * One payment a member said they made, and where the host has put it.
+ *
+ *  - `awaiting` — not confirmed yet; counts for nothing.
+ *  - `received` — the host got it, all of it (or more).
+ *  - `partial` — the host got less than was claimed; [receivedMinor] counts.
+ *  - `not_received` — the host got none of it.
+ */
+export type PaymentState = 'awaiting' | 'received' | 'partial' | 'not_received';
+
+export interface PaymentClaimView {
+  id: string;
+  /** Always named: the host is told who, to find the money in their bank. */
+  contributor: ParticipantView;
+  claimedMinor: number;
+  /** What the host recorded; null while awaiting them. */
+  receivedMinor: number | null;
+  state: PaymentState;
+  paymentRef: string | null;
+  message: string | null;
+  createdAt: Date;
+  reviewedAt: Date | null;
+  disputedAt: Date | null;
+}
+
 export interface GroupGiftShareView {
   slug: string;
   url: string;
@@ -128,6 +153,14 @@ export interface GroupGiftView {
    * refunded. Zero unless cancelled.
    */
   myRefundedMinor: number;
+  /** Everybody's payments still awaiting the host, summed. */
+  pendingAmountMinor: number;
+  /** The viewer's own payments still awaiting the host. */
+  myPendingMinor: number;
+  /** The viewer's own payments and where each stands, newest first. */
+  myPayments: PaymentClaimView[];
+  /** Present only for the host: every member's payment, awaiting ones first. */
+  payments?: PaymentClaimView[];
   createdAt: Date;
   participants: ParticipantView[];
   recentContributions: ContributionView[];
@@ -309,6 +342,8 @@ export interface EqualSplitView {
     shareMinor: number;
     paidMinor: number;
     owesMinor: number;
+    /** Said they sent it; the host has not confirmed it yet. */
+    pendingMinor: number;
   }[];
   /** The viewer's own share and what they still owe; null if not a member. */
   myShareMinor: number | null;
@@ -382,6 +417,9 @@ export function toGroupGiftView(input: {
     thankYouAt: gift.thankYouAt,
     cancelReason: gift.cancelReason ?? null,
     myRefundedMinor: 0,
+    pendingAmountMinor: 0,
+    myPendingMinor: 0,
+    myPayments: [],
     createdAt: gift.createdAt,
     participants: toParticipants(gift, names),
     recentContributions: recentContributions.map((c) => toContributionView(c, names)),

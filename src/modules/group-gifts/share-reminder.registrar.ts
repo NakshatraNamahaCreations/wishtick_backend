@@ -31,7 +31,8 @@ export class ShareReminderRegistrar implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     this.registry.register(SHARE_REMINDER_JOB, async () => {
       const sent = await this.shares.remindOwing();
-      this.logger.log(`Group gift share reminders: ${sent} sent`);
+      const hosts = await this.shares.remindHosts();
+      this.logger.log(`Group gift reminders: ${sent} shares, ${hosts} hosts to confirm`);
     });
 
     await this.scheduler.add(

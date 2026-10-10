@@ -92,7 +92,12 @@ export class GiftListService {
   private async givenFilter(userId: string): Promise<Record<string, unknown>> {
     const me = new Types.ObjectId(userId);
     const groupIds = await this.contributionModel
-      .distinct('groupGiftId', { userId: me, status: ContributionStatus.CONFIRMED })
+      // Awaiting the host as well: they gave, and should not see it vanish
+      // until the host gets round to saying so.
+      .distinct('groupGiftId', {
+        userId: me,
+        status: { $in: [ContributionStatus.CONFIRMED, ContributionStatus.PLEDGED] },
+      })
       .exec();
     const chippedIn =
       groupIds.length === 0

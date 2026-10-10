@@ -142,10 +142,74 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
         ...(s(p, 'reason') ? [`Reason: ${s(p, 'reason')}.`] : []),
         Number(p.refundedMinor ?? 0) > 0
           ? `Your ${money(p, 'refundedMinor')} is counted as refunded to you.`
-          : "You don't owe anything for it now.",
+          : Number(p.pendingMinor ?? 0) > 0
+            ? `${who(p, 'hostName')} hadn't confirmed your ${money(p, 'pendingMinor')} yet — if you sent it, ask them for it back.`
+            : "You don't owe anything for it now.",
       ].join(' '),
     ],
     cta: { label: 'See the group gift', url: s(p, 'url') },
+  }),
+  // In-app and push show the first line only, so each says it all in one.
+  [NotificationType.GROUP_GIFT_PAYMENT_TO_CONFIRM]: (p) => ({
+    subject: `Did ${who(p, 'contributorName')}'s ${money(p, 'amountMinor')} arrive?`,
+    title: `Confirm ${who(p, 'contributorName')}'s payment`,
+    lines: [
+      `${who(p, 'contributorName')} says they sent you ${money(p, 'amountMinor')} for ${s(p, 'title', 'the group gift')}. Check it arrived and confirm.`,
+    ],
+    cta: { label: 'Confirm the payment', url: s(p, 'url') },
+  }),
+  [NotificationType.GROUP_GIFT_PAYMENT_REVIEWED]: (p) => {
+    const received = Number(p.receivedMinor ?? 0);
+    const claimed = Number(p.claimedMinor ?? 0);
+    const host = who(p, 'hostName');
+    const gift = s(p, 'title', 'the group gift');
+    return received >= claimed
+      ? {
+          subject: `${host} received your payment`,
+          title: 'Payment confirmed',
+          lines: [`${host} received your ${money(p, 'receivedMinor')} for ${gift}.`],
+          cta: { label: 'See the group gift', url: s(p, 'url') },
+        }
+      : received > 0
+        ? {
+            subject: `${host} received ${money(p, 'receivedMinor')} of your ${money(p, 'claimedMinor')}`,
+            title: 'Part of your payment arrived',
+            lines: [
+              `${host} received ${money(p, 'receivedMinor')} of the ${money(p, 'claimedMinor')} you sent for ${gift}. If you sent it all, tell them in the app.`,
+            ],
+            cta: { label: 'See your payment', url: s(p, 'url') },
+          }
+        : {
+            subject: `${host} hasn't received your payment`,
+            title: 'Your payment has not arrived',
+            lines: [
+              `${host} hasn't received the ${money(p, 'claimedMinor')} you sent for ${gift}. If you did send it, tell them in the app.`,
+            ],
+            cta: { label: 'See your payment', url: s(p, 'url') },
+          };
+  },
+  [NotificationType.GROUP_GIFT_PAYMENT_DISPUTED]: (p) => ({
+    subject: `${who(p, 'contributorName')} says they paid`,
+    title: `${who(p, 'contributorName')} says they sent ${money(p, 'claimedMinor')}`,
+    lines: [
+      [
+        `${who(p, 'contributorName')} says they sent ${money(p, 'claimedMinor')} for ${s(p, 'title', 'the group gift')}; you recorded ${money(p, 'receivedMinor')}.`,
+        ...(s(p, 'paymentRef') ? [`UPI ref: ${s(p, 'paymentRef')}.`] : []),
+        ...(s(p, 'note') ? [`"${s(p, 'note')}"`] : []),
+      ].join(' '),
+    ],
+    cta: { label: 'Check the payment', url: s(p, 'url') },
+  }),
+  [NotificationType.GROUP_GIFT_CONFIRM_REMINDER]: (p) => ({
+    subject: `Payments waiting for you on ${s(p, 'title', 'your group gift')}`,
+    title:
+      Number(p.count ?? 0) === 1
+        ? '1 payment to confirm'
+        : `${Number(p.count ?? 0)} payments to confirm`,
+    lines: [
+      `${money(p, 'totalMinor')} for ${s(p, 'title', 'your group gift')} is waiting for you to confirm it arrived. It doesn't count until you do.`,
+    ],
+    cta: { label: 'Confirm payments', url: s(p, 'url') },
   }),
   [NotificationType.GROUP_GIFT_JOINED]: (p) => ({
     subject: `A new member joined`,

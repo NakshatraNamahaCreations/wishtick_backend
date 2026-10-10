@@ -275,11 +275,12 @@ export class GroupGiftInvitesService {
     if (!invited && !gift.participantIds.some((id) => id.toString() === userId)) {
       throw new AppException(ErrorCode.GROUP_GIFT_NOT_FOUND, 'Group gift not found', 404);
     }
+    // Said they sent money, confirmed or not: the host may be holding it.
     const paid = await this.contributionModel
       .countDocuments({
         groupGiftId: gift._id,
         userId: new Types.ObjectId(userId),
-        status: ContributionStatus.CONFIRMED,
+        status: { $in: [ContributionStatus.CONFIRMED, ContributionStatus.PLEDGED] },
       })
       .exec();
     if (paid > 0) {

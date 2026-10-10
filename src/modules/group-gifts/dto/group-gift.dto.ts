@@ -149,6 +149,54 @@ export class ContributeDto {
   @IsOptional()
   @IsBoolean()
   anonymous?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'The UPI transaction ID, so the host can find the payment. Optional.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  @Transform(trim)
+  paymentRef?: string;
+}
+
+/** The host saying what actually arrived from one payment. */
+export class ReviewPaymentDto {
+  @ApiProperty({
+    description:
+      'What arrived, in minor units: the full amount claimed, a different amount, or 0 for ' +
+      'nothing at all.',
+  })
+  @IsInt()
+  @Min(0)
+  @Max(1_000_000_000)
+  receivedMinor!: number;
+}
+
+/** The contributor adding the UPI transaction ID to a payment after the fact. */
+export class PaymentRefDto {
+  @ApiProperty({ description: 'The UPI transaction ID.' })
+  @IsString()
+  @MaxLength(64)
+  @Transform(trim)
+  paymentRef!: string;
+}
+
+/** The contributor saying they did pay, against what the host recorded. */
+export class DisputePaymentDto {
+  @ApiPropertyOptional({ description: 'Anything the host should know.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(280)
+  @Transform(trim)
+  note?: string;
+
+  @ApiPropertyOptional({ description: 'The UPI transaction ID, if not given before.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  @Transform(trim)
+  paymentRef?: string;
 }
 
 export class GroupGiftActionDto {

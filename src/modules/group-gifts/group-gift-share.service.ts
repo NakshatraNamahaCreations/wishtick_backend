@@ -3,8 +3,10 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Connection, Model, Types } from 'mongoose';
 import {
+  GROUP_GIFT_CONFIRM_REMINDER_DUE,
   GROUP_GIFT_FUNDED,
   GROUP_GIFT_SHARE_REMINDER_DUE,
+  type GroupGiftConfirmReminderDueEvent,
   type GroupGiftFundedEvent,
   type GroupGiftShareReminderDueEvent,
 } from 'src/common/events/domain-events';
@@ -59,8 +61,8 @@ export class GroupGiftShareService {
 
   /**
    * Everybody the total is divided among, but the host: the named members,
-   * everybody invited who has not said no, and anybody who has paid in. Never
-   * the recipient — the gift is for them.
+   * everybody invited who has not said no, and anybody who has paid in or
+   * says they have. Never the recipient — the gift is for them.
    */
   async othersIn(gift: GroupGiftDocument): Promise<string[]> {
     const host = gift.initiatorId.toString();
@@ -71,7 +73,10 @@ export class GroupGiftShareService {
         .select('invitedUserId')
         .exec(),
       this.contributionModel
-        .distinct('userId', { groupGiftId: gift._id, status: ContributionStatus.CONFIRMED })
+        .distinct('userId', {
+          groupGiftId: gift._id,
+          status: { $in: [ContributionStatus.CONFIRMED, ContributionStatus.PLEDGED] },
+        })
         .exec(),
     ]);
     const ids = [
@@ -83,10 +88,22 @@ export class GroupGiftShareService {
   }
 
   /** What each person has paid in, confirmed only. The host's share included. */
-  private async paidByUser(giftId: Types.ObjectId): Promise<Map<string, number>> {
+  private paidByUser(giftId: Types.ObjectId): Promise<Map<string, number>> {
+    return this.sumByUser(giftId, ContributionStatus.CONFIRMED);
+  }
+
+  /** What each person says they sent that the host has not confirmed yet. */
+  pendingByUser(giftId: Types.ObjectId): Promise<Map<string, number>> {
+    return this.sumByUser(giftId, ContributionStatus.PLEDGED);
+  }
+
+  private async sumByUser(
+    giftId: Types.ObjectId,
+    status: ContributionStatus,
+  ): Promise<Map<string, number>> {
     const rows = await this.contributionModel
       .aggregate<{ _id: Types.ObjectId; total: number }>([
-        { $match: { groupGiftId: giftId, status: ContributionStatus.CONFIRMED } },
+        { $match: { groupGiftId: giftId, status } },
         { $group: { _id: '$userId', total: { $sum: '$amountMinor' } } },
       ])
       .exec();
@@ -118,6 +135,7 @@ export class GroupGiftShareService {
   ): Promise<EqualSplitView | null> {
     const split = await this.splitOf(gift);
     if (!split) return null;
+    const pending = await this.pendingByUser(gift._id);
     const row = (m: EqualSplit['host'], host: boolean) => ({
       userId: m.userId,
       name: nameOf(m.userId),
@@ -125,6 +143,7 @@ export class GroupGiftShareService {
       shareMinor: m.shareMinor,
       paidMinor: m.paidMinor,
       owesMinor: m.owesMinor,
+      pendingMinor: pending.get(m.userId) ?? 0,
     });
     const members = [row(split.host, true), ...split.others.map((m) => row(m, false))];
     const mine = members.find((m) => m.userId === viewerId) ?? null;
@@ -308,8 +327,12 @@ export class GroupGiftShareService {
         ).map((i) => i.invitedUserId.toString()),
       );
       const members = new Set(gift.participantIds.map((id) => id.toString()));
+      const claimed = await this.pendingByUser(gift._id);
       for (const member of split.others) {
         if (member.owesMinor <= 0) continue;
+        // Says they have sent what they owe, and it is the host's turn: no
+        // point asking them again until the host says it did not all arrive.
+        if ((claimed.get(member.userId) ?? 0) >= member.owesMinor) continue;
         this.emitter.emit(GROUP_GIFT_SHARE_REMINDER_DUE, {
           groupGiftId: gift._id.toString(),
           userId: member.userId,
@@ -325,5 +348,40 @@ export class GroupGiftShareService {
       }
     }
     return sent;
+  }
+
+  /**
+   * One reminder a day to every host with payments still waiting for them to
+   * confirm — until they have, since nothing counts until they do.
+   */
+  async remindHosts(now = new Date()): Promise<number> {
+    const day = now.toISOString().slice(0, 10);
+    const waiting = await this.contributionModel
+      .aggregate<{ _id: Types.ObjectId; count: number; total: number }>([
+        { $match: { status: ContributionStatus.PLEDGED } },
+        { $group: { _id: '$groupGiftId', count: { $sum: 1 }, total: { $sum: '$amountMinor' } } },
+      ])
+      .exec();
+    if (waiting.length === 0) return 0;
+    const gifts = await this.groupGiftModel
+      .find({
+        _id: { $in: waiting.map((w) => w._id) },
+        status: { $in: [GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED] },
+      })
+      .exec();
+    const byId = new Map(waiting.map((w) => [w._id.toString(), w]));
+    for (const gift of gifts) {
+      const w = byId.get(gift._id.toString())!;
+      this.emitter.emit(GROUP_GIFT_CONFIRM_REMINDER_DUE, {
+        groupGiftId: gift._id.toString(),
+        hostId: gift.initiatorId.toString(),
+        title: gift.title,
+        count: w.count,
+        totalMinor: w.total,
+        currency: gift.currency,
+        day,
+      } satisfies GroupGiftConfirmReminderDueEvent);
+    }
+    return gifts.length;
   }
 }

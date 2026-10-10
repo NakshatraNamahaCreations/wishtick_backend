@@ -538,14 +538,28 @@ describe('Chat (e2e)', () => {
       ).body as Envelope<{ id: string; chatId?: string }>;
       const ggId = gg.data.id;
 
-      // Fund it → GROUP_GIFT_FUNDED → one GOAL_REACHED system message.
+      // Fund it → GROUP_GIFT_FUNDED → one GOAL_REACHED system message. A
+      // member's chip-in counts once the host confirms it arrived.
+      const claimed = (
+        await request(app.getHttpServer())
+          .post(`${V1}/group-gifts/${ggId}/contribute`)
+          .set(auth(contributor.token))
+          .set('Idempotency-Key', randomUUID())
+          .send({ amountMinor: 1000 })
+          .expect(201)
+      ).body as Envelope<{ myPayments: { id: string }[] }>;
       await request(app.getHttpServer())
-        .post(`${V1}/group-gifts/${ggId}/contribute`)
-        .set(auth(contributor.token))
-        .set('Idempotency-Key', randomUUID())
-        .send({ amountMinor: 1000 })
-        .expect(201);
+        .post(`${V1}/group-gifts/${ggId}/contributions/${claimed.data.myPayments[0].id}/review`)
+        .set(auth(initiator.token))
+        .send({ receivedMinor: 1000 })
+        .expect(200);
       await delay(200);
+      expect(
+        await messageModel.countDocuments({
+          systemType: 'goal_reached',
+          dedupeKey: `gg_funded:${ggId}`,
+        }),
+      ).toBe(1);
 
       // Re-emit the same event a second time — the dedupe key must make it a no-op.
       emitter.emit(GROUP_GIFT_FUNDED, {

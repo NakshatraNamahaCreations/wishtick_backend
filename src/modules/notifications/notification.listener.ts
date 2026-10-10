@@ -17,7 +17,11 @@ import {
   GIFT_PURCHASED,
   GIFT_RESERVED,
   GROUP_GIFT_CANCELLED,
+  GROUP_GIFT_CONFIRM_REMINDER_DUE,
   GROUP_GIFT_CONTRIBUTION_RECEIVED,
+  GROUP_GIFT_PAYMENT_CLAIMED,
+  GROUP_GIFT_PAYMENT_DISPUTED,
+  GROUP_GIFT_PAYMENT_REVIEWED,
   GROUP_GIFT_FULFILLED,
   GROUP_GIFT_FUNDED,
   GROUP_GIFT_INVITED,
@@ -42,7 +46,11 @@ import {
   type EventWishlistOfferedEvent,
   type GiftLifecycleEvent,
   type GroupGiftCancelledEvent,
+  type GroupGiftConfirmReminderDueEvent,
   type GroupGiftContributionReceivedEvent,
+  type GroupGiftPaymentClaimedEvent,
+  type GroupGiftPaymentDisputedEvent,
+  type GroupGiftPaymentReviewedEvent,
   type GroupGiftFulfilledEvent,
   type GroupGiftFundedEvent,
   type GroupGiftInvitedEvent,
@@ -204,6 +212,8 @@ export class NotificationListener {
 
   @OnEvent(GROUP_GIFT_CONTRIBUTION_RECEIVED)
   async onContribution(e: GroupGiftContributionReceivedEvent): Promise<void> {
+    // The host confirming a payment is not news to the host.
+    if (e.reviewed) return;
     await this.guard('group-gift-contribution', async () => {
       const gg = await this.groupGiftModel.findById(e.groupGiftId).exec();
       if (!gg) return;
@@ -264,11 +274,92 @@ export class NotificationListener {
             hostName,
             reason: e.reason,
             refundedMinor: member.refundedMinor,
+            pendingMinor: member.pendingMinor,
             currency: e.currency,
             url: `${this.web}/group-gifts/${e.groupGiftId}`,
           },
         });
       }
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_PAYMENT_CLAIMED)
+  async onPaymentClaimed(e: GroupGiftPaymentClaimedEvent): Promise<void> {
+    await this.guard('group-gift-payment-claimed', async () => {
+      await this.notifications.enqueue({
+        userId: e.hostId,
+        type: NotificationType.GROUP_GIFT_PAYMENT_TO_CONFIRM,
+        refId: `${e.groupGiftId}:${e.contributionId}`,
+        payload: {
+          title: e.title,
+          // Named even when anonymous to the group: the money came to the
+          // host from that person, and they need the name to find it.
+          contributorName: await this.userName(e.contributorId),
+          amountMinor: e.amountMinor,
+          currency: e.currency,
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
+        },
+      });
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_PAYMENT_REVIEWED)
+  async onPaymentReviewed(e: GroupGiftPaymentReviewedEvent): Promise<void> {
+    await this.guard('group-gift-payment-reviewed', async () => {
+      await this.notifications.enqueue({
+        userId: e.contributorId,
+        type: NotificationType.GROUP_GIFT_PAYMENT_REVIEWED,
+        // Each answer is its own: a correction is news too.
+        refId: `${e.groupGiftId}:${e.contributionId}:${e.reviewedAt}`,
+        payload: {
+          title: e.title,
+          hostName: await this.userName(e.hostId),
+          claimedMinor: e.claimedMinor,
+          receivedMinor: e.receivedMinor,
+          currency: e.currency,
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
+        },
+      });
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_PAYMENT_DISPUTED)
+  async onPaymentDisputed(e: GroupGiftPaymentDisputedEvent): Promise<void> {
+    await this.guard('group-gift-payment-disputed', async () => {
+      await this.notifications.enqueue({
+        userId: e.hostId,
+        type: NotificationType.GROUP_GIFT_PAYMENT_DISPUTED,
+        refId: `${e.groupGiftId}:${e.contributionId}:${e.disputedAt}`,
+        payload: {
+          title: e.title,
+          contributorName: await this.userName(e.contributorId),
+          claimedMinor: e.claimedMinor,
+          receivedMinor: e.receivedMinor,
+          paymentRef: e.paymentRef,
+          note: e.note,
+          currency: e.currency,
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
+        },
+      });
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_CONFIRM_REMINDER_DUE)
+  async onConfirmReminderDue(e: GroupGiftConfirmReminderDueEvent): Promise<void> {
+    await this.guard('group-gift-confirm-reminder', async () => {
+      await this.notifications.enqueue({
+        userId: e.hostId,
+        type: NotificationType.GROUP_GIFT_CONFIRM_REMINDER,
+        // The day in the ref: dedupe is permanent per ref.
+        refId: `${e.groupGiftId}:${e.day}`,
+        payload: {
+          title: e.title,
+          count: e.count,
+          totalMinor: e.totalMinor,
+          currency: e.currency,
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
+        },
+      });
     });
   }
 

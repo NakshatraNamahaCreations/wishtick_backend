@@ -39,11 +39,13 @@ describe('GROUP_GIFT_TRANSITIONS', () => {
   });
 
   it('never accepts contributions after open — only OPEN funds forward, not the reverse', () => {
-    // No status transitions *back* to OPEN except a failed purchase (purchasing).
+    // Nothing goes back to OPEN but a funded gift whose host finds a payment
+    // never arrived: the money it was funded on is not all there.
     for (const from of Object.values(GroupGiftStatus)) {
-      if (from === GroupGiftStatus.PURCHASING) continue;
+      if (from === GroupGiftStatus.PURCHASING || from === GroupGiftStatus.FUNDED) continue;
       expect(GROUP_GIFT_TRANSITIONS[from]).not.toContain(GroupGiftStatus.OPEN);
     }
+    expect(GROUP_GIFT_TRANSITIONS[GroupGiftStatus.FUNDED]).toContain(GroupGiftStatus.OPEN);
     expect(GROUP_GIFT_TRANSITIONS[GroupGiftStatus.PURCHASING]).toContain(GroupGiftStatus.FUNDED);
   });
 });
