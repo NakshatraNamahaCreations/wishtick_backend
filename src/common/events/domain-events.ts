@@ -115,6 +115,56 @@ export interface GroupGiftChargeAddedEvent {
   memberIds: string[];
 }
 
+/**
+ * The shop's price for something in a group gift's bill moved enough to
+ * matter, or it went out of stock. Told to the host only — they decide what,
+ * if anything, changes; the members hear once they have.
+ */
+export const GROUP_GIFT_PRICE_CHANGED = 'group_gift.price_changed';
+
+export interface GroupGiftPriceChangedEvent {
+  groupGiftId: string;
+  hostId: string;
+  title: string;
+  itemId: string;
+  itemTitle: string;
+  /** The shop price the bill was built on. */
+  fromMinor: number;
+  /** What the shop asks now; null when it is out of stock with no price. */
+  toMinor: number | null;
+  outOfStock: boolean;
+  currency: string;
+}
+
+/**
+ * The host moved the goal to follow the shop's price, and the money was
+ * settled against it. Told to everybody in the group but the host and the
+ * recipient: whether money is coming back to them, whether a refund they
+ * were expecting is no longer needed, or whether more is needed from them.
+ */
+export const GROUP_GIFT_PRICE_UPDATED = 'group_gift.price_updated';
+
+export interface GroupGiftPriceUpdatedEvent {
+  groupGiftId: string;
+  hostId: string;
+  title: string;
+  itemTitle: string;
+  fromMinor: number;
+  toMinor: number;
+  /** The new goal. */
+  targetAmountMinor: number;
+  /** Some of what was collected is coming back — [refundMinor] of it. */
+  overCollected: boolean;
+  /** Refunds the host now owes the group, in total. */
+  refundMinor: number;
+  /** Refunds raised for an earlier drop were called off: none is needed now. */
+  refundCancelled: boolean;
+  /** What the group still has to put in. */
+  shortfallMinor: number;
+  currency: string;
+  memberIds: string[];
+}
+
 /** The host paid what was left themselves, and the collection is done. */
 export const GROUP_GIFT_SETTLED = 'group_gift.settled';
 

@@ -226,6 +226,40 @@ export class GroupGiftController {
     return this.groupGifts.settle(id, userId);
   }
 
+  @Post('group-gifts/:id/price/:itemId/apply')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Use the shop's new price for one gift in the bill (host only)",
+    description:
+      'Moves the goal by however much the price moved. A drop lowers the goal (any surplus ' +
+      'is then refunded as usual); a rise raises it while nobody but the host has paid, and ' +
+      'is added as a charge, with the reason, once others have.',
+  })
+  @ApiResponseDoc({ status: 403, description: 'NOT_THE_INITIATOR' })
+  @ApiResponseDoc({ status: 409, description: 'GROUP_GIFT_NOT_OPEN / CONFLICT (no new price)' })
+  applyPrice(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Param('itemId') itemId: string,
+  ): Promise<GroupGiftView> {
+    return this.groupGifts.applyPrice(id, userId, itemId);
+  }
+
+  @Post('group-gifts/:id/price/:itemId/dismiss')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Keep the goal as it is despite a price change (host only)',
+    description: 'Hides the alert at this price; a further move raises it again.',
+  })
+  @ApiResponseDoc({ status: 403, description: 'NOT_THE_INITIATOR' })
+  dismissPrice(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Param('itemId') itemId: string,
+  ): Promise<GroupGiftView> {
+    return this.groupGifts.dismissPrice(id, userId, itemId);
+  }
+
   @Post('group-gifts/:id/purchase')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Purchase a funded group gift (initiator only)' })

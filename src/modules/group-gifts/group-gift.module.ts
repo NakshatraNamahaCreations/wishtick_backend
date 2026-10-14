@@ -18,6 +18,7 @@ import { WishmatesModule } from 'src/modules/wishmates/wishmates.module';
 import { GroupGiftCardRenderer } from './group-gift-card.renderer';
 import { DeliveryDateRegistrar } from './delivery-date.registrar';
 import { GroupGiftShareService } from './group-gift-share.service';
+import { GroupGiftPriceWatchService } from './group-gift-price-watch.service';
 import { ShareReminderRegistrar } from './share-reminder.registrar';
 import { GroupGiftController } from './group-gift.controller';
 import { GroupGiftPreviewService } from './group-gift-preview.service';
@@ -86,6 +87,7 @@ import { SettlementService } from './settlement.service';
     SettlementService,
     GroupGiftShareService,
     ShareReminderRegistrar,
+    GroupGiftPriceWatchService,
   ],
   exports: [GroupGiftService, SettlementService],
 })

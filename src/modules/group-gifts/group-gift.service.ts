@@ -18,6 +18,8 @@ import {
   GROUP_GIFT_PAYMENT_DISPUTED,
   GROUP_GIFT_PAYMENT_REVIEWED,
   GROUP_GIFT_SETTLED,
+  GROUP_GIFT_PRICE_UPDATED,
+  type GroupGiftPriceUpdatedEvent,
   type GroupGiftChargeAddedEvent,
   type GroupGiftSettledEvent,
   type GroupGiftContributionReceivedEvent,
@@ -80,6 +82,14 @@ import {
   type PublicGroupGiftView,
 } from './group-gift.views';
 import { GroupGiftShareService, HOST_SHARE_KEY } from './group-gift-share.service';
+import { SettlementService } from './settlement.service';
+import {
+  PRICE_WATCHED_STATUSES,
+  priceAlertsFor,
+  priceEffect,
+  rupees,
+  type PriceAlertView,
+} from './group-gift-price';
 import {
   CONTRIBUTABLE_GROUP_GIFT_STATUSES,
   ContributionMode,
@@ -161,6 +171,8 @@ export class GroupGiftService {
     private readonly config: ConfigService<AppConfig, true>,
     // "Split equally": the host's share, kept in step with the group.
     private readonly shares: GroupGiftShareService,
+    // Refunds raised and called off as the shop's price moves.
+    private readonly settlements: SettlementService,
   ) {
     this.shareBaseUrl = this.config.get('app.webAppUrl', { infer: true }).replace(/\/$/, '');
   }
@@ -1349,6 +1361,165 @@ export class GroupGiftService {
     return this.afterTargetChange(gift, userId);
   }
 
+  // ── Following the shop's price ──────────────────────────────────────────────
+
+  /**
+   * "Use the new price": moves the bill to what the shop asks now for one item,
+   * and settles the money against it.
+   *
+   * The host's call, never automatic — people pledged against the old goal.
+   * Then the owner's rules, applied by [SettlementService.rebalanceAfterPriceChange]:
+   * a drop leaves the host owing the excess back, as refunds raised at once; a
+   * price that comes back before those refunds are sent calls them off, and
+   * nobody is asked for anything; a rise after they were sent asks the group
+   * for the difference — on an even split, as a bigger share each.
+   */
+  async applyPrice(groupGiftId: string, hostId: string, itemId: string): Promise<GroupGiftView> {
+    const gift = await this.loadOrFail(groupGiftId);
+    if (gift.initiatorId.toString() !== hostId) {
+      throw new AppException(
+        ErrorCode.NOT_THE_INITIATOR,
+        'Only the host can change the price',
+        403,
+      );
+    }
+    if (!PRICE_WATCHED_STATUSES.includes(gift.status)) {
+      throw new AppException(
+        ErrorCode.GROUP_GIFT_NOT_OPEN,
+        'The price can only change until the gift is bought',
+        409,
+        { status: gift.status },
+      );
+    }
+    const alert = await this.priceAlertOf(gift, itemId);
+    if (!alert || alert.currentMinor === null || alert.deltaMinor === null) {
+      throw new AppException(ErrorCode.CONFLICT, 'There is no new price to use for this gift', 409);
+    }
+    const from = alert.pricedAtMinor;
+    const to = alert.currentMinor;
+    const delta = alert.deltaMinor;
+    const primary = GroupGiftService.primaryItemMinor(gift);
+
+    // The gift itself costs what the shop now asks — not the old price with a
+    // charge on top, which told people they had been charged for something
+    // the money already in might well cover.
+    if (alert.lineId === null) {
+      GroupGiftService.recomputeTarget(gift, Math.max(0, primary + delta));
+    } else {
+      const line = gift.lines.find((l) => l._id.toString() === alert.lineId);
+      if (line) line.amountMinor = Math.max(0, (line.amountMinor ?? from) + delta);
+      gift.markModified('lines');
+      GroupGiftService.recomputeTarget(gift, primary);
+    }
+
+    // The bill now stands on the shop's new price, so the alert is answered.
+    gift.priceBaselines = [
+      ...(gift.priceBaselines ?? []).filter((b) => b.itemId.toString() !== itemId),
+      { itemId: new Types.ObjectId(itemId), amountMinor: to },
+    ];
+    gift.priceDismissals = (gift.priceDismissals ?? []).filter(
+      (d) => d.itemId.toString() !== itemId,
+    );
+
+    await gift.save();
+
+    // Refunds called off or raised, and what is still needed, against what
+    // the host actually holds now.
+    const money = await this.settlements.rebalanceAfterPriceChange(groupGiftId);
+
+    const settled = await this.loadOrFail(groupGiftId);
+    const note = `price of ${alert.title}: ${rupees(from)} to ${rupees(to)}`;
+    let nowFunded = false;
+    if (settled.status === GroupGiftStatus.FUNDED && money.shortfallMinor > 0) {
+      // Short again: open for the difference, so it can be paid the usual way.
+      this.pushStatus(settled, GroupGiftStatus.OPEN, `user:${hostId}`, note);
+    } else if (
+      settled.status === GroupGiftStatus.OPEN &&
+      settled.targetAmountMinor > 0 &&
+      money.shortfallMinor === 0
+    ) {
+      // Cheaper than what is already in: nothing more is needed from anyone.
+      this.pushStatus(settled, GroupGiftStatus.FUNDED, `user:${hostId}`, note);
+      nowFunded = true;
+    }
+    await settled.save();
+
+    // An even split's shares follow the new goal before anyone is told what
+    // they owe — the host's share included.
+    const view = await this.afterTargetChange(settled, hostId);
+    const after = await this.loadOrFail(groupGiftId);
+    const shortfallMinor = Math.max(
+      0,
+      after.targetAmountMinor -
+        (after.collectedAmountMinor - (await this.settlements.sentReturnsMinor(after._id))),
+    );
+
+    this.emitter.emit(GROUP_GIFT_PRICE_UPDATED, {
+      groupGiftId,
+      hostId,
+      title: after.title,
+      itemTitle: alert.title,
+      fromMinor: from,
+      toMinor: to,
+      targetAmountMinor: after.targetAmountMinor,
+      overCollected: money.refundMinor > 0,
+      refundMinor: money.refundMinor,
+      refundCancelled: money.cancelledRefundMinor > 0 && money.refundMinor === 0,
+      shortfallMinor: after.status === GroupGiftStatus.OPEN ? shortfallMinor : 0,
+      currency: after.currency,
+      memberIds: await this.membersToTell(after),
+    } satisfies GroupGiftPriceUpdatedEvent);
+    if (nowFunded) {
+      this.emitter.emit(GROUP_GIFT_FUNDED, {
+        groupGiftId,
+        itemId: after.itemId.toString(),
+        wishlistId: after.wishlistId.toString(),
+        initiatorId: hostId,
+        targetAmountMinor: after.targetAmountMinor,
+        collectedAmountMinor: after.collectedAmountMinor,
+        currency: after.currency,
+        contributorCount: after.contributorCount,
+      } satisfies GroupGiftFundedEvent);
+    }
+    return view;
+  }
+
+  /**
+   * "Keep the goal": the host saw the price change and is leaving the bill as
+   * it is. Remembered at this price, so a further move is raised again.
+   * Answering an alert that has already gone is not an error.
+   */
+  async dismissPrice(groupGiftId: string, hostId: string, itemId: string): Promise<GroupGiftView> {
+    const gift = await this.loadOrFail(groupGiftId);
+    if (gift.initiatorId.toString() !== hostId) {
+      throw new AppException(ErrorCode.NOT_THE_INITIATOR, 'Only the host can do this', 403);
+    }
+    const alert = await this.priceAlertOf(gift, itemId);
+    if (alert) {
+      gift.priceDismissals = [
+        ...(gift.priceDismissals ?? []).filter((d) => d.itemId.toString() !== itemId),
+        {
+          itemId: new Types.ObjectId(itemId),
+          currentMinor: alert.currentMinor,
+          outOfStock: alert.outOfStock,
+        },
+      ];
+      await gift.save();
+    }
+    return this.assembleView(gift, hostId);
+  }
+
+  /** The price alert standing on one item of this gift's bill, if any. */
+  private async priceAlertOf(
+    gift: GroupGiftDocument,
+    itemId: string,
+  ): Promise<PriceAlertView | null> {
+    if (!Types.ObjectId.isValid(itemId)) return null;
+    const item = await this.itemModel.findById(itemId).exec();
+    if (!item) return null;
+    return priceAlertsFor(gift, new Map([[itemId, item]])).find((a) => a.itemId === itemId) ?? null;
+  }
+
   /** Everybody in the group but the host and the person it is for. */
   private async membersToTell(gift: GroupGiftDocument): Promise<string[]> {
     const host = gift.initiatorId.toString();
@@ -2462,6 +2633,26 @@ export class GroupGiftService {
       canManage: gift.initiatorId.toString() === userId,
       shareBaseUrl: this.shareBaseUrl,
     });
+    // What each price change would do to the money, for the host's card —
+    // said before they press anything.
+    if (view.priceAlerts?.length) {
+      const [sent, pending] = await Promise.all([
+        this.settlements.sentReturnsMinor(gift._id),
+        this.settlements.pendingReturnsMinor(gift._id),
+      ]);
+      for (const alert of view.priceAlerts) {
+        alert.effect =
+          alert.deltaMinor === null
+            ? null
+            : priceEffect({
+                targetMinor: gift.targetAmountMinor,
+                collectedMinor: gift.collectedAmountMinor,
+                sentRefundMinor: sent,
+                pendingRefundMinor: pending,
+                deltaMinor: alert.deltaMinor,
+              });
+      }
+    }
     if (gift.status === GroupGiftStatus.CANCELLED) {
       // What the cancellation counted as refunded to the viewer — not what
       // they withdrew themselves earlier, which was theirs to take back.

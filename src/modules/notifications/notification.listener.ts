@@ -20,6 +20,8 @@ import {
   GROUP_GIFT_CHARGE_ADDED,
   GROUP_GIFT_CONFIRM_REMINDER_DUE,
   GROUP_GIFT_SETTLED,
+  GROUP_GIFT_PRICE_CHANGED,
+  GROUP_GIFT_PRICE_UPDATED,
   GROUP_GIFT_CONTRIBUTION_RECEIVED,
   GROUP_GIFT_PAYMENT_CLAIMED,
   GROUP_GIFT_PAYMENT_DISPUTED,
@@ -52,6 +54,8 @@ import {
   type GroupGiftChargeAddedEvent,
   type GroupGiftConfirmReminderDueEvent,
   type GroupGiftSettledEvent,
+  type GroupGiftPriceChangedEvent,
+  type GroupGiftPriceUpdatedEvent,
   type GroupGiftContributionReceivedEvent,
   type GroupGiftPaymentClaimedEvent,
   type GroupGiftPaymentDisputedEvent,
@@ -305,6 +309,62 @@ export class NotificationListener {
             amountMinor: e.amountMinor,
             reason: e.reason,
             targetAmountMinor: e.targetAmountMinor,
+            currency: e.currency,
+            url: `${this.web}/group-gifts/${e.groupGiftId}`,
+          },
+        });
+      }
+    });
+  }
+
+  /** The host, alone: the shop's price moved under their group gift. */
+  @OnEvent(GROUP_GIFT_PRICE_CHANGED)
+  async onGroupGiftPriceChanged(e: GroupGiftPriceChangedEvent): Promise<void> {
+    await this.guard('group-gift-price-changed', async () => {
+      await this.notifications.enqueue({
+        userId: e.hostId,
+        type: NotificationType.GROUP_GIFT_PRICE_CHANGED,
+        // One per item per price: the same move told twice is noise, a new
+        // one is news.
+        refId: `${e.groupGiftId}:${e.itemId}:${e.toMinor ?? 'out-of-stock'}`,
+        payload: {
+          title: e.title,
+          itemTitle: e.itemTitle,
+          fromMinor: e.fromMinor,
+          toMinor: e.toMinor,
+          outOfStock: e.outOfStock,
+          currency: e.currency,
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
+        },
+      });
+    });
+  }
+
+  /** Everybody but the host and the recipient: the goal followed the price. */
+  @OnEvent(GROUP_GIFT_PRICE_UPDATED)
+  async onGroupGiftPriceUpdated(e: GroupGiftPriceUpdatedEvent): Promise<void> {
+    await this.guard('group-gift-price-updated', async () => {
+      const hostName = await this.userName(e.hostId);
+      // Each one is the host acting, and a price can go down, back up and down
+      // again to the same goal — keyed on the goal alone, the third would be
+      // dropped as a repeat of the first.
+      const refId = `${e.groupGiftId}:${e.targetAmountMinor}:${Date.now()}`;
+      for (const userId of e.memberIds) {
+        await this.notifications.enqueue({
+          userId,
+          type: NotificationType.GROUP_GIFT_PRICE_UPDATED,
+          refId,
+          payload: {
+            title: e.title,
+            hostName,
+            itemTitle: e.itemTitle,
+            fromMinor: e.fromMinor,
+            toMinor: e.toMinor,
+            targetAmountMinor: e.targetAmountMinor,
+            overCollected: e.overCollected,
+            refundMinor: e.refundMinor,
+            refundCancelled: e.refundCancelled,
+            shortfallMinor: e.shortfallMinor,
             currency: e.currency,
             url: `${this.web}/group-gifts/${e.groupGiftId}`,
           },
@@ -806,6 +866,9 @@ export class NotificationListener {
   @OnEvent(PRODUCT_PRICE_CHANGED)
   async onPriceChanged(e: ProductPriceChangedEvent): Promise<void> {
     await this.guard('price-drop', async () => {
+      // A surprise a group gift put on their list. "Price drop: AirPods" would
+      // tell them exactly what their friends are buying them.
+      if (e.hiddenFromOwner) return;
       // Only a genuine drop is worth a notification.
       if (
         e.currentAmountMinor === null ||
@@ -915,6 +978,9 @@ export class NotificationListener {
   @OnEvent(PRODUCT_OUT_OF_STOCK)
   async onOutOfStock(e: ProductOutOfStockEvent): Promise<void> {
     await this.guard('out-of-stock', async () => {
+      // Same surprise as a price drop: the owner was never meant to know it is
+      // on their list at all.
+      if (e.hiddenFromOwner) return;
       await this.notifications.enqueue({
         userId: e.ownerId,
         type: NotificationType.ITEM_OUT_OF_STOCK,

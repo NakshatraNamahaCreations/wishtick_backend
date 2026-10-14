@@ -1,4 +1,5 @@
 import type { WishlistItemDocument } from 'src/modules/wishlists/schemas/wishlist-item.schema';
+import { priceAlertsFor, type PriceAlertView } from './group-gift-price';
 import type { ContributionDocument } from './schemas/contribution.schema';
 import type { GroupGiftDocument } from './schemas/group-gift.schema';
 
@@ -170,6 +171,12 @@ export interface GroupGiftView {
   /** Present only for the initiator/manager. */
   share?: GroupGiftShareView;
   /**
+   * Present only for the host: items whose shop price moved enough to matter,
+   * or that went out of stock, since the bill was built. Members are told only
+   * once the host acts on one.
+   */
+  priceAlerts?: PriceAlertView[];
+  /**
    * Who owes what, for a gift split equally among more than the host. Null
    * for a custom-amount gift, or one the host has not invited anybody to.
    */
@@ -302,8 +309,11 @@ const toItemViews = (
       },
     };
   };
+  // The primary item's price is its snapshot until the host follows the shop
+  // to a new one — the snapshot itself is the wishlist's and never changes.
+  const primaryRepriced = (gift.priceBaselines ?? []).find((b) => b.itemId.equals(gift.itemId));
   return [
-    row(gift.itemId.toString(), null, null),
+    row(gift.itemId.toString(), null, primaryRepriced?.amountMinor ?? null),
     ...gift.lines.map((line) => row(line.itemId.toString(), line._id.toString(), line.amountMinor)),
   ];
 };
@@ -435,6 +445,7 @@ export function toGroupGiftView(input: {
       hasPasscode: gift.share.passcodeHash !== null,
       expiresAt: gift.share.expiresAt,
     };
+    view.priceAlerts = priceAlertsFor(gift, items);
   }
   return view;
 }

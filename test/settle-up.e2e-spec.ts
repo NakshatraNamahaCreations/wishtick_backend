@@ -354,6 +354,50 @@ describe('Group-gift settle-up (e2e)', () => {
         .expect(409);
     });
 
+    /**
+     * "Refund the extra" used to split evenly among everyone who had paid —
+     * the host included, whose share of an equal split is on record — and so
+     * raised a refund from the host to themselves, to be marked sent and
+     * received by the same person.
+     */
+    it('never raises a refund from the host to themselves', async () => {
+      const { itemId } = await givenItem(300_000);
+      const host = await newUser();
+      const gg = (
+        await http()
+          .post(`${V1}/items/${itemId}/group-gift`)
+          .set(auth(host.token))
+          .set(idem())
+          .send({ title: 'Split three ways', contributionMode: 'equal' })
+          .expect(201)
+      ).body as Envelope<GroupGiftView>;
+      const ggId = gg.data.id;
+      const [a, b] = [await newUser(), await newUser()];
+      await seedContribution(ggId, a.userId, 100_000);
+      await seedContribution(ggId, b.userId, 100_000);
+      // Reading the gift records the host's ₹1,000 share: funded at ₹3,000.
+      await http().get(`${V1}/group-gifts/${ggId}`).set(auth(host.token)).expect(200);
+      // Somebody pays ₹600 more than was needed.
+      const late = await newUser();
+      await seedContribution(ggId, late.userId, 60_000);
+
+      const rows = (
+        await http()
+          .post(`${V1}/group-gifts/${ggId}/settlements/return`)
+          .set(auth(host.token))
+          .send({})
+          .expect(201)
+      ).body as Envelope<SettlementView[]>;
+
+      expect(rows.data.map((r) => r.contributorId)).not.toContain(host.userId);
+      expect(rows.data.map((r) => r.contributorId).sort()).toEqual([a.userId, b.userId].sort());
+      // The host's own part of the extra stays with them: off what is
+      // collected for the gift, with no refund to chase.
+      const owed = rows.data.reduce((sum, r) => sum + r.amountMinor, 0);
+      const after = await balanceOf(ggId, host);
+      expect(after.collectedMinor).toBe(360_000 - (60_000 - owed));
+    });
+
     it('refuses when there is nothing to return', async () => {
       const { ggId, host } = await givenFundedGroup(300_000, 3);
 

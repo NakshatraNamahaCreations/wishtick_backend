@@ -58,6 +58,8 @@ export enum NotificationType {
   GROUP_GIFT_CONFIRM_REMINDER = 'group_gift_confirm_reminder',
   GROUP_GIFT_CHARGE_ADDED = 'group_gift_charge_added',
   GROUP_GIFT_SETTLED = 'group_gift_settled',
+  GROUP_GIFT_PRICE_CHANGED = 'group_gift_price_changed',
+  GROUP_GIFT_PRICE_UPDATED = 'group_gift_price_updated',
   GROUP_GIFT_PURCHASED = 'group_gift_purchased',
   GROUP_GIFT_FULFILLED = 'group_gift_fulfilled',
   EVENT_REMINDER = 'event_reminder',
@@ -219,6 +221,21 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.GROUP_GIFTS,
     template: 'group-gift-settled',
+  },
+  // To the host only: the shop's price moved, and the goal may want to follow.
+  // Not a digest — it may decide whether the group asks for more money.
+  [NotificationType.GROUP_GIFT_PRICE_CHANGED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-price-changed',
+  },
+  // To the members: the host moved the goal to the shop's new price.
+  [NotificationType.GROUP_GIFT_PRICE_UPDATED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-price-updated',
   },
   [NotificationType.GROUP_GIFT_INVITE]: {
     // Not DIGEST, unlike the rest of this category: an invitation is a

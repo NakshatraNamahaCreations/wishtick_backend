@@ -327,6 +327,28 @@ Confirm the payment: https://app.wishtick.test/x",
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_price_changed 1`] = `
+{
+  "sms": "Out of stock at the shop — https://app.wishtick.test/x",
+  "subject": "Noise-cancelling headphones is out of stock",
+  "text": "Noise-cancelling headphones in Password changed is out of stock at the shop. Open the group gift to add another gift or decide what to do.
+
+See the group gift: https://app.wishtick.test/x",
+  "title": "Out of stock at the shop",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_price_updated 1`] = `
+{
+  "sms": "New goal: INR 2000.00 — https://app.wishtick.test/x",
+  "subject": "Password changed: the goal is now INR 2000.00",
+  "text": "Someone updated Noise-cancelling headphones to the shop's new price,  (was ). The goal is now INR 2000.00.
+
+See the group gift: https://app.wishtick.test/x",
+  "title": "New goal: INR 2000.00",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_purchased 1`] = `
 {
   "sms": "Group gift purchased — https://app.wishtick.test/x",

@@ -96,6 +96,18 @@ export class ChatService {
       throw new AppException(ErrorCode.CHAT_NOT_FOUND, 'Chat not found', 404);
     }
     if (!(await this.wishmates.areWishmates(viewerId, otherId))) {
+      // History survives an unfriending, and a block — so a thread the two
+      // already have still opens, to be read. Nothing can be sent in it
+      // (posting and reacting check the link again), and no *new* thread is
+      // started without one.
+      const existing = await this.chatModel
+        .findOne({
+          type: ChatType.DIRECT,
+          refId: ChatService.directRefId(viewerId, otherId),
+          participantIds: new Types.ObjectId(viewerId),
+        })
+        .exec();
+      if (existing) return existing;
       throw new AppException(ErrorCode.NOT_WISHMATES, 'You can only message your WishMates.', 403);
     }
     return this.getOrCreate(ChatType.DIRECT, ChatService.directRefId(viewerId, otherId), [
@@ -473,8 +485,14 @@ export class ChatService {
     if (!message || message.deletedAt) {
       throw new AppException(ErrorCode.MESSAGE_NOT_FOUND, 'Message not found', 404);
     }
-    // Must be able to see the chat to react in it.
-    await this.authorize(message.chatId.toString(), userId);
+    // Must be able to see the chat to react in it — and, in a direct chat,
+    // able to post in it: a reaction reaches the other person as much as a
+    // message does, so once either has blocked the other (or they are no
+    // longer WishMates) there are none, though the history stays readable.
+    const { chat } = await this.authorize(message.chatId.toString(), userId);
+    if (chat.type === ChatType.DIRECT) {
+      await this.authorize(message.chatId.toString(), userId, { forPost: true });
+    }
 
     const uid = new Types.ObjectId(userId);
     const entry = message.reactions.find((r) => r.emoji === emoji);

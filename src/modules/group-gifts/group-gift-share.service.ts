@@ -12,7 +12,14 @@ import {
 } from 'src/common/events/domain-events';
 import { LockService } from 'src/infra/redis/lock.service';
 import { equalSplit, hostShareOf, type EqualSplit } from './equal-split';
-import { ContributionMode, ContributionStatus, GroupGiftStatus } from './group-gift.types';
+import {
+  ContributionMode,
+  ContributionStatus,
+  GroupGiftStatus,
+  SettlementDirection,
+  SettlementStatus,
+} from './group-gift.types';
+import { Settlement, type SettlementDocument } from './schemas/settlement.schema';
 import type { EqualSplitView } from './group-gift.views';
 import { Contribution, type ContributionDocument } from './schemas/contribution.schema';
 import { GroupGift, type GroupGiftDocument } from './schemas/group-gift.schema';
@@ -54,6 +61,7 @@ export class GroupGiftShareService {
     private readonly contributionModel: Model<ContributionDocument>,
     @InjectModel(GroupGiftInvite.name)
     private readonly inviteModel: Model<GroupGiftInviteDocument>,
+    @InjectModel(Settlement.name) private readonly settlementModel: Model<SettlementDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly locks: LockService,
     private readonly emitter: EventEmitter2,
@@ -87,9 +95,32 @@ export class GroupGiftShareService {
     return [...new Set(ids)].filter((id) => id !== host && id !== recipient);
   }
 
-  /** What each person has paid in, confirmed only. The host's share included. */
-  private paidByUser(giftId: Types.ObjectId): Promise<Map<string, number>> {
-    return this.sumByUser(giftId, ContributionStatus.CONFIRMED);
+  /**
+   * What each person has paid in, confirmed only, the host's share included —
+   * less any refund the host has sent them. Somebody refunded after a price
+   * drop has that much less in, and owes it again if the price comes back up.
+   */
+  private async paidByUser(giftId: Types.ObjectId): Promise<Map<string, number>> {
+    const [paid, back] = await Promise.all([
+      this.sumByUser(giftId, ContributionStatus.CONFIRMED),
+      this.settlementModel
+        .aggregate<{ _id: Types.ObjectId; total: number }>([
+          {
+            $match: {
+              groupGiftId: giftId,
+              direction: SettlementDirection.RETURN,
+              status: { $in: [SettlementStatus.SENT, SettlementStatus.CONFIRMED] },
+            },
+          },
+          { $group: { _id: '$contributorId', total: { $sum: '$amountMinor' } } },
+        ])
+        .exec(),
+    ]);
+    for (const r of back) {
+      const id = r._id.toString();
+      paid.set(id, (paid.get(id) ?? 0) - r.total);
+    }
+    return paid;
   }
 
   /** What each person says they sent that the host has not confirmed yet. */

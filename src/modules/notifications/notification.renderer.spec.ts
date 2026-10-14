@@ -39,6 +39,65 @@ describe('NotificationRenderer', () => {
     }
   });
 
+  /** To a group gift's host: the shop's price moved under their bill. */
+  describe('a group gift price change', () => {
+    const changed = (over: Record<string, unknown>) =>
+      renderer.content(NotificationType.GROUP_GIFT_PRICE_CHANGED, {
+        title: 'Speaker for Siya',
+        itemTitle: 'Smart Speaker',
+        fromMinor: 349_900,
+        currency: 'INR',
+        url: 'https://app.wishtick.test/x',
+        ...over,
+      });
+
+    it('says a drop is a drop, with both prices', () => {
+      const c = changed({ toMinor: 299_900 });
+      expect(c.subject).toBe('Price dropped on Smart Speaker');
+      expect(c.text).toContain('is now INR 2999.00, down from INR 3499.00');
+    });
+
+    it('says a rise is a rise', () => {
+      expect(changed({ toMinor: 399_900 }).subject).toBe('Price went up on Smart Speaker');
+    });
+
+    const updated = (over: Record<string, unknown>) =>
+      renderer.content(NotificationType.GROUP_GIFT_PRICE_UPDATED, {
+        title: 'Speaker for Siya',
+        itemTitle: 'Smart Speaker',
+        hostName: 'Rohan',
+        fromMinor: 349_900,
+        toMinor: 299_900,
+        targetAmountMinor: 299_900,
+        currency: 'INR',
+        url: 'https://app.wishtick.test/x',
+        ...over,
+      });
+
+    it('tells members money is coming back after a drop', () => {
+      const c = updated({ refundMinor: 50_000 });
+      expect(c.title).toBe('Money is coming back');
+      expect(c.text).toContain('Rohan will refund INR 500.00 to the group');
+    });
+
+    it('tells members no refund is needed when the price came back', () => {
+      const c = updated({ toMinor: 349_900, targetAmountMinor: 349_900, refundCancelled: true });
+      expect(c.subject).toBe('Speaker for Siya: no refund needed after all');
+    });
+
+    it('asks members for more when the price rose after a refund', () => {
+      const c = updated({ toMinor: 349_900, targetAmountMinor: 349_900, shortfallMinor: 50_000 });
+      expect(c.subject).toBe('Speaker for Siya: INR 500.00 more is needed');
+      expect(c.title).toBe('The price went up');
+    });
+
+    it('says out of stock when there is no price', () => {
+      expect(changed({ toMinor: null, outOfStock: true }).subject).toBe(
+        'Smart Speaker is out of stock',
+      );
+    });
+  });
+
   /** A reply, to the host: the answer is the headline. */
   describe('an RSVP', () => {
     const rsvp = (over: Record<string, unknown>) =>

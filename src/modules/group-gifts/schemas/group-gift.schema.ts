@@ -123,6 +123,39 @@ export class GroupGiftLine {
 
 export const GroupGiftLineSchema = SchemaFactory.createForClass(GroupGiftLine);
 
+/**
+ * The shop price one item's share of the bill was built on, once the host has
+ * changed it to follow the shop. See `pricedAtFor` in group-gift-price.ts.
+ */
+@Schema({ _id: false })
+export class GroupGiftPriceBaseline {
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'WishlistItem', required: true })
+  itemId!: Types.ObjectId;
+
+  @Prop({ type: Number, required: true })
+  amountMinor!: number;
+}
+
+export const GroupGiftPriceBaselineSchema = SchemaFactory.createForClass(GroupGiftPriceBaseline);
+
+/**
+ * A price change the host looked at and chose to leave alone. Remembered by
+ * the price (and stock) it was dismissed at, so a further move raises it again.
+ */
+@Schema({ _id: false })
+export class GroupGiftPriceDismissal {
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'WishlistItem', required: true })
+  itemId!: Types.ObjectId;
+
+  @Prop({ type: Number, default: null })
+  currentMinor!: number | null;
+
+  @Prop({ type: Boolean, default: false })
+  outOfStock!: boolean;
+}
+
+export const GroupGiftPriceDismissalSchema = SchemaFactory.createForClass(GroupGiftPriceDismissal);
+
 @Schema({ collection: 'group_gifts', timestamps: true })
 export class GroupGift {
   _id!: Types.ObjectId;
@@ -251,6 +284,14 @@ export class GroupGift {
   /** Delivery, wrapping, and anything else that is not an item. */
   @Prop({ type: [GroupGiftChargeSchema], default: [] })
   charges!: GroupGiftCharge[];
+
+  /** Shop prices the host has moved the bill to — one per item at most. */
+  @Prop({ type: [GroupGiftPriceBaselineSchema], default: [] })
+  priceBaselines!: GroupGiftPriceBaseline[];
+
+  /** Price changes the host has seen and left alone — one per item at most. */
+  @Prop({ type: [GroupGiftPriceDismissalSchema], default: [] })
+  priceDismissals!: GroupGiftPriceDismissal[];
 
   /**
    * A denormalized cache of the confirmed-contribution sum.

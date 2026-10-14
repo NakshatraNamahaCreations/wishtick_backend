@@ -7,7 +7,10 @@ import {
   UserProfile,
   type UserProfileDocument,
 } from 'src/modules/profile/schemas/user-profile.schema';
+import { hostShareOf } from './equal-split';
+import { GroupGiftShareService, HOST_SHARE_KEY } from './group-gift-share.service';
 import {
+  ContributionMode,
   ContributionStatus,
   GroupGiftStatus,
   INACTIVE_GROUP_GIFT_STATUSES,
@@ -37,6 +40,24 @@ export interface GroupGiftBalance {
   contributorCount: number;
 }
 
+/** Who gets a surplus back, and the host's own part of it, which they keep. */
+interface RefundPlan {
+  members: { contributorId: string; amountMinor: number }[];
+  hostKeptMinor: number;
+}
+
+/** What re-balancing after a price change did to the money. */
+export interface RebalanceOutcome {
+  /** Refunds now owed by the host to members, raised by this re-balance. */
+  refundMinor: number;
+  /** Refunds called off because the price moved again before they were sent. */
+  cancelledRefundMinor: number;
+  /** The host's own slice of a surplus — kept, not refunded to themselves. */
+  hostKeptMinor: number;
+  /** What the group still needs beyond everything the host holds. */
+  shortfallMinor: number;
+}
+
 @Injectable()
 export class SettlementService {
   constructor(
@@ -44,7 +65,285 @@ export class SettlementService {
     @InjectModel(Contribution.name) private readonly contributions: Model<ContributionDocument>,
     @InjectModel(Settlement.name) private readonly settlements: Model<SettlementDocument>,
     @InjectModel(UserProfile.name) private readonly profiles: Model<UserProfileDocument>,
+    private readonly shares: GroupGiftShareService,
   ) {}
+
+  /**
+   * Puts the money right after the host moves the goal to a new shop price.
+   *
+   * The rules, in the owner's words: if the price drops, the host must refund
+   * the excess; if it comes back up before the refund is made, nobody needs
+   * one; if it goes up after the refund, the group is asked for more.
+   *
+   * So, every time: refunds nobody has sent yet are called off — the balance
+   * they were raised for is gone — and the new goal is set against what the
+   * host actually holds (collected, less refunds already sent). More than the
+   * goal: refunds are raised again for the difference, owed by the host. Less:
+   * the shortfall is reported, and the caller asks the group for it. A price
+   * that went down and came back before anything was sent therefore ends with
+   * no refund and nothing asked of anyone.
+   */
+  async rebalanceAfterPriceChange(groupGiftId: string): Promise<RebalanceOutcome> {
+    const gg = await this.load(groupGiftId);
+
+    const pending = await this.settlements
+      .find({
+        groupGiftId: gg._id,
+        direction: SettlementDirection.RETURN,
+        status: SettlementStatus.PENDING,
+      })
+      .exec();
+    const cancelledRefundMinor = pending.reduce((sum, s) => sum + s.amountMinor, 0);
+    if (pending.length > 0) {
+      await this.settlements
+        .updateMany(
+          { _id: { $in: pending.map((s) => s._id) } },
+          {
+            $set: {
+              status: SettlementStatus.CANCELLED,
+              note: 'Not needed: the price changed again before it was sent',
+            },
+          },
+        )
+        .exec();
+    }
+
+    const sentMinor = await this.sentReturnsMinor(gg._id);
+    const held = gg.collectedAmountMinor - sentMinor;
+    const surplus = held - gg.targetAmountMinor;
+    if (surplus <= 0) {
+      return {
+        refundMinor: 0,
+        cancelledRefundMinor,
+        hostKeptMinor: 0,
+        shortfallMinor: Math.max(0, -surplus),
+      };
+    }
+
+    const { members, hostKeptMinor } = await this.refundPlan(gg, surplus);
+
+    if (hostKeptMinor > 0) await this.keepForHost(gg, hostKeptMinor);
+    const raised = await this.raise(
+      gg,
+      SettlementDirection.RETURN,
+      members,
+      'The price dropped, so this is coming back to you',
+    );
+    return {
+      refundMinor: raised
+        .filter((s) => s.status === SettlementStatus.PENDING)
+        .reduce((sum, s) => sum + s.amountMinor, 0),
+      cancelledRefundMinor,
+      hostKeptMinor,
+      shortfallMinor: 0,
+    };
+  }
+
+  /**
+   * Who gets [surplus] back — the one rule for refunds, whether a price change
+   * raised them or the host pressed "Refund the extra".
+   *
+   * Split equally: each person gets back what they paid above the share, the
+   * host's included. Any amounts: in proportion to what each put in, so nobody
+   * gets back more than they gave. Either way the host's own part is theirs
+   * to keep — never a refund raised from them to themselves.
+   */
+  private async refundPlan(gg: GroupGiftDocument, surplus: number): Promise<RefundPlan> {
+    const paid = await this.netPaidByUser(gg._id);
+    const hostId = gg.initiatorId.toString();
+    if (gg.contributionMode !== ContributionMode.EQUAL) {
+      return SettlementService.proportionalRefunds(hostId, paid, surplus);
+    }
+    const others = await this.shares.othersIn(gg);
+    return SettlementService.equalRefunds({
+      hostId,
+      others,
+      paid,
+      targetMinor: gg.targetAmountMinor,
+      surplus,
+    });
+  }
+
+  /**
+   * An even split's refunds: what each person paid above the share. When that
+   * comes to more than the surplus — somebody else still owes theirs — what
+   * there is goes round in proportion to how far over each one is, rather
+   * than to whoever happens to be first.
+   */
+  static equalRefunds(input: {
+    hostId: string;
+    others: string[];
+    paid: Map<string, number>;
+    targetMinor: number;
+    surplus: number;
+  }): RefundPlan {
+    const { hostId, others, paid, targetMinor, surplus } = input;
+    const count = others.length + 1;
+    const base = Math.floor(targetMinor / count);
+    const hostOver: [string, number] = [
+      hostId,
+      (paid.get(hostId) ?? 0) - hostShareOf(targetMinor, count),
+    ];
+    const over = [
+      ...others.map((id): [string, number] => [id, (paid.get(id) ?? 0) - base]),
+      hostOver,
+    ].filter(([, amount]) => amount > 0);
+    return SettlementService.planFrom(hostId, over, surplus);
+  }
+
+  /**
+   * Any-amount refunds: the surplus shared in proportion to what each person
+   * put in, so nobody gets back more than they gave. The host's own part is
+   * theirs to keep. Paise that do not divide go to the biggest givers.
+   */
+  static proportionalRefunds(
+    hostId: string,
+    paid: Map<string, number>,
+    surplus: number,
+  ): RefundPlan {
+    return SettlementService.planFrom(
+      hostId,
+      [...paid.entries()].filter(([, amount]) => amount > 0),
+      surplus,
+    );
+  }
+
+  /**
+   * Shares up to [surplus] across [weights] in proportion — never more than a
+   * weight to anyone — and splits off the host's part. Paise that do not
+   * divide go to the biggest weights, so the total is exact.
+   */
+  private static planFrom(
+    hostId: string,
+    weights: [string, number][],
+    surplus: number,
+  ): RefundPlan {
+    const sorted = [...weights].sort((a, b) => b[1] - a[1]);
+    const total = sorted.reduce((sum, [, w]) => sum + w, 0);
+    if (total <= 0 || surplus <= 0) return { members: [], hostKeptMinor: 0 };
+    const amount = Math.min(surplus, total);
+    const shares = sorted.map(([userId, w]) => ({
+      userId,
+      share: Math.floor((amount * w) / total),
+    }));
+    let remainder = amount - shares.reduce((sum, s) => sum + s.share, 0);
+    for (const s of shares) {
+      if (remainder <= 0) break;
+      s.share += 1;
+      remainder -= 1;
+    }
+    return {
+      members: shares
+        .filter((s) => s.userId !== hostId && s.share > 0)
+        .map((s) => ({ contributorId: s.userId, amountMinor: s.share })),
+      hostKeptMinor: shares.find((s) => s.userId === hostId)?.share ?? 0,
+    };
+  }
+
+  /**
+   * The host's own slice of a surplus: no refund to raise — they already have
+   * it — but it no longer counts towards the gift. On an even split it comes
+   * off the share recorded for them, which is resynced if the goal rises
+   * again; anything beyond that is written as a return they made to
+   * themselves, settled at once.
+   */
+  private async keepForHost(gg: GroupGiftDocument, amountMinor: number): Promise<void> {
+    let left = amountMinor;
+    const hostShare = await this.contributions
+      .findOne({
+        groupGiftId: gg._id,
+        idempotencyKey: HOST_SHARE_KEY,
+        status: ContributionStatus.CONFIRMED,
+      })
+      .exec();
+    if (hostShare && left > 0) {
+      const trim = Math.min(left, hostShare.amountMinor);
+      const remaining = hostShare.amountMinor - trim;
+      await this.contributions
+        .updateOne(
+          { _id: hostShare._id },
+          {
+            $set: {
+              amountMinor: remaining,
+              status: remaining > 0 ? ContributionStatus.CONFIRMED : ContributionStatus.REFUNDED,
+            },
+          },
+        )
+        .exec();
+      left -= trim;
+    }
+    if (left > 0) {
+      const now = new Date();
+      await this.settlements.create({
+        groupGiftId: gg._id,
+        contributorId: gg.initiatorId,
+        hostId: gg.initiatorId,
+        direction: SettlementDirection.RETURN,
+        amountMinor: left,
+        currency: gg.currency,
+        status: SettlementStatus.CONFIRMED,
+        sentAt: now,
+        confirmedAt: now,
+        note: 'Kept by the host: their own part of the extra',
+      });
+    }
+    await this.groupGifts
+      .updateOne({ _id: gg._id }, { $inc: { collectedAmountMinor: -amountMinor } })
+      .exec();
+  }
+
+  /** Refunds the host says have gone out but nobody has confirmed yet. */
+  async sentReturnsMinor(groupGiftId: Types.ObjectId): Promise<number> {
+    const rows = await this.settlements
+      .find({ groupGiftId, direction: SettlementDirection.RETURN, status: SettlementStatus.SENT })
+      .exec();
+    return rows.reduce((sum, s) => sum + s.amountMinor, 0);
+  }
+
+  /** Refunds raised and not sent yet. */
+  async pendingReturnsMinor(groupGiftId: Types.ObjectId): Promise<number> {
+    const rows = await this.settlements
+      .find({
+        groupGiftId,
+        direction: SettlementDirection.RETURN,
+        status: SettlementStatus.PENDING,
+      })
+      .exec();
+    return rows.reduce((sum, s) => sum + s.amountMinor, 0);
+  }
+
+  /**
+   * What each person has put in and still has in: confirmed money, less any
+   * refund sent or confirmed back to them.
+   */
+  private async netPaidByUser(groupGiftId: Types.ObjectId): Promise<Map<string, number>> {
+    const [given, back] = await Promise.all([
+      this.contributions
+        .aggregate<{ _id: Types.ObjectId; total: number }>([
+          { $match: { groupGiftId, status: ContributionStatus.CONFIRMED } },
+          { $group: { _id: '$userId', total: { $sum: '$amountMinor' } } },
+        ])
+        .exec(),
+      this.settlements
+        .aggregate<{ _id: Types.ObjectId; total: number }>([
+          {
+            $match: {
+              groupGiftId,
+              direction: SettlementDirection.RETURN,
+              status: { $in: [SettlementStatus.SENT, SettlementStatus.CONFIRMED] },
+            },
+          },
+          { $group: { _id: '$contributorId', total: { $sum: '$amountMinor' } } },
+        ])
+        .exec(),
+    ]);
+    const net = new Map(given.map((r) => [r._id.toString(), r.total]));
+    for (const r of back) {
+      const id = r._id.toString();
+      net.set(id, (net.get(id) ?? 0) - r.total);
+    }
+    return net;
+  }
 
   /**
    * The full cost of a group gift.
@@ -133,11 +432,17 @@ export class SettlementService {
   }
 
   /**
-   * The host returns a surplus.
+   * The host returns a surplus — "Refund the extra".
    *
    * Only the host may raise these: the amounts decide what the host is publicly
    * on the hook for, and a contributor being able to mint their own refund
    * would be an obvious abuse.
+   *
+   * By the same rule a price drop's refunds follow ([refundPlan]): the host
+   * keeps their own part rather than being sent a refund from themselves,
+   * which the even split among every contributor used to do. Refunds already
+   * set up and not yet answered are what is owed; pressing again hands those
+   * back rather than raising a second set.
    */
   async distributeReturn(
     groupGiftId: string,
@@ -149,7 +454,12 @@ export class SettlementService {
     SettlementService.assertActive(gg);
 
     const balance = await this.balance(groupGiftId);
-    if (balance.differenceMinor <= 0) {
+    // What is extra and not already on its way back.
+    const outstanding =
+      (await this.sentReturnsMinor(gg._id)) + (await this.pendingReturnsMinor(gg._id));
+    const surplus = balance.differenceMinor - outstanding;
+    if (surplus <= 0) {
+      if (outstanding > 0) return this.openReturns(gg._id);
       throw new AppException(
         ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
         'There is no surplus to return',
@@ -157,8 +467,27 @@ export class SettlementService {
       );
     }
 
-    const contributors = await this.confirmedContributorIds(gg._id);
-    if (contributors.length === 0) {
+    let plan: RefundPlan;
+    if (input.custom) {
+      const total = input.custom.reduce((sum, c) => sum + c.amountMinor, 0);
+      if (total > surplus) {
+        throw new AppException(
+          ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
+          'The split is larger than the surplus',
+          409,
+        );
+      }
+      // The host naming themselves in a custom split is keeping that much.
+      plan = {
+        members: input.custom.filter((c) => c.contributorId !== hostId),
+        hostKeptMinor: input.custom
+          .filter((c) => c.contributorId === hostId)
+          .reduce((sum, c) => sum + c.amountMinor, 0),
+      };
+    } else {
+      plan = await this.refundPlan(gg, surplus);
+    }
+    if (plan.members.length === 0 && plan.hostKeptMinor === 0) {
       throw new AppException(
         ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
         'Nobody has contributed yet',
@@ -166,22 +495,20 @@ export class SettlementService {
       );
     }
 
-    const allocations = input.custom
-      ? input.custom.map((c) => ({ contributorId: c.contributorId, amountMinor: c.amountMinor }))
-      : SettlementService.splitEvenly(balance.differenceMinor, contributors.length).map(
-          (amountMinor, i) => ({ contributorId: contributors[i], amountMinor }),
-        );
+    if (plan.hostKeptMinor > 0) await this.keepForHost(gg, plan.hostKeptMinor);
+    return this.raise(gg, SettlementDirection.RETURN, plan.members, input.note ?? null);
+  }
 
-    const total = allocations.reduce((sum, a) => sum + a.amountMinor, 0);
-    if (total > balance.differenceMinor) {
-      throw new AppException(
-        ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
-        'The split is larger than the surplus',
-        409,
-      );
-    }
-
-    return this.raise(gg, SettlementDirection.RETURN, allocations, input.note ?? null);
+  /** Every refund raised and not yet answered, oldest first. */
+  private openReturns(groupGiftId: Types.ObjectId): Promise<SettlementDocument[]> {
+    return this.settlements
+      .find({
+        groupGiftId,
+        direction: SettlementDirection.RETURN,
+        status: { $in: [SettlementStatus.PENDING, SettlementStatus.SENT] },
+      })
+      .sort({ createdAt: 1 })
+      .exec();
   }
 
   /**
@@ -370,6 +697,17 @@ export class SettlementService {
     // — which is what moves the balance back to zero.
     if (settlement.direction === SettlementDirection.TOP_UP) {
       await this.creditTopUp(settlement);
+    }
+    // And a confirmed refund is money the host no longer holds. Left counted,
+    // a price that rose after the refund found the gift "fully funded" on
+    // money that had already gone back, and asked nobody for more.
+    if (settlement.direction === SettlementDirection.RETURN) {
+      await this.groupGifts
+        .updateOne(
+          { _id: settlement.groupGiftId },
+          { $inc: { collectedAmountMinor: -settlement.amountMinor } },
+        )
+        .exec();
     }
     return settlement;
   }
@@ -593,16 +931,6 @@ export class SettlementService {
     if (contributed) return;
 
     throw new AppException(ErrorCode.FORBIDDEN, 'This group gift is not yours to see', 403);
-  }
-
-  private async confirmedContributorIds(groupGiftId: Types.ObjectId): Promise<string[]> {
-    const rows = await this.contributions
-      .find({ groupGiftId, status: ContributionStatus.CONFIRMED })
-      .sort({ createdAt: 1 })
-      .exec();
-    // Distinct, oldest first — the split's remainder paise go to whoever
-    // contributed earliest, which is at least a rule rather than a coin toss.
-    return [...new Set(rows.map((r) => r.userId.toString()))];
   }
 
   private async load(groupGiftId: string): Promise<GroupGiftDocument> {

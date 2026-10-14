@@ -468,6 +468,68 @@ describe('Products & affiliate (e2e)', () => {
       expect(second.itemsFlaggedStock).toBe(0);
     });
 
+    /**
+     * A group gift's "Add Another Gift" puts a surprise on the recipient's own
+     * list, hidden from them. The nightly sync used to notify the list's owner
+     * about it like any other item: "Price drop: …" named the surprise.
+     */
+    describe('a surprise hidden from the list owner', () => {
+      /** Imports hp-001 onto a fresh list; `hidden` marks it as a group's surprise. */
+      const importFor = async (hidden: boolean) => {
+        const user = await newUser();
+        const wishlistId = await createWishlist(user.token);
+        const item = (
+          await request(app.getHttpServer())
+            .post(`${V1}/wishlists/${wishlistId}/items/from-product`)
+            .set(auth(user.token))
+            .send({ provider: 'fixture', externalId: 'hp-001' })
+            .expect(201)
+        ).body as Envelope<ItemView>;
+        if (hidden) {
+          await itemModel.updateOne({ _id: item.data.id }, { $set: { hiddenFromOwner: true } });
+        }
+        return { ...user, itemId: item.data.id };
+      };
+
+      const inboxOf = async (token: string, type: string): Promise<unknown[]> => {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        await ctx.drainNotifications();
+        const res = await request(app.getHttpServer())
+          .get(`${V1}/notifications`)
+          .set(auth(token))
+          .expect(200);
+        return (res.body as Envelope<{ type: string }[]>).data.filter((n) => n.type === type);
+      };
+
+      it('never tells the owner its price dropped', async () => {
+        const visible = await importFor(false);
+        const surprise = await importFor(true);
+
+        fixture.__setPrice('hp-001', 1_999_00);
+        await sync.syncReferencedProducts();
+
+        // The control: an ordinary item's owner is told.
+        expect(await inboxOf(visible.token, 'item_price_drop')).toHaveLength(1);
+        expect(await inboxOf(surprise.token, 'item_price_drop')).toHaveLength(0);
+
+        // The new price is still recorded beside the hidden item, for whoever is
+        // organising the group gift to act on.
+        const stored = await itemModel.findById(surprise.itemId).exec();
+        expect(stored!.sourceAlert).toMatchObject({ currentAmountMinor: 1_999_00 });
+      });
+
+      it('never tells the owner it went out of stock', async () => {
+        const visible = await importFor(false);
+        const surprise = await importFor(true);
+
+        fixture.__setStock('hp-001', false);
+        await sync.syncReferencedProducts();
+
+        expect(await inboxOf(visible.token, 'item_out_of_stock')).toHaveLength(1);
+        expect(await inboxOf(surprise.token, 'item_out_of_stock')).toHaveLength(0);
+      });
+    });
+
     it('refuses to import into a wishlist you do not own', async () => {
       const owner = await newUser();
       const stranger = await newUser();

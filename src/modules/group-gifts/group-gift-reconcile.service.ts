@@ -6,8 +6,9 @@ import {
   GROUP_GIFT_DRIFT_DETECTED,
   type GroupGiftDriftDetectedEvent,
 } from 'src/common/events/domain-events';
-import { ContributionStatus } from './group-gift.types';
+import { ContributionStatus, SettlementDirection, SettlementStatus } from './group-gift.types';
 import { Contribution, type ContributionDocument } from './schemas/contribution.schema';
+import { Settlement, type SettlementDocument } from './schemas/settlement.schema';
 import { GroupGift, type GroupGiftDocument } from './schemas/group-gift.schema';
 
 export interface ReconcileResult {
@@ -36,6 +37,7 @@ export class GroupGiftReconcileService {
   constructor(
     @InjectModel(GroupGift.name) private readonly groupGiftModel: Model<GroupGiftDocument>,
     @InjectModel(Contribution.name) private readonly contributionModel: Model<ContributionDocument>,
+    @InjectModel(Settlement.name) private readonly settlementModel: Model<SettlementDocument>,
     private readonly emitter: EventEmitter2,
   ) {}
 
@@ -49,6 +51,23 @@ export class GroupGiftReconcileService {
       ])
       .exec();
     const summedById = new Map<string, number>(sums.map((s) => [String(s._id), s.summed]));
+    // Less every refund the person who got it has confirmed: money the host
+    // handed back is no longer collected for the gift.
+    const returned = await this.settlementModel
+      .aggregate<{ _id: unknown; total: number }>([
+        {
+          $match: {
+            direction: SettlementDirection.RETURN,
+            status: SettlementStatus.CONFIRMED,
+          },
+        },
+        { $group: { _id: '$groupGiftId', total: { $sum: '$amountMinor' } } },
+      ])
+      .exec();
+    for (const r of returned) {
+      const id = String(r._id);
+      summedById.set(id, (summedById.get(id) ?? 0) - r.total);
+    }
 
     let checked = 0;
     let drifted = 0;

@@ -227,6 +227,68 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     ],
     cta: { label: 'See the group gift', url: s(p, 'url') },
   }),
+  [NotificationType.GROUP_GIFT_PRICE_CHANGED]: (p) => {
+    const item = s(p, 'itemTitle', 'a gift');
+    const group = s(p, 'title', 'your group gift');
+    if (typeof p.toMinor !== 'number') {
+      return {
+        subject: `${item} is out of stock`,
+        title: 'Out of stock at the shop',
+        lines: [
+          `${item} in ${group} is out of stock at the shop. Open the group gift to add another gift or decide what to do.`,
+        ],
+        cta: { label: 'See the group gift', url: s(p, 'url') },
+      };
+    }
+    const cheaper = p.toMinor < Number(p.fromMinor ?? 0);
+    return {
+      subject: `Price ${cheaper ? 'dropped' : 'went up'} on ${item}`,
+      title: `${cheaper ? 'Price dropped' : 'Price went up'}: ${money(p, 'toMinor')}`,
+      lines: [
+        `${item} in ${group} is now ${money(p, 'toMinor')}, ${cheaper ? 'down' : 'up'} from ${money(p, 'fromMinor')}. Open the group gift to use the new price or keep the goal as it is.`,
+      ],
+      cta: { label: 'See the group gift', url: s(p, 'url') },
+    };
+  },
+  [NotificationType.GROUP_GIFT_PRICE_UPDATED]: (p) => {
+    const host = who(p, 'hostName');
+    const moved = `${host} updated ${s(p, 'itemTitle', 'a gift')} to the shop's new price, ${money(p, 'toMinor')} (was ${money(p, 'fromMinor')}). The goal is now ${money(p, 'targetAmountMinor')}.`;
+    const short = Number(p.shortfallMinor ?? 0);
+    const refund = Number(p.refundMinor ?? 0);
+    // What it means for the reader's money, which is why they are being told.
+    const [title, then] =
+      short > 0
+        ? [
+            'The price went up',
+            ` ${money(p, 'shortfallMinor')} more is needed — open the group gift to see your part.`,
+          ]
+        : refund > 0
+          ? [
+              'Money is coming back',
+              ` More has been collected than that, so ${host} will refund ${money(p, 'refundMinor')} to the group.`,
+            ]
+          : p.refundCancelled === true
+            ? [
+                'No refund needed',
+                ' The price is back, so the refund you were expecting is no longer needed.',
+              ]
+            : [`New goal: ${money(p, 'targetAmountMinor')}`, ''];
+    const gift = s(p, 'title', 'The group gift');
+    const subject =
+      short > 0
+        ? `${gift}: ${money(p, 'shortfallMinor')} more is needed`
+        : refund > 0
+          ? `${gift}: money is coming back to the group`
+          : p.refundCancelled === true
+            ? `${gift}: no refund needed after all`
+            : `${gift}: the goal is now ${money(p, 'targetAmountMinor')}`;
+    return {
+      subject,
+      title,
+      lines: [moved + then],
+      cta: { label: 'See the group gift', url: s(p, 'url') },
+    };
+  },
   [NotificationType.GROUP_GIFT_JOINED]: (p) => ({
     subject: `A new member joined`,
     title: 'Someone joined the group gift',

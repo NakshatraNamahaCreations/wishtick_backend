@@ -6,6 +6,7 @@ import {
   WishlistItem,
   type WishlistItemDocument,
 } from 'src/modules/wishlists/schemas/wishlist-item.schema';
+import { WishlistItemStatus } from 'src/modules/wishlists/wishlist.types';
 import { MonetizationService } from './affiliate/monetization.service';
 import { PRODUCT_PROVIDER, type IProductProvider } from './providers/product-provider.port';
 import { ProviderGuard, ProviderUnavailableError } from './providers/provider-guard.service';
@@ -26,6 +27,12 @@ export interface ProductPriceChangedEvent {
   snapshotAmountMinor: number | null;
   currentAmountMinor: number | null;
   currency: string;
+  /**
+   * The item is withheld from the list's owner — a surprise a group gift
+   * added to their list (see `WishlistItem.hiddenFromOwner`). Still emitted, so
+   * whoever is organising it can hear about the price; never told to the owner.
+   */
+  hiddenFromOwner: boolean;
 }
 
 export interface ProductOutOfStockEvent {
@@ -33,6 +40,8 @@ export interface ProductOutOfStockEvent {
   wishlistId: string;
   ownerId: string;
   title: string;
+  /** See [ProductPriceChangedEvent.hiddenFromOwner]. */
+  hiddenFromOwner: boolean;
 }
 
 export interface SyncReport {
@@ -91,11 +100,30 @@ export class AffiliateSyncService {
     // this only means the first clicker does not wait for two upstream calls.
     report.productsMonetized = await this.monetization.backfillReferenced(referencedIds);
 
-    const stale = await this.products
-      .find({ _id: { $in: referencedIds } })
+    // Things somebody is getting right now first — a reserved item is on its
+    // way to being bought, and a group gift collecting towards one is the
+    // case a stale price costs most. Then the rest, oldest-checked first.
+    // A run is capped, so without this a busy catalogue could leave the
+    // products that matter waiting nights for their turn.
+    const urgentIds = await this.items.distinct('sourceProductId', {
+      sourceProductId: { $ne: null },
+      archivedAt: null,
+      status: WishlistItemStatus.RESERVED,
+    });
+    const urgent = await this.products
+      .find({ _id: { $in: urgentIds } })
       .sort({ lastSyncedAt: 1 })
       .limit(limit)
       .exec();
+    const rest =
+      urgent.length < limit
+        ? await this.products
+            .find({ _id: { $in: referencedIds, $nin: urgent.map((p) => p._id) } })
+            .sort({ lastSyncedAt: 1 })
+            .limit(limit - urgent.length)
+            .exec()
+        : [];
+    const stale = [...urgent, ...rest];
 
     for (const product of stale) {
       report.productsChecked++;
@@ -194,6 +222,7 @@ export class AffiliateSyncService {
         snapshotAmountMinor: item.price?.amountMinor ?? null,
         currentAmountMinor,
         currency: item.price?.currency ?? 'INR',
+        hiddenFromOwner: item.hiddenFromOwner ?? false,
       } satisfies ProductPriceChangedEvent);
     }
     return affected.length;
@@ -228,6 +257,7 @@ export class AffiliateSyncService {
         wishlistId: item.wishlistId.toString(),
         ownerId: item.ownerId.toString(),
         title: item.title,
+        hiddenFromOwner: item.hiddenFromOwner ?? false,
       } satisfies ProductOutOfStockEvent);
     }
     return newlyFlagged;
