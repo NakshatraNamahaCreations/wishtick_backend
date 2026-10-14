@@ -156,7 +156,7 @@ export class MediaService {
     const mb = (n: number) => Math.floor(n / (1024 * 1024));
     throw new AppException(
       ErrorCode.MEMORY_STORAGE_FULL,
-      `This would take your memories past their ${mb(quotaBytes)} MB of space ` +
+      `This would take your wishes past their ${mb(quotaBytes)} MB of space ` +
         `(${mb(usedBytes)} MB used). Remove a wish you no longer need, or send a shorter one.`,
       413,
       { usedBytes, quotaBytes, incomingBytes },

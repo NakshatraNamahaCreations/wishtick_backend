@@ -135,6 +135,21 @@ export class ChatController {
     return this.chat.react(messageId, userId, dto.emoji);
   }
 
+  @Post('chats/:id/clear')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Delete the conversation for yourself',
+    description:
+      'Hides everything said so far from your history and, for a direct chat, ' +
+      'your chat list until a new message arrives. The other side keeps theirs.',
+  })
+  clear(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+  ): Promise<{ clearedUpTo: string | null }> {
+    return this.chat.clearForUser(id, userId);
+  }
+
   @Post('chats/:id/read')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Mark the chat read up to a message (default: latest)' })

@@ -19,6 +19,13 @@ export enum MessageKind {
   /** Posted by the server from a domain event, rendered from `systemPayload`. */
   SYSTEM = 'system',
   ATTACHMENT = 'attachment',
+  /**
+   * Somebody's profile, shared into the chat — drawn as a card with Send
+   * Request and View Profile. Only the person's id is stored; their name and
+   * photo are looked up whenever the message is shown, so the card is never
+   * out of date.
+   */
+  PROFILE = 'profile',
 }
 
 /** Who may post in a chat. `moderators` is for a locked-down announcement chat. */

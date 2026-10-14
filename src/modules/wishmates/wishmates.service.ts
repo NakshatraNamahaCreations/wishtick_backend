@@ -684,7 +684,7 @@ export class WishmatesService {
   }
 
   /** Everyone the viewer has blocked, and everyone who has blocked them. */
-  private async blockedIdsEitherWay(viewerId: string): Promise<Types.ObjectId[]> {
+  async blockedIdsEitherWay(viewerId: string): Promise<Types.ObjectId[]> {
     const me = new Types.ObjectId(viewerId);
     const rows = await this.blocks.find({ $or: [{ blockerId: me }, { blockedId: me }] }).exec();
     return rows.map((r) => (r.blockerId.equals(me) ? r.blockedId : r.blockerId));

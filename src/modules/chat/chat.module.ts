@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AuthModule } from 'src/modules/auth/auth.module';
 import { GroupGift, GroupGiftSchema } from 'src/modules/group-gifts/schemas/group-gift.schema';
+import { Wishlist, WishlistSchema } from 'src/modules/wishlists/schemas/wishlist.schema';
 import { WishlistsModule } from 'src/modules/wishlists/wishlists.module';
 import { WishmatesModule } from 'src/modules/wishmates/wishmates.module';
 import { ChatController } from './chat.controller';
@@ -22,6 +23,8 @@ import { ReadReceipt, ReadReceiptSchema } from './schemas/read-receipt.schema';
       // document rather than importing its module — that would be a cycle
       // (group-gifts provision their chat through ChatService).
       { name: GroupGift.name, schema: GroupGiftSchema },
+      // Read-only, for a wishlist chat's title in the chat list.
+      { name: Wishlist.name, schema: WishlistSchema },
     ]),
     // SocketAuthService — the handshake authenticator.
     AuthModule,

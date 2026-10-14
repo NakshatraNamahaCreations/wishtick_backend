@@ -778,6 +778,52 @@ describe('Chat (e2e)', () => {
       expect(row.lastMessage?.body).toBe('');
     });
 
+    it('deletes a conversation for the one who asked, and only for them', async () => {
+      const { a, b, chatId } = await pairWithThread();
+      await post(a, chatId, { body: 'before the cut' }).expect(201);
+      await post(b, chatId, { body: 'also before' }).expect(201);
+
+      await request(app.getHttpServer())
+        .post(`${V1}/chats/${chatId}/clear`)
+        .set(auth(a.token))
+        .expect(200);
+
+      // Gone from A's history and A's list…
+      const mine = (await history(a, chatId).expect(200)).body as Envelope<{
+        items: MessageView[];
+      }>;
+      expect(mine.data.items).toHaveLength(0);
+      expect(await listChats(a, 'direct')).toHaveLength(0);
+
+      // …and untouched on B's side: one person's tidy-up erases nothing of
+      // what the other wrote.
+      const theirs = (await history(b, chatId).expect(200)).body as Envelope<{
+        items: MessageView[];
+      }>;
+      expect(theirs.data.items.map((m) => m.body)).toEqual(['also before', 'before the cut']);
+      expect(await listChats(b, 'direct')).toHaveLength(1);
+
+      // A new message brings the thread back for A, starting after the cut.
+      await post(b, chatId, { body: 'after the cut' }).expect(201);
+      const [row] = await listChats(a, 'direct');
+      expect(row.lastMessage?.body).toBe('after the cut');
+      expect(row.unreadCount).toBe(1);
+      const again = (await history(a, chatId).expect(200)).body as Envelope<{
+        items: MessageView[];
+      }>;
+      expect(again.data.items.map((m) => m.body)).toEqual(['after the cut']);
+    });
+
+    it('will not clear a conversation you are not in', async () => {
+      const { chatId } = await pairWithThread();
+      const stranger = await newUser();
+
+      await request(app.getHttpServer())
+        .post(`${V1}/chats/${chatId}/clear`)
+        .set(auth(stranger.token))
+        .expect(404);
+    });
+
     it('never previews a surprise to the person it is hidden from', async () => {
       const owner = await newUser();
       const gifter = await newUser();

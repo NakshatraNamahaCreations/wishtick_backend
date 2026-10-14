@@ -24,6 +24,18 @@ export interface MessageView {
   deletedAt: Date | null;
   systemType: string | null;
   systemPayload: Record<string, unknown> | null;
+  /** Whose profile a `profile` message shares; null for every other kind. */
+  sharedUserId: string | null;
+  /**
+   * That person as they are now — name, handle, photo — for the card.
+   *
+   * Looked up when the message is shown rather than copied in when it was
+   * sent, so a changed photo or name reaches old cards too. Null when the
+   * message is not a profile, is deleted, or — on a history read — when the
+   * reader and that person have blocked each other: the card then says the
+   * profile is not available.
+   */
+  sharedProfile: PublicIdentity | null;
   createdAt: Date;
 }
 
@@ -64,6 +76,12 @@ export interface ChatView {
   counterpart: PublicIdentity | null;
   /** The newest message the caller is allowed to see, or null for an empty thread. */
   lastMessage: MessagePreviewView | null;
+  /**
+   * What a wishlist or group-gift chat is about, by name — the wishlist's or
+   * the gift's title — so it can be listed without a lookup per row. Null for
+   * a direct chat, which is named by its [counterpart].
+   */
+  title: string | null;
 }
 
 /**
@@ -96,6 +114,9 @@ export function toMessageView(m: MessageDocument): MessageView {
     deletedAt: m.deletedAt,
     systemType: m.systemType,
     systemPayload: m.systemPayload,
+    sharedUserId: deleted || !m.sharedUserId ? null : m.sharedUserId.toString(),
+    // Filled in by the service, which can look people up; see [MessageView].
+    sharedProfile: null,
     createdAt: m.createdAt,
   };
 }
@@ -124,6 +145,7 @@ export function toChatView(
   extras: {
     counterpart?: PublicIdentity | null;
     lastMessage?: MessagePreviewView | null;
+    title?: string | null;
   } = {},
 ): ChatView {
   return {
@@ -136,5 +158,6 @@ export function toChatView(
     participantCount: chat.participantIds.length,
     counterpart: extras.counterpart ?? null,
     lastMessage: extras.lastMessage ?? null,
+    title: extras.title ?? null,
   };
 }

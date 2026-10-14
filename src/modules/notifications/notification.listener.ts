@@ -717,7 +717,7 @@ export class NotificationListener {
           payload: {
             ownerName,
             count: grant.capsuleIds.length,
-            title: e.titles[first] ?? 'a memory',
+            title: e.titles[first] ?? 'some wishes',
             url: `${this.web}/memories/${first}`,
           },
         });

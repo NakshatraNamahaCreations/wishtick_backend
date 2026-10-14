@@ -20,6 +20,7 @@ import {
 } from 'src/modules/group-gifts/schemas/group-gift.schema';
 import { AccessPolicyService } from 'src/modules/wishlists/access/access-policy.service';
 import { WishlistsService } from 'src/modules/wishlists/wishlists.service';
+import { Wishlist, type WishlistDocument } from 'src/modules/wishlists/schemas/wishlist.schema';
 import {
   CHAT_BROADCAST,
   CHAT_FORCE_LEAVE,
@@ -71,6 +72,8 @@ export class ChatService {
     // Read-only, for group-gift chat authorization. The chat module does NOT
     // import the group-gift module (that would be a cycle) — it reads the doc.
     @InjectModel(GroupGift.name) private readonly groupGiftModel: Model<GroupGiftDocument>,
+    // Read-only, for a wishlist chat's title — see [titlesOf].
+    @InjectModel(Wishlist.name) private readonly wishlistModel: Model<WishlistDocument>,
     private readonly wishlists: WishlistsService,
     private readonly access: AccessPolicyService,
     private readonly cache: CacheService,
@@ -254,9 +257,11 @@ export class ChatService {
 
     const body = (dto.body ?? '').trim();
     const hasAttachments = (dto.attachmentMediaIds?.length ?? 0) > 0;
-    if (!body && !hasAttachments) {
+    const sharedUserId = dto.sharedUserId ?? null;
+    if (!body && !hasAttachments && !sharedUserId) {
       throw new AppException(ErrorCode.MESSAGE_EMPTY, 'A message needs text or an attachment', 400);
     }
+    if (sharedUserId) await this.assertShareable(userId, sharedUserId, hasAttachments);
     await this.assertNotRateLimited(userId);
 
     // Anti-spoiler: a surprise-flagged message in a wishlist chat is hidden from
@@ -272,8 +277,13 @@ export class ChatService {
       {
         chatId: chat._id,
         senderId: new Types.ObjectId(userId),
-        kind: hasAttachments ? MessageKind.ATTACHMENT : MessageKind.TEXT,
+        kind: sharedUserId
+          ? MessageKind.PROFILE
+          : hasAttachments
+            ? MessageKind.ATTACHMENT
+            : MessageKind.TEXT,
         body,
+        sharedUserId: sharedUserId ? new Types.ObjectId(sharedUserId) : null,
         attachments: (dto.attachmentMediaIds ?? []).map((id) => ({
           mediaId: new Types.ObjectId(id),
           url: null,
@@ -284,10 +294,98 @@ export class ChatService {
       },
     ]);
 
-    await this.afterNewMessage(chat, message, userId);
-    this.announceMessage(chat, message, userId);
+    const view = await this.viewOf(message);
+    await this.afterNewMessage(chat, message, userId, view);
+    // A shared profile with no note says what it is on the lock screen,
+    // rather than arriving as an empty notification.
+    this.announceMessage(
+      chat,
+      message,
+      userId,
+      sharedUserId && !body ? ChatService.sharedProfileLine(view.sharedProfile) : undefined,
+    );
     this.moderationScan(message);
-    return toMessageView(message);
+    return view;
+  }
+
+  /** "Shared a profile: Priyal Sharma" — a shared profile's line on its own. */
+  static sharedProfileLine(person: PublicIdentity | null): string {
+    const name =
+      person?.displayName?.trim() || (person?.username ? `@${person.username}` : 'someone');
+    return `Shared a profile: ${name}`;
+  }
+
+  /**
+   * Whether [sharedUserId]'s profile can be shared by [userId]: any account
+   * the sender could open — so not one that does not exist, and not one
+   * either of them has blocked. Both answer as a missing account, exactly as
+   * opening that profile would, so the share cannot be used to probe ids.
+   */
+  private async assertShareable(
+    userId: string,
+    sharedUserId: string,
+    hasAttachments: boolean,
+  ): Promise<void> {
+    if (hasAttachments) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        'A shared profile cannot carry attachments',
+        400,
+      );
+    }
+    await this.wishmates.relationshipWithExisting(userId, sharedUserId);
+    if (await this.wishmates.blockedEitherWay(userId, sharedUserId)) {
+      throw new AppException(ErrorCode.NOT_FOUND, 'User not found.', 404);
+    }
+  }
+
+  /** [toMessageView], with the shared person filled in. */
+  private async viewOf(message: MessageDocument): Promise<MessageView> {
+    const [view] = await this.withSharedProfiles([toMessageView(message)]);
+    return view;
+  }
+
+  /**
+   * Fills in [MessageView.sharedProfile] for every shared-profile message in
+   * [views], in one lookup.
+   *
+   * With a [viewerId] — a history read, which is per reader — a person the
+   * reader has blocked, or who has blocked them, is left out: the card says
+   * the profile is not available rather than showing who it was. A live
+   * broadcast goes to everyone in the chat at once and has no single reader;
+   * there the app asks for the profile before offering anything, and the
+   * same 404 answers it.
+   */
+  private async withSharedProfiles(
+    views: MessageView[],
+    viewerId?: string,
+  ): Promise<MessageView[]> {
+    const ids = [...new Set(views.flatMap((v) => (v.sharedUserId ? [v.sharedUserId] : [])))];
+    if (ids.length === 0) return views;
+
+    const [identities, blocked] = await Promise.all([
+      this.wishmates.identitiesOf(ids),
+      viewerId ? this.wishmates.blockedIdsEitherWay(viewerId) : Promise.resolve([]),
+    ]);
+    const byUser = new Map(identities.map((i) => [i.userId, i]));
+    const hidden = new Set(blocked.map((id) => id.toString()));
+
+    return views.map((v) => {
+      if (!v.sharedUserId || hidden.has(v.sharedUserId)) return v;
+      return {
+        ...v,
+        // An account with no profile row yet still has an id worth a card.
+        sharedProfile: byUser.get(v.sharedUserId) ?? {
+          userId: v.sharedUserId,
+          username: null,
+          displayName: null,
+          photoUrl: null,
+          avatarKey: null,
+          online: false,
+          lastSeenAt: null,
+        },
+      };
+    });
   }
 
   /**
@@ -344,13 +442,14 @@ export class ChatService {
     message.body = dto.body.trim();
     message.editedAt = new Date();
     await message.save();
+    const view = await this.viewOf(message);
     this.broadcast(
       message.chatId.toString(),
       WS_EVENT.MESSAGE_UPDATED,
-      toMessageView(message),
+      view,
       this.hideList(message),
     );
-    return toMessageView(message);
+    return view;
   }
 
   async deleteMessage(messageId: string, userId: string): Promise<MessageView> {
@@ -389,13 +488,14 @@ export class ChatService {
     // Drop an emoji nobody reacts with anymore.
     message.reactions = message.reactions.filter((r) => r.userIds.length > 0);
     await message.save();
+    const view = await this.viewOf(message);
     this.broadcast(
       message.chatId.toString(),
       WS_EVENT.REACTION_CHANGED,
-      toMessageView(message),
+      view,
       this.hideList(message),
     );
-    return toMessageView(message);
+    return view;
   }
 
   // ── Read receipts ───────────────────────────────────────────────────────────
@@ -435,6 +535,33 @@ export class ChatService {
     return { unreadCount: await this.unreadCount(chat._id, userId) };
   }
 
+  /**
+   * Deletes the conversation from this user's side: their history starts
+   * after the newest message, and a direct thread leaves their chat list
+   * until somebody writes in it again. Nothing is deleted — the other person
+   * still has the whole thread.
+   *
+   * Also marks it read, so a cleared thread cannot keep an unread badge for
+   * messages its reader can no longer open.
+   */
+  async clearForUser(chatId: string, userId: string): Promise<{ clearedUpTo: string | null }> {
+    const { chat } = await this.authorize(chatId, userId);
+    const latest = await this.messageModel
+      .findOne({ chatId: chat._id })
+      .sort({ _id: -1 })
+      .select('_id')
+      .exec();
+    const upTo = latest?._id ?? null;
+    await this.receiptModel
+      .updateOne(
+        { chatId: chat._id, userId: new Types.ObjectId(userId) },
+        { $set: { clearedUpTo: upTo, lastReadMessageId: upTo, lastReadAt: new Date() } },
+        { upsert: true },
+      )
+      .exec();
+    return { clearedUpTo: upTo?.toString() ?? null };
+  }
+
   // ── Reading ─────────────────────────────────────────────────────────────────
 
   async listMessages(
@@ -450,12 +577,17 @@ export class ChatService {
       // The anti-spoiler at the read path: a message hiding this user is invisible.
       hideFromUserIds: { $ne: new Types.ObjectId(userId) },
     };
+    const idRange: Record<string, Types.ObjectId> = {};
     if (query.before) {
       if (!Types.ObjectId.isValid(query.before)) {
         throw new AppException(ErrorCode.VALIDATION_FAILED, 'Invalid cursor', 400);
       }
-      filter._id = { $lt: new Types.ObjectId(query.before) };
+      idRange.$lt = new Types.ObjectId(query.before);
     }
+    // A conversation this user deleted starts again after the cut.
+    const cleared = (await this.clearedCutoffs([new Types.ObjectId(chatId)], userId)).get(chatId);
+    if (cleared) idRange.$gt = cleared;
+    if (Object.keys(idRange).length > 0) filter._id = idRange;
 
     const rows = await this.messageModel
       .find(filter)
@@ -465,7 +597,7 @@ export class ChatService {
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
     return {
-      items: page.map(toMessageView),
+      items: await this.withSharedProfiles(page.map(toMessageView), userId),
       nextCursor: hasMore ? page[page.length - 1]._id.toString() : null,
     };
   }
@@ -479,16 +611,33 @@ export class ChatService {
     // Both decorations are batched across the whole page: the chat list is the
     // one screen that asks for every thread at once, and a per-row lookup would
     // make it two hundred round trips for two hundred names.
-    const [previews, counterparts] = await Promise.all([
+    const [previews, counterparts, cleared, titles] = await Promise.all([
       this.lastMessagesOf(chats, userId),
       this.counterpartsOf(chats, userId),
+      this.clearedCutoffs(
+        chats.map((c) => c._id),
+        userId,
+      ),
+      this.titlesOf(chats),
     ]);
 
+    // A direct thread its reader deleted stays off their list until somebody
+    // writes in it again. Only direct ones: a wishlist or group-gift chat is
+    // reached through its wishlist or gift, and clearing it empties it rather
+    // than making it vanish.
+    const visible = chats.filter(
+      (chat) =>
+        chat.type !== ChatType.DIRECT ||
+        !cleared.has(chat._id.toString()) ||
+        previews.has(chat._id.toString()),
+    );
+
     return Promise.all(
-      chats.map(async (chat) =>
+      visible.map(async (chat) =>
         toChatView(chat, await this.unreadCount(chat._id, userId), {
           counterpart: counterparts.get(chat._id.toString()) ?? null,
           lastMessage: previews.get(chat._id.toString()) ?? null,
+          title: titles.get(chat._id.toString()) ?? null,
         }),
       ),
     );
@@ -496,15 +645,53 @@ export class ChatService {
 
   /** One chat's full view. The single-row path; [listChats] batches instead. */
   private async decorate(chat: ChatDocument, userId: string): Promise<ChatView> {
-    const [unread, previews, counterparts] = await Promise.all([
+    const [unread, previews, counterparts, titles] = await Promise.all([
       this.unreadCount(chat._id, userId),
       this.lastMessagesOf([chat], userId),
       this.counterpartsOf([chat], userId),
+      this.titlesOf([chat]),
     ]);
     return toChatView(chat, unread, {
       counterpart: counterparts.get(chat._id.toString()) ?? null,
       lastMessage: previews.get(chat._id.toString()) ?? null,
+      title: titles.get(chat._id.toString()) ?? null,
     });
+  }
+
+  /**
+   * Each wishlist or group-gift chat's title — its wishlist's or gift's — in
+   * two lookups for the whole page, so a list of group chats can name every
+   * row. Direct chats are skipped; their counterpart names them.
+   */
+  private async titlesOf(chats: ChatDocument[]): Promise<Map<string, string>> {
+    const of = (type: ChatType) => chats.filter((c) => c.type === type);
+    const wishlistChats = of(ChatType.WISHLIST);
+    const giftChats = of(ChatType.GROUP_GIFT);
+    const [wishlists, gifts] = await Promise.all([
+      wishlistChats.length === 0
+        ? []
+        : this.wishlistModel
+            .find({ _id: { $in: wishlistChats.map((c) => c.refId) } })
+            .select('title')
+            .lean()
+            .exec(),
+      giftChats.length === 0
+        ? []
+        : this.groupGiftModel
+            .find({ _id: { $in: giftChats.map((c) => c.refId) } })
+            .select('title')
+            .lean()
+            .exec(),
+    ]);
+    const byRef = new Map<string, string>();
+    for (const doc of [...wishlists, ...gifts]) byRef.set(doc._id.toString(), doc.title);
+
+    const titles = new Map<string, string>();
+    for (const chat of [...wishlistChats, ...giftChats]) {
+      const title = byRef.get(chat.refId.toString());
+      if (title) titles.set(chat._id.toString(), title);
+    }
+    return titles;
   }
 
   /**
@@ -519,27 +706,60 @@ export class ChatService {
     chats: ChatDocument[],
     userId: string,
   ): Promise<Map<string, MessagePreviewView>> {
-    const rows = await this.messageModel
-      .aggregate<{ _id: Types.ObjectId; doc: MessageDocument }>([
-        {
-          $match: {
-            chatId: { $in: chats.map((c) => c._id) },
-            hideFromUserIds: { $ne: new Types.ObjectId(userId) },
+    const [rows, cleared] = await Promise.all([
+      this.messageModel
+        .aggregate<{ _id: Types.ObjectId; doc: MessageDocument }>([
+          {
+            $match: {
+              chatId: { $in: chats.map((c) => c._id) },
+              hideFromUserIds: { $ne: new Types.ObjectId(userId) },
+            },
           },
-        },
-        // `_id` descending is newest-first: an ObjectId leads with its
-        // timestamp, which is what the history cursor already relies on.
-        { $sort: { _id: -1 } },
-        { $group: { _id: '$chatId', doc: { $first: '$$ROOT' } } },
-      ])
-      .exec();
+          // `_id` descending is newest-first: an ObjectId leads with its
+          // timestamp, which is what the history cursor already relies on.
+          { $sort: { _id: -1 } },
+          { $group: { _id: '$chatId', doc: { $first: '$$ROOT' } } },
+        ])
+        .exec(),
+      this.clearedCutoffs(
+        chats.map((c) => c._id),
+        userId,
+      ),
+    ]);
+
+    // The newest message is the preview, so if even that one was cleared,
+    // everything was — the thread has nothing left to show this reader.
+    const kept = rows.filter((row) => {
+      const cut = cleared.get(row._id.toString());
+      return !cut || row.doc._id.toString() > cut.toString();
+    });
 
     return new Map(
-      rows.map((row) => [
+      kept.map((row) => [
         row._id.toString(),
         toMessagePreviewView(this.messageModel.hydrate(row.doc)),
       ]),
     );
+  }
+
+  /** Where each chat this user deleted was cut, keyed by chat id. */
+  private async clearedCutoffs(
+    chatIds: Types.ObjectId[],
+    userId: string,
+  ): Promise<Map<string, Types.ObjectId>> {
+    const receipts = await this.receiptModel
+      .find({
+        chatId: { $in: chatIds },
+        userId: new Types.ObjectId(userId),
+        clearedUpTo: { $ne: null },
+      })
+      .select('chatId clearedUpTo')
+      .exec();
+    const cutoffs = new Map<string, Types.ObjectId>();
+    for (const r of receipts) {
+      if (r.clearedUpTo) cutoffs.set(r.chatId.toString(), r.clearedUpTo);
+    }
+    return cutoffs;
   }
 
   /**
@@ -638,13 +858,14 @@ export class ChatService {
     chat: ChatDocument,
     message: MessageDocument,
     senderId: string,
+    view: MessageView = toMessageView(message),
   ): Promise<void> {
     await this.addParticipant(chat._id, senderId);
     await this.touchChat(chat._id, message.createdAt);
     this.broadcast(
       chat._id.toString(),
       WS_EVENT.MESSAGE_NEW,
-      toMessageView(message),
+      view,
       message.hideFromUserIds.map((id) => id.toString()),
     );
   }
@@ -660,7 +881,13 @@ export class ChatService {
    * is hidden from — the anti-spoiler holds for notifications too, or the
    * surprise is given away by the lock screen rather than the chat.
    */
-  private announceMessage(chat: ChatDocument, message: MessageDocument, senderId: string): void {
+  private announceMessage(
+    chat: ChatDocument,
+    message: MessageDocument,
+    senderId: string,
+    /** What the notification says, when the message's own text will not do. */
+    previewBody?: string,
+  ): void {
     const hidden = new Set(this.hideList(message));
     const recipientIds = chat.participantIds
       .map((id) => id.toString())
@@ -672,7 +899,7 @@ export class ChatService {
       messageId: message._id.toString(),
       senderId,
       recipientIds,
-      body: message.body,
+      body: previewBody ?? message.body,
       direct: chat.type === ChatType.DIRECT,
     } satisfies ChatMessagePostedEvent);
   }

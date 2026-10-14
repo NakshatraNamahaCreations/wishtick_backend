@@ -383,8 +383,8 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: memory_reply 1`] = `
 {
   "sms": "Someone wrote back — https://app.wishtick.test/x",
-  "subject": "Someone replied to your memory 💌",
-  "text": "They replied to the memory you sent them.
+  "subject": "Someone replied to your wishes 💌",
+  "text": "They replied to the wishes you sent them.
 
 Tap to see what they said.
 
@@ -397,7 +397,7 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 {
   "sms": "Someone shared Password changed with you — https://app.wishtick.test/x",
   "subject": "Someone shared Password changed with you",
-  "text": "Open it to watch the wishes inside.
+  "text": "Open them to watch every wish inside.
 
 Watch it: https://app.wishtick.test/x",
   "title": "Someone shared Password changed with you",
@@ -407,12 +407,12 @@ Watch it: https://app.wishtick.test/x",
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: memory_unlocked 1`] = `
 {
   "sms": "Password changed is open — https://app.wishtick.test/x",
-  "subject": "A memory just opened 💜",
+  "subject": "The wishes just opened 💜",
   "text": "A few wishes were waiting inside.
 
 Tap to open it and read them.
 
-Open the memory: https://app.wishtick.test/x",
+Open the wishes: https://app.wishtick.test/x",
   "title": "Password changed is open",
 }
 `;
@@ -421,7 +421,7 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 {
   "sms": "Someone loved your wish ❤️ — https://app.wishtick.test/x",
   "subject": "Someone loved your wish ❤️",
-  "text": "Your wish in their memory made their day.
+  "text": "Your wish made their day.
 
 See your wish: https://app.wishtick.test/x",
   "title": "Someone loved your wish ❤️",

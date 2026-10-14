@@ -4,6 +4,8 @@ import { getModelToken } from '@nestjs/mongoose';
 import { Types, type Model } from 'mongoose';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { MemoriesService } from 'src/modules/memories/memories.service';
+import { MEMORY_UNLOCK_SWEEP_JOB } from 'src/modules/memories/memory-unlock.registrar';
+import { SchedulerRegistry } from 'src/infra/queue/scheduler-registry';
 import { Media, MediaPurpose, type MediaDocument } from 'src/modules/media/schemas/media.schema';
 import {
   EventInvite,
@@ -693,7 +695,7 @@ describe('Memories (e2e)', () => {
       await share(me, [a, b], [friend.userId]).expect(201);
       const first = await shared();
       expect(first).toHaveLength(1);
-      expect(first[0].title).toContain('shared 2 memories with you');
+      expect(first[0].title).toContain('shared wishes from 2 occasions with you');
 
       // The same again is not news.
       await share(me, [a, b], [friend.userId]).expect(201);
@@ -1467,10 +1469,55 @@ describe('Memories (e2e)', () => {
       expect(stale.unlocked).toBe(false);
       expect((await capsuleModel.findById(memory.id).exec())!.status).toBe('collecting');
 
+      // What is actually queued now carries the new instant. A same-id add is
+      // a no-op, so this once still held the old job — which opened nothing.
+      const queued = ctx.scheduler
+        .jobsNamed('memory-unlock')
+        .filter((j) => (j.data as { capsuleId: string }).capsuleId === memory.id);
+      expect(queued).toHaveLength(1);
+      expect((queued[0].data as { unlockAtIso: string }).unlockAtIso).toBe(later);
+
       // The rescheduled job carries the new instant and does open it.
       const fresh = await memories.fireUnlock({ capsuleId: memory.id, unlockAtIso: later });
       expect(fresh.unlocked).toBe(true);
       expect((await capsuleModel.findById(memory.id).exec())!.status).toBe('unlocked');
+    });
+
+    // The job lost to a restart or a Redis flush: the sweep still opens it.
+    it('the sweep opens one whose moment passed without its job, once', async () => {
+      const host = await newUser();
+      const memory = await createMemory(host);
+      const due = await createMemory(host);
+      await capsuleModel
+        .updateOne({ _id: due.id }, { $set: { unlockAt: new Date(Date.now() - 60_000) } })
+        .exec();
+
+      expect(await memories.sweepDue()).toBe(1);
+      expect((await capsuleModel.findById(due.id).exec())!.status).toBe('unlocked');
+      // Not one still ahead of its time.
+      expect((await capsuleModel.findById(memory.id).exec())!.status).toBe('collecting');
+
+      // The late job, or a second sweep, finds it already open and does nothing.
+      expect(await memories.sweepDue()).toBe(0);
+      const late = await memories.fireUnlock({
+        capsuleId: due.id,
+        unlockAtIso: (await capsuleModel.findById(due.id).exec())!.unlockAt.toISOString(),
+      });
+      expect(late.unlocked).toBe(false);
+    });
+
+    // Registered on boot — the queue itself is cleared between tests, so it is
+    // the handler that is checked here, run as the queue would run it.
+    it('the sweep is wired to the scheduler', async () => {
+      const handler = app.get(SchedulerRegistry).get(MEMORY_UNLOCK_SWEEP_JOB);
+      expect(handler).toBeDefined();
+
+      const host = await newUser();
+      const due = await createMemory(host);
+      await capsuleModel
+        .updateOne({ _id: due.id }, { $set: { unlockAt: new Date(Date.now() - 60_000) } })
+        .exec();
+      expect(await handler!({})).toEqual({ opened: 1 });
     });
 
     it('refuses to open twice, and refuses edits once open', async () => {

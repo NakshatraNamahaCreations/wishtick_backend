@@ -79,7 +79,7 @@ export class MemoriesService {
     if (open >= MAX_OPEN_CAPSULES) {
       throw new AppException(
         ErrorCode.RATE_LIMITED,
-        'You already have as many sealed memories as Wishtick allows',
+        'You already have as many sealed wishes as Wishtick allows',
         429,
       );
     }
@@ -264,7 +264,7 @@ export class MemoriesService {
   async getBySlug(slug: string): Promise<PublicMemoryView> {
     const capsule = await this.capsuleModel.findOne({ 'share.slug': slug }).exec();
     if (!capsule) {
-      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Memory not found', 404);
+      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Wishes not found', 404);
     }
     const wishes = await this.wishesOf(capsule._id);
     return toPublicMemoryView(capsule, wishes);
@@ -295,16 +295,16 @@ export class MemoriesService {
     // 404 for anything the caller cannot share, rather than sharing the rest:
     // a half-applied share is one the person did not ask for.
     if (capsules.length !== new Set(capsuleIds).size) {
-      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Memory not found', 404);
+      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Wishes not found', 404);
     }
     for (const capsule of capsules) {
       if (capsule.recipientUserId?.toString() !== userId) {
-        throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Memory not found', 404);
+        throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Wishes not found', 404);
       }
       if (capsule.status !== MemoryStatus.UNLOCKED) {
         throw new AppException(
           ErrorCode.INVALID_MEMORY_TRANSITION,
-          'A memory can be shared once it has opened',
+          'Wishes can be shared once they have opened',
           409,
         );
       }
@@ -316,7 +316,7 @@ export class MemoriesService {
       if (relationship !== WishmateRelationship.WISHMATES) {
         throw new AppException(
           ErrorCode.FORBIDDEN,
-          'Memories can only be shared with your WishMates',
+          'Wishes can only be shared with your WishMates',
           403,
         );
       }
@@ -357,7 +357,7 @@ export class MemoriesService {
   async unshare(userId: string, capsuleId: string, viewerId: string): Promise<MemoryCapsuleView> {
     const capsule = await this.loadOrFail(capsuleId);
     if (capsule.recipientUserId?.toString() !== userId) {
-      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Memory not found', 404);
+      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Wishes not found', 404);
     }
     if (Types.ObjectId.isValid(viewerId)) {
       await this.capsuleModel
@@ -419,21 +419,65 @@ export class MemoriesService {
     if (capsule.unlockAt.toISOString() !== data.unlockAtIso) return { unlocked: false };
     if (capsule.status === MemoryStatus.UNLOCKED) return { unlocked: false };
 
-    await this.transitionToUnlocked(capsule);
-    return { unlocked: true };
+    return { unlocked: await this.tryUnlock(capsule) };
+  }
+
+  /**
+   * The safety net under the delayed jobs: opens every sealed capsule whose
+   * moment has passed. A job lost to a Redis flush or a restart used to leave
+   * its capsule sealed for good — the recipient's countdown sitting at zero,
+   * and nobody told. Run every minute, so a missed one is at most a minute
+   * late; on time, the job has already opened it and this finds nothing.
+   */
+  async sweepDue(now = new Date(), limit = 100): Promise<number> {
+    const due = await this.capsuleModel
+      .find({
+        status: { $in: [MemoryStatus.COLLECTING, MemoryStatus.LOCKED] },
+        unlockAt: { $lte: now },
+      })
+      .sort({ unlockAt: 1 })
+      .limit(limit)
+      .exec();
+    let opened = 0;
+    for (const capsule of due) {
+      if (await this.tryUnlock(capsule)) opened++;
+    }
+    if (opened > 0) this.logger.warn(`Unlock sweep opened ${opened} capsule(s) the queue missed`);
+    return opened;
+  }
+
+  /** Opens it unless something else got there first. */
+  private async tryUnlock(capsule: MemoryCapsuleDocument): Promise<boolean> {
+    try {
+      await this.transitionToUnlocked(capsule);
+      return true;
+    } catch (err) {
+      if (err instanceof AppException && err.errorCode === ErrorCode.INVALID_MEMORY_TRANSITION) {
+        return false;
+      }
+      throw err;
+    }
   }
 
   private async transitionToUnlocked(capsule: MemoryCapsuleDocument): Promise<void> {
-    if (!MEMORY_TRANSITIONS[capsule.status].includes(MemoryStatus.UNLOCKED)) {
-      throw new AppException(
-        ErrorCode.INVALID_MEMORY_TRANSITION,
-        'This memory is already open',
-        409,
-      );
-    }
+    const alreadyOpen = () =>
+      new AppException(ErrorCode.INVALID_MEMORY_TRANSITION, 'These wishes are already open', 409);
+    if (!MEMORY_TRANSITIONS[capsule.status].includes(MemoryStatus.UNLOCKED)) throw alreadyOpen();
+
+    // Claimed in one write. The delayed job, the sweep and the host's "open
+    // now" can all reach a capsule in the same moment, and only the one that
+    // actually flips it may tell everyone — otherwise they hear it twice.
+    const unlockedAt = new Date();
+    const claimed = await this.capsuleModel
+      .updateOne(
+        { _id: capsule._id, status: { $ne: MemoryStatus.UNLOCKED } },
+        { $set: { status: MemoryStatus.UNLOCKED, unlockedAt } },
+      )
+      .exec();
+    if (claimed.modifiedCount === 0) throw alreadyOpen();
+    // The callers read it back.
     capsule.status = MemoryStatus.UNLOCKED;
-    capsule.unlockedAt = new Date();
-    await capsule.save();
+    capsule.unlockedAt = unlockedAt;
 
     const contributorIds = (
       await this.wishModel.distinct('contributorId', { capsuleId: capsule._id }).exec()
@@ -462,11 +506,11 @@ export class MemoriesService {
 
   async loadOrFail(id: string): Promise<MemoryCapsuleDocument> {
     if (!Types.ObjectId.isValid(id)) {
-      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Memory not found', 404);
+      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Wishes not found', 404);
     }
     const capsule = await this.capsuleModel.findById(id).exec();
     if (!capsule) {
-      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Memory not found', 404);
+      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Wishes not found', 404);
     }
     return capsule;
   }
@@ -475,7 +519,7 @@ export class MemoriesService {
   async findOwnedOrFail(id: string, userId: string): Promise<MemoryCapsuleDocument> {
     const capsule = await this.loadOrFail(id);
     if (capsule.hostId.toString() !== userId) {
-      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Memory not found', 404);
+      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Wishes not found', 404);
     }
     return capsule;
   }
@@ -484,7 +528,7 @@ export class MemoriesService {
     if (capsule.status === MemoryStatus.UNLOCKED) {
       throw new AppException(
         ErrorCode.INVALID_MEMORY_TRANSITION,
-        'An opened memory can no longer be edited',
+        'Wishes that have opened can no longer be edited',
         409,
       );
     }
@@ -581,17 +625,13 @@ export class MemoriesService {
     opts: { linkedByEvent?: boolean } = {},
   ): Promise<PublicIdentity> {
     if (hostId === recipientUserId) {
-      throw new AppException(ErrorCode.VALIDATION_FAILED, 'A memory is made for someone else', 400);
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'Wishes are made for someone else', 400);
     }
 
     if (!opts.linkedByEvent) {
       const relationship = await this.wishmates.relationshipWith(hostId, recipientUserId);
       if (relationship !== WishmateRelationship.WISHMATES) {
-        throw new AppException(
-          ErrorCode.FORBIDDEN,
-          'You can only make a memory for a WishMate',
-          403,
-        );
+        throw new AppException(ErrorCode.FORBIDDEN, 'You can only make wishes for a WishMate', 403);
       }
     }
 
@@ -645,7 +685,7 @@ export class MemoriesService {
     if (!allowed.includes(recipientUserId)) {
       throw new AppException(
         ErrorCode.FORBIDDEN,
-        "From an invitation you can send a memory to its host or the person it's for",
+        "From an invitation you can send wishes to its host or the person it's for",
         403,
       );
     }
@@ -657,7 +697,7 @@ export class MemoriesService {
     if (media.purpose !== MediaPurpose.MEMORY_COVER) {
       throw new AppException(
         ErrorCode.MEDIA_TYPE_NOT_ALLOWED,
-        'This media was not uploaded as a memory cover',
+        'This media was not uploaded as a cover for wishes',
         400,
       );
     }
@@ -666,6 +706,11 @@ export class MemoriesService {
 
   private async scheduleUnlock(capsule: MemoryCapsuleDocument): Promise<void> {
     const delay = capsule.unlockAt.getTime() - Date.now();
+    const jobId = unlockJobId(capsule._id.toString());
+    // The old job first. BullMQ ignores an add whose id is already queued, so
+    // a moved date used to keep only the old job — which then fired at the old
+    // time, saw the date had changed, and opened nothing, ever.
+    await this.scheduler.remove(jobId).catch(() => undefined);
     await this.scheduler.add(
       MEMORY_UNLOCK_JOB,
       {
@@ -674,7 +719,7 @@ export class MemoriesService {
       } satisfies MemoryUnlockJobData,
       {
         delay: Math.max(0, delay),
-        jobId: unlockJobId(capsule._id.toString()),
+        jobId,
         removeOnComplete: true,
       },
     );
@@ -688,7 +733,7 @@ export class MemoriesService {
     if (date.getTime() <= Date.now()) {
       throw new AppException(
         ErrorCode.VALIDATION_FAILED,
-        'unlockAt must be in the future — a memory that is already open is not a surprise',
+        'unlockAt must be in the future — wishes that are already open are not a surprise',
         400,
       );
     }

@@ -51,14 +51,14 @@ export class MemoryWishesService {
     if (!MEMORY_SUBMITTABLE.includes(capsule.status)) {
       throw new AppException(
         ErrorCode.MEMORY_NOT_ACCEPTING_WISHES,
-        'This memory is closed for wishes',
+        'No more wishes can be added here',
         409,
       );
     }
     if (capsule.wishCount >= MAX_WISHES_PER_CAPSULE) {
       throw new AppException(
         ErrorCode.MEMORY_NOT_ACCEPTING_WISHES,
-        `A memory holds at most ${MAX_WISHES_PER_CAPSULE} wishes`,
+        `There's room for at most ${MAX_WISHES_PER_CAPSULE} wishes here`,
         409,
       );
     }
@@ -86,7 +86,7 @@ export class MemoryWishesService {
       if (media.purpose !== MediaPurpose.MEMORY_WISH) {
         throw new AppException(
           ErrorCode.MEDIA_TYPE_NOT_ALLOWED,
-          'This media was not uploaded as a memory wish',
+          'This media was not uploaded as a wish',
           400,
         );
       }
@@ -131,7 +131,7 @@ export class MemoryWishesService {
   async list(capsuleId: string, userId: string): Promise<MemoryWishView[]> {
     const capsule = await this.capsules.loadOrFail(capsuleId);
     if (!MEMORY_CONTENT_VISIBLE.includes(capsule.status)) {
-      throw new AppException(ErrorCode.MEMORY_LOCKED, 'This memory has not opened yet', 409, {
+      throw new AppException(ErrorCode.MEMORY_LOCKED, 'These wishes have not opened yet', 409, {
         unlockAt: capsule.unlockAt,
       });
     }
@@ -145,7 +145,7 @@ export class MemoryWishesService {
     // part of are not theirs to be told about, and a 403 confirms the capsule
     // exists and who it is for.
     if (capsule.recipientUserId?.toString() !== userId) {
-      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Memory not found', 404);
+      throw new AppException(ErrorCode.MEMORY_NOT_FOUND, 'Wishes not found', 404);
     }
     return (
       await this.wishModel.find({ capsuleId: capsule._id }).sort({ order: 1, createdAt: 1 })
@@ -269,12 +269,12 @@ export class MemoryWishesService {
   ): Promise<{ capsule: MemoryCapsuleDocument; wishOid: Types.ObjectId }> {
     const capsule = await this.capsules.loadOrFail(capsuleId);
     if (!MEMORY_CONTENT_VISIBLE.includes(capsule.status)) {
-      throw new AppException(ErrorCode.MEMORY_LOCKED, 'This memory has not opened yet', 409);
+      throw new AppException(ErrorCode.MEMORY_LOCKED, 'These wishes have not opened yet', 409);
     }
     if (capsule.recipientUserId?.toString() !== userId) {
       throw new AppException(
         ErrorCode.FORBIDDEN,
-        'Only the person this memory is for can react to it',
+        'Only the person these wishes are for can react to them',
         403,
       );
     }

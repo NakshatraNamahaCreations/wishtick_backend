@@ -426,19 +426,20 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
   },
   /**
    * "Priya shared Priya's Birthday with you" — or, for several at once,
-   * "Priya shared 3 memories with you".
+   * "Priya shared wishes from 3 occasions with you" — the count is of
+   * occasions, not of single wishes.
    */
   [NotificationType.MEMORY_SHARED]: (p) => {
     const owner = who(p, 'ownerName');
     const count = Number(p.count);
     const headline =
       Number.isFinite(count) && count > 1
-        ? `${owner} shared ${count} memories with you`
-        : `${owner} shared ${s(p, 'title', 'a memory')} with you`;
+        ? `${owner} shared wishes from ${count} occasions with you`
+        : `${owner} shared ${s(p, 'title', 'some wishes')} with you`;
     return {
       subject: headline,
       title: headline,
-      lines: ['Open it to watch the wishes inside.'],
+      lines: ['Open them to watch every wish inside.'],
       cta: { label: 'Watch it', url: s(p, 'url') },
     };
   },
@@ -474,19 +475,21 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     cta: { label: 'Watch your reel', url: s(p, 'url') },
   }),
   [NotificationType.MEMORY_UNLOCKED]: (p) => ({
-    subject: `A memory just opened 💜`,
-    title: `${s(p, 'title', 'Your memory')} is open`,
+    subject: `The wishes just opened 💜`,
+    // "Suma's Birthday is open" — the title is one thing; without it, the
+    // wishes are many.
+    title: s(p, 'title') ? `${s(p, 'title')} is open` : 'Your wishes are open',
     lines: [
       `${s(p, 'wishCount', 'A few')} wishes were waiting inside.`,
       'Tap to open it and read them.',
     ],
-    cta: { label: 'Open the memory', url: s(p, 'url') },
+    cta: { label: 'Open the wishes', url: s(p, 'url') },
   }),
   [NotificationType.MEMORY_REPLY]: (p) => ({
-    subject: `${s(p, 'authorName', 'Someone')} replied to your memory 💌`,
+    subject: `${s(p, 'authorName', 'Someone')} replied to your wishes 💌`,
     title: `${s(p, 'authorName', 'Someone')} wrote back`,
     lines: [
-      `They replied to ${s(p, 'capsuleTitle', 'the memory')} you sent them.`,
+      `They replied to ${s(p, 'capsuleTitle', 'the wishes')} you sent them.`,
       'Tap to see what they said.',
     ],
     cta: { label: 'Read the reply', url: s(p, 'url') },
@@ -494,7 +497,11 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
   [NotificationType.MEMORY_WISH_LOVED]: (p) => ({
     subject: `${s(p, 'lovedByName', 'Someone')} loved your wish ❤️`,
     title: `${s(p, 'lovedByName', 'Someone')} loved your wish ❤️`,
-    lines: [`Your wish in ${s(p, 'capsuleTitle', 'their memory')} made their day.`],
+    lines: [
+      s(p, 'capsuleTitle')
+        ? `Your wish in ${s(p, 'capsuleTitle')} made their day.`
+        : 'Your wish made their day.',
+    ],
     cta: { label: 'See your wish', url: s(p, 'url') },
   }),
   [NotificationType.ADMIN_ANNOUNCEMENT]: (p) => ({

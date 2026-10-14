@@ -55,6 +55,10 @@ export class Message {
   @Prop({ type: [MessageReactionSchema], default: [] })
   reactions!: MessageReaction[];
 
+  /** Whose profile a [MessageKind.PROFILE] message shares. Null otherwise. */
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', default: null })
+  sharedUserId!: Types.ObjectId | null;
+
   @Prop({ type: Date, default: null })
   editedAt!: Date | null;
 

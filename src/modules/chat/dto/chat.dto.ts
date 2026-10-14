@@ -39,6 +39,16 @@ export class PostMessageDto {
   attachmentMediaIds?: string[];
 
   @ApiPropertyOptional({
+    description:
+      'Share this person’s profile into the chat, as a card. Any profile the sender can ' +
+      'open — not one either side has blocked. `body` is an optional note with it; ' +
+      'attachments cannot go with it.',
+  })
+  @IsOptional()
+  @IsMongoId()
+  sharedUserId?: string;
+
+  @ApiPropertyOptional({
     default: false,
     description:
       'In a wishlist chat, hide this message from the owner — surprise-gift chatter they must not see.',

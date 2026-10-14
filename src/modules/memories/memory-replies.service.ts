@@ -152,7 +152,7 @@ export class MemoryRepliesService {
     if (wanted.length === 0) {
       throw new AppException(
         ErrorCode.MEMORY_REPLY_NO_AUDIENCE,
-        'None of those people have sent you a memory',
+        'None of those people have sent you wishes',
         403,
       );
     }
@@ -181,7 +181,7 @@ export class MemoryRepliesService {
       if (media.purpose !== MediaPurpose.MEMORY_REPLY) {
         throw new AppException(
           ErrorCode.MEDIA_TYPE_NOT_ALLOWED,
-          'This media was not uploaded as a memory reply',
+          'This media was not uploaded as a reply to wishes',
           400,
         );
       }

@@ -25,6 +25,15 @@ export class ReadReceipt {
   @Prop({ type: Date, default: null })
   lastReadAt!: Date | null;
 
+  /**
+   * "Delete conversation", for this user only: everything up to and including
+   * this message is gone from their history and their chat list. The other
+   * side keeps every word — one person tidying their inbox must not erase
+   * what somebody else wrote. Null until they clear it.
+   */
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'Message', default: null })
+  clearedUpTo!: Types.ObjectId | null;
+
   createdAt!: Date;
   updatedAt!: Date;
 }
