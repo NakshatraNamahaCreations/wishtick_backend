@@ -1492,6 +1492,225 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       await act(token, 'webhooks', eventId.toString(), 'replay', { reason: 'Again' }).expect(409);
     });
 
+    it('shows each group gift payment as the host sees it, and queues the ones that need a look', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const host = await newUser();
+      const [waits, short, missing, paid] = [
+        await newUser(),
+        await newUser(),
+        await newUser(),
+        await newUser(),
+      ];
+      const itemId = await itemFor(owner, 500000);
+      const gg = (
+        (
+          await request(server())
+            .post(`${V1}/items/${itemId}/group-gift`)
+            .set(auth(host.token))
+            .set(idem())
+            .send({ title: 'Payments check', contributionMode: 'custom' })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+      // Each member says they sent ₹500; the host has not answered yet.
+      const claimOf = async (member: Actor, paymentRef?: string) => {
+        await request(server())
+          .post(`${V1}/group-gifts/${gg}/contribute`)
+          .set(auth(member.token))
+          .set(idem())
+          .send({ amountMinor: 50000, ...(paymentRef ? { paymentRef } : {}) })
+          .expect(201);
+        const row = await db()
+          .collection('contributions')
+          .findOne({
+            groupGiftId: new Types.ObjectId(gg),
+            userId: new Types.ObjectId(member.userId),
+          });
+        return String(row!._id);
+      };
+      await claimOf(waits, 'UTR111');
+      const shortId = await claimOf(short);
+      const missingId = await claimOf(missing);
+      const paidId = await claimOf(paid);
+      const review = (cid: string, receivedMinor: number) =>
+        request(server())
+          .post(`${V1}/group-gifts/${gg}/contributions/${cid}/review`)
+          .set(auth(host.token))
+          .send({ receivedMinor })
+          .expect(200);
+      await review(shortId, 30000);
+      await review(missingId, 0);
+      await review(paidId, 50000);
+      // "I did pay" — after the host said nothing arrived.
+      await request(server())
+        .post(`${V1}/group-gifts/${gg}/contributions/${missingId}/dispute`)
+        .set(auth(missing.token))
+        .send({ paymentRef: 'UTR222', note: 'Sent on Monday' })
+        .expect(200);
+
+      type Payment = {
+        id: string;
+        userId: string;
+        payment: string;
+        claimedMinor: number | null;
+        receivedMinor: number | null;
+        paymentRef: string | null;
+        giftTitle: string | null;
+      };
+      const payments = async (query: Record<string, string>) =>
+        (
+          (
+            await request(server())
+              .get(`${V1}/admin/money/payments`)
+              .query({ groupGift: gg, ...query })
+              .set(auth(token))
+              .expect(200)
+          ).body as Envelope<{ items: Payment[]; total: number }>
+        ).data;
+      const all = await payments({});
+      expect(all.total).toBe(4);
+      const stateOf = (who: Actor) => all.items.find((p) => p.userId === who.userId)?.payment;
+      expect(stateOf(waits)).toBe('awaiting');
+      expect(stateOf(short)).toBe('partial');
+      expect(stateOf(missing)).toBe('disputed');
+      expect(stateOf(paid)).toBe('received');
+      expect(all.items.find((p) => p.userId === short.userId)).toMatchObject({
+        claimedMinor: 50000,
+        receivedMinor: 30000,
+        giftTitle: 'Payments check',
+      });
+      for (const [state, who] of [
+        ['awaiting', waits],
+        ['partial', short],
+        ['disputed', missing],
+        ['received', paid],
+      ] as const) {
+        const page = await payments({ payment: state });
+        expect(page.items.map((p) => p.userId)).toEqual([who.userId]);
+      }
+
+      // The gift: money still waiting, and the open dispute, beside the stored total.
+      const disputedGifts = (
+        await request(server())
+          .get(`${V1}/admin/money/group-gifts`)
+          .query({ payments: 'disputed', owner: host.userId })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { id: string; awaitingMinor: number; openDisputes: number }[] }>;
+      expect(disputedGifts.data.items.find((g) => g.id === gg)).toMatchObject({
+        awaitingMinor: 50000,
+        openDisputes: 1,
+      });
+      const detail = (
+        await request(server())
+          .get(`${V1}/admin/money/group-gifts/${gg}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{
+        fields: { awaitingMinor: number; awaitingPayments: number; openDisputes: number };
+        sections: { key: string; items: Payment[] }[];
+      }>;
+      expect(detail.data.fields).toMatchObject({
+        awaitingMinor: 50000,
+        awaitingPayments: 1,
+        openDisputes: 1,
+      });
+      const rows = detail.data.sections.find((s) => s.key === 'contributions')!.items;
+      expect(rows.find((r) => r.id === missingId)).toMatchObject({
+        payment: 'disputed',
+        paymentRef: 'UTR222',
+      });
+
+      // Refund only gives back money that arrived.
+      for (const [cid, why] of [
+        [rows.find((r) => r.userId === waits.userId)!.id, 'not confirmed'],
+        [missingId, 'Nothing arrived'],
+      ]) {
+        const res = await act(token, 'group-gifts', gg, 'refund-contribution', {
+          reason: 'Asked by support',
+          contributionId: cid,
+        }).expect(400);
+        expect(JSON.stringify(res.body)).toContain(why);
+      }
+
+      // The dashboard flags the dispute.
+      await request(server())
+        .post(`${V1}/admin/ops/caches/dashboard/clear`)
+        .set(auth(token))
+        .send({ reason: 'fresh numbers for the test' })
+        .expect(200);
+      const dash = (
+        await request(server()).get(`${V1}/admin/dashboard`).set(auth(token)).expect(200)
+      ).body as Envelope<{ attention: { key: string; count: number }[] }>;
+      expect(
+        dash.data.attention.find((a) => a.key === 'payments-disputed')?.count,
+      ).toBeGreaterThanOrEqual(1);
+
+      // A claim waiting three days is flagged while its gift is open; once the gift is
+      // cancelled it is frozen — nobody can answer it — so it drops out of both numbers.
+      const waiting = async () => {
+        await request(server())
+          .post(`${V1}/admin/ops/caches/dashboard/clear`)
+          .set(auth(token))
+          .send({ reason: 'fresh numbers for the test' })
+          .expect(200);
+        const body = (
+          await request(server()).get(`${V1}/admin/dashboard`).set(auth(token)).expect(200)
+        ).body as Envelope<{
+          attention: { key: string; count: number }[];
+          money: { groupGiftAwaitingMinor: number };
+        }>;
+        return {
+          old: body.data.attention.find((a) => a.key === 'payments-waiting')?.count ?? 0,
+          minor: body.data.money.groupGiftAwaitingMinor,
+        };
+      };
+      const before = await waiting();
+      const late = (
+        (
+          await request(server())
+            .post(`${V1}/items/${await itemFor(owner, 300000)}/group-gift`)
+            .set(auth(host.token))
+            .set(idem())
+            .send({ title: 'Cancelled with a claim', contributionMode: 'custom' })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+      const lateMember = await newUser();
+      await request(server())
+        .post(`${V1}/group-gifts/${late}/contribute`)
+        .set(auth(lateMember.token))
+        .set(idem())
+        .send({ amountMinor: 50000 })
+        .expect(201);
+      await db()
+        .collection('contributions')
+        .updateOne(
+          { groupGiftId: new Types.ObjectId(late) },
+          { $set: { createdAt: new Date(Date.now() - 3 * 86_400_000) } },
+        );
+      expect(await waiting()).toEqual({ old: before.old + 1, minor: before.minor + 50000 });
+      await request(server())
+        .post(`${V1}/group-gifts/${late}/cancel`)
+        .set(auth(host.token))
+        .send({})
+        .expect(200);
+      expect(await waiting()).toEqual(before);
+
+      // One payment opens on its own, with the gift it belongs to.
+      const one = (
+        await request(server())
+          .get(`${V1}/admin/money/payments/${missingId}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ row: Payment; fields: { groupGiftId: string; leftWaiting: boolean } }>;
+      expect(one.data.row.giftTitle).toBe('Payments check');
+      expect(one.data.fields).toMatchObject({ groupGiftId: gg, leftWaiting: false });
+      // Support looks; the host decides.
+      await act(token, 'payments', missingId, 'review', { reason: 'Nope' }).expect(400);
+    });
+
     it('refunds a contribution, cancels a group gift, and logs drift', async () => {
       const token = await adminToken();
       const owner = await newUser();
@@ -2823,6 +3042,196 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       await request(server()).get(`${V1}/admin/content/wishlists`).set(auth(token)).expect(403);
       await request(server()).get(`${V1}/admin/moderation/queue`).set(auth(token)).expect(403);
       await request(server()).get(`${V1}/admin/admins`).set(auth(token)).expect(403);
+    });
+  });
+
+  describe('catch-up: blocks, held messages, shared dates, loved wishes', () => {
+    const db = () => app.get<Connection>(getConnectionToken()).db!;
+    const sectionOf = async <T>(userId: string, key: string) =>
+      (
+        (
+          await request(server())
+            .get(`${V1}/admin/users/${userId}/sections/${key}`)
+            .set(auth(await adminToken()))
+            .expect(200)
+        ).body as Envelope<{ items: T[]; names?: Record<string, string> }>
+      ).data;
+
+    it('shows blocks both ways, and counts how many people blocked someone', async () => {
+      const blocker = await newUser();
+      const blocked = await newUser();
+      await request(server())
+        .post(`${V1}/people/${blocked.userId}/block`)
+        .set(auth(blocker.token))
+        .expect((res) => expect([200, 201, 204]).toContain(res.status));
+
+      type Block = { direction: string; otherId: string; wereWishMates: boolean };
+      const theirs = await sectionOf<Block>(blocker.userId, 'blocks');
+      expect(theirs.items).toEqual([
+        expect.objectContaining({ direction: 'blocked_them', otherId: blocked.userId }),
+      ]);
+      const other = await sectionOf<Block>(blocked.userId, 'blocks');
+      expect(other.items).toEqual([
+        expect.objectContaining({ direction: 'blocked_by', otherId: blocker.userId }),
+      ]);
+      const profile = (
+        await request(server())
+          .get(`${V1}/admin/users/${blocked.userId}/profile`)
+          .set(auth(await adminToken()))
+          .expect(200)
+      ).body as Envelope<{ counts: Record<string, number> }>;
+      expect(profile.data.counts.blockedBy).toBe(1);
+      expect(profile.data.counts.blocking).toBe(0);
+    });
+
+    it('marks a message held by a block, and names a shared profile', async () => {
+      const a = await newUser();
+      const b = await newUser();
+      const shared = await newUser();
+      const chatId = new Types.ObjectId();
+      const now = new Date();
+      await db()
+        .collection('chats')
+        .insertOne({
+          _id: chatId,
+          type: 'direct',
+          participantIds: [new Types.ObjectId(a.userId), new Types.ObjectId(b.userId)],
+          createdAt: now,
+          updatedAt: now,
+        });
+      await db()
+        .collection('messages')
+        .insertMany([
+          {
+            chatId,
+            senderId: new Types.ObjectId(a.userId),
+            kind: 'text',
+            body: 'Hello?',
+            attachments: [],
+            reactions: [{ emoji: '👍', userIds: [new Types.ObjectId(a.userId)] }],
+            hideFromUserIds: [new Types.ObjectId(b.userId)],
+            createdAt: now,
+            updatedAt: now,
+          },
+          {
+            chatId,
+            senderId: new Types.ObjectId(a.userId),
+            kind: 'profile',
+            body: '',
+            attachments: [],
+            reactions: [],
+            sharedUserId: new Types.ObjectId(shared.userId),
+            hideFromUserIds: [],
+            createdAt: new Date(now.getTime() + 1000),
+            updatedAt: now,
+          },
+        ]);
+      const detail = (
+        await request(server())
+          .get(`${V1}/admin/content/chats/${chatId.toString()}`)
+          .set(auth(await adminToken()))
+          .expect(200)
+      ).body as Envelope<{
+        sections: {
+          key: string;
+          items: {
+            kind: string;
+            heldFromIds: string[];
+            sharedUserId: string | null;
+            reactions: { emoji: string; count: number }[];
+          }[];
+        }[];
+        names: Record<string, string>;
+      }>;
+      const messages = detail.data.sections.find((s) => s.key === 'messages')!.items;
+      const held = messages.find((m) => m.kind === 'text')!;
+      expect(held.heldFromIds).toEqual([b.userId]);
+      expect(held.reactions).toEqual([{ emoji: '👍', count: 1 }]);
+      expect(messages.find((m) => m.kind === 'profile')!.sharedUserId).toBe(shared.userId);
+      expect(detail.data.names[b.userId]).toBeTruthy();
+      expect(detail.data.names[shared.userId]).toBeTruthy();
+    });
+
+    it('shows which dates are shared, and who asked to be reminded of them', async () => {
+      const owner = await newUser();
+      const follower = await newUser();
+      const dateId = new Types.ObjectId();
+      await db()
+        .collection('important_dates')
+        .insertOne({
+          _id: dateId,
+          userId: new Types.ObjectId(owner.userId),
+          personName: 'Mum',
+          occasionKey: 'birthday',
+          date: new Date('2026-12-01T00:00:00Z'),
+          monthDay: '12-01',
+          visibility: 'wishmates',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      await db()
+        .collection('important_date_follows')
+        .insertOne({
+          userId: new Types.ObjectId(follower.userId),
+          importantDateId: dateId,
+          ownerId: new Types.ObjectId(owner.userId),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      const dates = await sectionOf<{ id: string; visibility: string }>(
+        owner.userId,
+        'important-dates',
+      );
+      expect(dates.items.find((d) => d.id === dateId.toString())?.visibility).toBe('wishmates');
+      type Follow = { direction: string; otherId: string; dateName: string | null };
+      expect((await sectionOf<Follow>(owner.userId, 'date-follows')).items).toEqual([
+        expect.objectContaining({
+          direction: 'followed_by',
+          otherId: follower.userId,
+          dateName: 'Mum',
+        }),
+      ]);
+      expect((await sectionOf<Follow>(follower.userId, 'date-follows')).items).toEqual([
+        expect.objectContaining({ direction: 'follows', otherId: owner.userId }),
+      ]);
+    });
+
+    it('shows a wish the recipient loved', async () => {
+      const host = await newUser();
+      const capsuleId = new Types.ObjectId();
+      const now = new Date();
+      await db()
+        .collection('memory_capsules')
+        .insertOne({
+          _id: capsuleId,
+          hostId: new Types.ObjectId(host.userId),
+          title: 'Loved check',
+          status: 'unlocked',
+          unlockAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+      await db()
+        .collection('memory_wishes')
+        .insertOne({
+          capsuleId,
+          contributorId: new Types.ObjectId(host.userId),
+          contributorName: 'Host',
+          kind: 'text',
+          text: 'Happy birthday',
+          order: 0,
+          lovedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+      const detail = (
+        await request(server())
+          .get(`${V1}/admin/content/memories/${capsuleId.toString()}`)
+          .set(auth(await adminToken()))
+          .expect(200)
+      ).body as Envelope<{ sections: { key: string; items: { lovedAt: string | null }[] }[] }>;
+      const wishes = detail.data.sections.find((s) => s.key === 'wishes')!.items;
+      expect(wishes[0].lovedAt).toBeTruthy();
     });
   });
 

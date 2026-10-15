@@ -1,3 +1,4 @@
+import { paymentKindFilter, paymentStateFilter } from './group-gift-payments';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectConnection } from '@nestjs/mongoose';
@@ -363,8 +364,13 @@ export class AdminInsightsService {
     cancelled: number;
     avgContributors: number | null;
     avgPercentOfTarget: number | null;
+    /** Confirmed money, after refunds handed back. */
     collectedMinor: number;
     targetMinor: number;
+    /** Money members say they sent that the host has not confirmed. */
+    awaitingMinor: number;
+    /** Gifts the host finished by paying what was left. */
+    settledByHost: number;
   }> {
     return this.cached(`group-gifts:${from}:${to}`, async () => {
       const rows = await this.db
@@ -401,8 +407,43 @@ export class AdminInsightsService {
           : null,
         collectedMinor: sum('collectedAmountMinor'),
         targetMinor: sum('targetAmountMinor'),
+        ...(await this.paymentTotals(
+          rows.map((r) => r._id as Types.ObjectId),
+          // A cancelled gift is frozen: its host can no longer confirm what is waiting.
+          rows
+            .filter(
+              (r) =>
+                r.status !== GroupGiftStatus.CANCELLED && r.status !== GroupGiftStatus.REFUNDING,
+            )
+            .map((r) => r._id as Types.ObjectId),
+        )),
       };
     });
+  }
+
+  /** Money still awaiting a host across [liveIds], and host settle-ups across [giftIds]. */
+  private async paymentTotals(
+    giftIds: Types.ObjectId[],
+    liveIds: Types.ObjectId[],
+  ): Promise<{ awaitingMinor: number; settledByHost: number }> {
+    if (giftIds.length === 0) return { awaitingMinor: 0, settledByHost: 0 };
+    const [awaiting, settled] = await Promise.all([
+      this.db
+        .collection('contributions')
+        .aggregate<{ minor: number }>([
+          { $match: { groupGiftId: { $in: liveIds }, ...paymentStateFilter('awaiting') } },
+          {
+            $group: { _id: null, minor: { $sum: { $ifNull: ['$claimedMinor', '$amountMinor'] } } },
+          },
+        ])
+        .toArray(),
+      this.db.collection('contributions').distinct('groupGiftId', {
+        groupGiftId: { $in: giftIds },
+        status: 'confirmed',
+        ...paymentKindFilter('settle_up'),
+      }),
+    ]);
+    return { awaitingMinor: awaiting[0]?.minor ?? 0, settledByHost: settled.length };
   }
 
   // ── Events ──────────────────────────────────────────────────────────────────

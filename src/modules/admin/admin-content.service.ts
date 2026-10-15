@@ -532,7 +532,8 @@ const SECTIONS: Record<ContentKind, Record<string, SectionSpec>> = {
         kind: str(r.kind),
         ...sent(r, show),
         durationMs: num(r.durationMs),
-        reactions: num(r.reactionCount) ?? 0,
+        // Only the person it is for can love a wish; there is no other reaction.
+        lovedAt: at(r.lovedAt),
         createdAt: at(r.createdAt),
       }),
       locked: () => true,
@@ -614,12 +615,23 @@ const SECTIONS: Record<ContentKind, Record<string, SectionSpec>> = {
             : Array.isArray(r.attachments)
               ? r.attachments.length
               : 0,
+        // A profile someone shared into the chat.
+        sharedUserId: id(r.sharedUserId),
+        reactions: Array.isArray(r.reactions)
+          ? (r.reactions as Doc[]).map((x) => ({
+              emoji: str(x.emoji),
+              count: Array.isArray(x.userIds) ? x.userIds.length : 0,
+            }))
+          : [],
+        // Sent to someone who had blocked the sender: kept from them until the
+        // block is lifted, so it was not delivered.
+        heldFromIds: ids(r.hideFromUserIds),
         editedAt: at(r.editedAt),
         deletedAt: at(r.deletedAt),
         createdAt: at(r.createdAt),
       }),
       locked: () => true,
-      userRefs: ['senderId'],
+      userRefs: ['senderId', 'sharedUserId', 'heldFromIds'],
     },
   },
   'thank-you': {},

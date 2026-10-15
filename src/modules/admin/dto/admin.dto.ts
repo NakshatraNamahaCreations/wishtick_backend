@@ -736,6 +736,35 @@ export class MoneyListQueryDto extends PageQueryDto {
   @IsString()
   @MaxLength(40)
   eventType?: string;
+
+  @ApiPropertyOptional({
+    enum: ['awaiting', 'received', 'partial', 'not_received', 'refunded', 'disputed'],
+    description: 'Payments: how a payment stands.',
+  })
+  @IsOptional()
+  @IsIn(['awaiting', 'received', 'partial', 'not_received', 'refunded', 'disputed'])
+  payment?: 'awaiting' | 'received' | 'partial' | 'not_received' | 'refunded' | 'disputed';
+
+  @ApiPropertyOptional({
+    enum: ['member', 'host_share', 'settle_up'],
+    description: 'Payments: a member, or the host’s own share / settle-up.',
+  })
+  @IsOptional()
+  @IsIn(['member', 'host_share', 'settle_up'])
+  paidBy?: 'member' | 'host_share' | 'settle_up';
+
+  @ApiPropertyOptional({ description: 'Payments: one group gift.' })
+  @IsOptional()
+  @IsMongoId()
+  groupGift?: string;
+
+  @ApiPropertyOptional({
+    enum: ['awaiting', 'disputed'],
+    description: 'Group gifts: only those with payments awaiting the host, or disputed.',
+  })
+  @IsOptional()
+  @IsIn(['awaiting', 'disputed'])
+  payments?: 'awaiting' | 'disputed';
 }
 
 export class MoneyActionDto extends AdminReasonDto {

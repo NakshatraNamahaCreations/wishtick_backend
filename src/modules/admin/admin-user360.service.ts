@@ -8,6 +8,7 @@ import { User, type UserDocument } from 'src/modules/users/schemas/user.schema';
 import { pageOf, type AdminPage } from './admin-query.util';
 import { AdminPermission, type AuthenticatedAdmin } from './admin.types';
 import { AuditService } from './audit.service';
+import { paymentFields } from './group-gift-payments';
 
 type Doc = mongo.Document;
 
@@ -61,7 +62,10 @@ interface SectionSpec {
   sort: Doc;
   /** Fields that hold a user id, resolved to names for the panel. */
   userRefs?: string[];
-  view: (doc: Doc) => SectionRow;
+  /** [uid] is the person whose page this is — for "they blocked" vs "blocked them". */
+  view: (doc: Doc, uid: Types.ObjectId) => SectionRow;
+  /** Adds what the rows cannot say alone (the date a reminder follows). */
+  enrich?: (db: mongo.Db, docs: Doc[], rows: SectionRow[]) => Promise<SectionRow[]>;
 }
 
 const id = (v: unknown): string | null =>
@@ -135,6 +139,8 @@ const SECTIONS: Record<string, SectionSpec> = {
       groupGiftId: id(d.groupGiftId),
       amountMinor: d.amountMinor,
       status: d.status,
+      // The claim, what the host says arrived, the transaction ID, any dispute.
+      ...paymentFields(d),
       anonymous: d.anonymous === true,
       message: d.message ?? null,
       createdAt: at(d.createdAt),
@@ -156,6 +162,9 @@ const SECTIONS: Record<string, SectionSpec> = {
       status: d.status,
       // The UPI ID is private; this says only whether one was shared.
       hasUpi: Boolean(d.upiId),
+      // A host keeping the extra is a RETURN to themselves, not a refund.
+      keptByHost: id(d.contributorId) !== null && id(d.contributorId) === id(d.hostId),
+      note: d.note ?? null,
       sentAt: at(d.sentAt),
       confirmedAt: at(d.confirmedAt),
       createdAt: at(d.createdAt),
@@ -284,6 +293,12 @@ const SECTIONS: Record<string, SectionSpec> = {
       category: d.category,
       title: d.title,
       body: d.body ?? null,
+      // A reminder about a WishMate's shared date names whose it is; without
+      // it the person was reminded of their own.
+      aboutWhom:
+        typeof (d.payload as Doc | undefined)?.ownerName === 'string'
+          ? ((d.payload as Doc).ownerName as string)
+          : null,
       readAt: at(d.readAt),
       createdAt: at(d.createdAt),
     }),
@@ -314,7 +329,65 @@ const SECTIONS: Record<string, SectionSpec> = {
       occasion: d.occasionKey ?? d.customOccasion ?? null,
       date: at(d.date),
       linkedUserId: id(d.linkedUserId),
+      // Private, or shown to their WishMates (who can then ask to be reminded).
+      visibility: d.visibility ?? 'private',
     }),
+  },
+  /**
+   * Blocks, both ways. A block is silent — the blocked person is never told —
+   * and any WishMate link between them is held until it is lifted.
+   */
+  blocks: {
+    collection: 'user_blocks',
+    permission: AdminPermission.USERS_VIEW,
+    filter: (uid) => ({ $or: [{ blockerId: uid }, { blockedId: uid }] }),
+    sort: { createdAt: -1 },
+    userRefs: ['otherId'],
+    view: (d, uid) => {
+      const theyBlocked = id(d.blockerId) === uid.toString();
+      return {
+        id: id(d._id)!,
+        direction: theyBlocked ? 'blocked_them' : 'blocked_by',
+        otherId: theyBlocked ? id(d.blockedId) : id(d.blockerId),
+        wereWishMates: Boolean(d.heldLink),
+        createdAt: at(d.createdAt),
+      };
+    },
+  },
+  /** "Remind me" on a WishMate's shared date — theirs they follow, and who follows theirs. */
+  'date-follows': {
+    collection: 'important_date_follows',
+    permission: AdminPermission.USERS_VIEW,
+    filter: (uid) => ({ $or: [{ userId: uid }, { ownerId: uid }] }),
+    sort: { createdAt: -1 },
+    userRefs: ['otherId'],
+    view: (d, uid) => {
+      const theyFollow = id(d.userId) === uid.toString();
+      return {
+        id: id(d._id)!,
+        direction: theyFollow ? 'follows' : 'followed_by',
+        otherId: theyFollow ? id(d.ownerId) : id(d.userId),
+        importantDateId: id(d.importantDateId),
+        createdAt: at(d.createdAt),
+      };
+    },
+    enrich: async (db, docs, rows) => {
+      const dates = await db
+        .collection('important_dates')
+        .find({ _id: { $in: docs.map((d) => d.importantDateId as Types.ObjectId) } })
+        .project({ personName: 1, occasionKey: 1, customOccasion: 1, date: 1 })
+        .toArray();
+      const byId = new Map(dates.map((x) => [String(x._id), x]));
+      return rows.map((r) => {
+        const x = byId.get(String(r.importantDateId));
+        return {
+          ...r,
+          dateName: x ? `${String(x.personName ?? '')}`.trim() || null : null,
+          occasion: x ? ((x.occasionKey ?? x.customOccasion ?? null) as string | null) : null,
+          date: x ? at(x.date) : null,
+        };
+      });
+    },
   },
   media: {
     collection: 'media',
@@ -499,6 +572,9 @@ export class AdminUser360Service {
         AdminPermission.MODERATION_VIEW,
         countOf('reports', { targetType: 'user', targetId: uid.toString() }),
       ],
+      // Many people blocking one person is a sign worth a look.
+      ['blockedBy', AdminPermission.USERS_VIEW, countOf('user_blocks', { blockedId: uid })],
+      ['blocking', AdminPermission.USERS_VIEW, countOf('user_blocks', { blockerId: uid })],
     ];
     const allowed = tally.filter(([, p]) => can(p));
     const values = await Promise.all(allowed.map(([, , n]) => n));
@@ -575,7 +651,8 @@ export class AdminUser360Service {
         .toArray(),
       col.countDocuments(filter),
     ]);
-    const items = docs.map((d) => spec.view(d));
+    let items = docs.map((d) => spec.view(d, user._id));
+    if (spec.enrich) items = await spec.enrich(this.db, docs, items);
     const ids = new Set<string>();
     for (const row of items) {
       for (const field of spec.userRefs ?? []) {

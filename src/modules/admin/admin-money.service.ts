@@ -10,6 +10,7 @@ import { GiftStatus } from 'src/modules/gifting/gift.types';
 import { GiftingService } from 'src/modules/gifting/gifting.service';
 import { WebhookService } from 'src/modules/gifting/webhook.service';
 import { GROUP_GIFT_RECONCILE_JOB } from 'src/modules/group-gifts/group-gift-reconcile.processor';
+import { HOST_SHARE_KEY } from 'src/modules/group-gifts/group-gift-share.service';
 import { GroupGiftService } from 'src/modules/group-gifts/group-gift.service';
 import { SettlementService } from 'src/modules/group-gifts/settlement.service';
 import { OrderStage } from 'src/modules/orders/order.types';
@@ -40,6 +41,15 @@ import { pageOf, type AdminPage } from './admin-query.util';
 import { AdminUser360Service, maskValue } from './admin-user360.service';
 import { AdminPermission, type AuthenticatedAdmin } from './admin.types';
 import { AuditService } from './audit.service';
+import {
+  isDisputed,
+  paymentFields,
+  paymentKindFilter,
+  paymentKindOf,
+  paymentStateFilter,
+  type PaymentKind,
+  type PaymentState,
+} from './group-gift-payments';
 
 /** The money areas, as they appear in URLs. */
 export const MONEY_KINDS = [
@@ -49,6 +59,7 @@ export const MONEY_KINDS = [
   'conversions',
   'clicks',
   'webhooks',
+  'payments',
 ] as const;
 export type MoneyKind = (typeof MONEY_KINDS)[number];
 
@@ -68,6 +79,16 @@ export interface MoneyQuery extends BaseListQuery {
   eventType?: string;
   /** Filled in by the service for `drift`, never by the caller. */
   driftIds?: Types.ObjectId[];
+  /** Payments list: how the payment stands. */
+  payment?: PaymentState;
+  /** Payments list: whose money it is. */
+  paidBy?: PaymentKind;
+  /** Payments list: one group gift's payments. */
+  groupGift?: string;
+  /** Group gifts: only those with payments awaiting the host, or disputed. */
+  payments?: 'awaiting' | 'disputed';
+  /** Filled in by the service for `payments`, never by the caller. */
+  paymentGiftIds?: Types.ObjectId[];
 }
 
 export interface MoneyListPage extends AdminPage<ExplorerRow> {
@@ -101,6 +122,8 @@ export const MONEY_ACTIONS: Record<MoneyKind, string[]> = {
   conversions: [],
   clicks: [],
   webhooks: ['replay'],
+  // Payments are the host's to confirm; support looks, and does not decide.
+  payments: [],
 };
 
 export interface MoneyActionInput {
@@ -201,6 +224,7 @@ const SPECS: Record<MoneyKind, ListSpec<MoneyQuery>> = {
       ...(q.status ? { status: q.status } : {}),
       ...(q.drift === 'yes' ? { _id: { $in: q.driftIds ?? [] } } : {}),
       ...(q.drift === 'no' ? { _id: { $nin: q.driftIds ?? [] } } : {}),
+      ...(q.payments ? { $and: [{ _id: { $in: q.paymentGiftIds ?? [] } }] } : {}),
     }),
     row: (d) => ({
       id: id(d._id)!,
@@ -217,6 +241,29 @@ const SPECS: Record<MoneyKind, ListSpec<MoneyQuery>> = {
       createdAt: at(d.createdAt),
     }),
     userRefs: ['initiatorId', 'recipientId'],
+  },
+  payments: {
+    collection: 'contributions',
+    search: ['paymentRef', 'message'],
+    owner: 'userId',
+    dateField: 'createdAt',
+    sorts: { created: 'createdAt', claimed: 'claimedMinor', disputed: 'disputedAt' },
+    filter: (q) => ({
+      ...(q.payment ? paymentStateFilter(q.payment) : {}),
+      ...(q.paidBy ? paymentKindFilter(q.paidBy) : {}),
+      ...(q.groupGift && Types.ObjectId.isValid(q.groupGift)
+        ? { groupGiftId: new Types.ObjectId(q.groupGift) }
+        : {}),
+    }),
+    row: (d) => ({
+      id: id(d._id)!,
+      userId: id(d.userId),
+      groupGiftId: id(d.groupGiftId),
+      status: str(d.status),
+      ...paymentFields(d),
+      createdAt: at(d.createdAt),
+    }),
+    userRefs: ['userId'],
   },
   conversions: {
     collection: 'conversions',
@@ -361,11 +408,10 @@ const SECTIONS: Record<MoneyKind, Record<string, SectionSpec>> = {
         userId: id(r.userId),
         amountMinor: num(r.amountMinor),
         status: str(r.status),
+        ...paymentFields(r),
         anonymous: r.anonymous === true,
         message: str(r.message),
-        paymentRef: str(r.paymentRef),
         refundRef: str(r.refundRef),
-        refundedAt: at(r.refundedAt),
         createdAt: at(r.createdAt),
       }),
       userRefs: ['userId'],
@@ -425,6 +471,7 @@ const SECTIONS: Record<MoneyKind, Record<string, SectionSpec>> = {
     },
   },
   webhooks: {},
+  payments: {},
 };
 
 /**
@@ -456,11 +503,21 @@ export class AdminMoneyService {
   // ── Lists ──────────────────────────────────────────────────────────────────
 
   private async withDrift(kind: MoneyKind, q: MoneyQuery): Promise<MoneyQuery> {
-    if (kind !== 'group-gifts' || !q.drift) return q;
-    const driftIds = (await this.db
-      .collection('ops_events')
-      .distinct('refId', { type: DRIFT_EVENT_TYPE })) as Types.ObjectId[];
-    return { ...q, driftIds };
+    if (kind !== 'group-gifts') return q;
+    let next = q;
+    if (q.drift) {
+      const driftIds = (await this.db
+        .collection('ops_events')
+        .distinct('refId', { type: DRIFT_EVENT_TYPE })) as Types.ObjectId[];
+      next = { ...next, driftIds };
+    }
+    if (q.payments) {
+      const paymentGiftIds = (await this.db
+        .collection('contributions')
+        .distinct('groupGiftId', paymentStateFilter(q.payments))) as Types.ObjectId[];
+      next = { ...next, paymentGiftIds };
+    }
+    return next;
   }
 
   async list(kind: MoneyKind, q: MoneyQuery): Promise<MoneyListPage> {
@@ -500,6 +557,8 @@ export class AdminMoneyService {
    * private list stay untitled here, as they do in the content explorer.
    */
   private async decorate(kind: MoneyKind, rows: ExplorerRow[]): Promise<ExplorerRow[]> {
+    if (kind === 'group-gifts') return this.withPayments(rows);
+    if (kind === 'payments') return this.withGift(rows);
     if (kind !== 'gifts' && kind !== 'orders' && kind !== 'conversions') return rows;
     const itemIds = [...new Set(rows.map((r) => str(r.itemId)).filter((x): x is string => !!x))];
     if (itemIds.length === 0) return rows;
@@ -523,6 +582,132 @@ export class AdminMoneyService {
       ]),
     );
     return rows.map((r) => ({ ...r, itemTitle: titleOf.get(String(r.itemId)) ?? null }));
+  }
+
+  /**
+   * Money still waiting for the host to confirm, and open disputes, per gift —
+   * what a gift's stored total cannot show, since it counts confirmed money only.
+   */
+  private async withPayments(rows: ExplorerRow[]): Promise<ExplorerRow[]> {
+    if (rows.length === 0) return rows;
+    const ids = rows.map((r) => new Types.ObjectId(r.id));
+    const [awaiting, disputed] = await Promise.all([
+      this.db
+        .collection('contributions')
+        .aggregate<{ _id: Types.ObjectId; minor: number; n: number }>([
+          { $match: { groupGiftId: { $in: ids }, ...paymentStateFilter('awaiting') } },
+          {
+            $group: {
+              _id: '$groupGiftId',
+              minor: { $sum: { $ifNull: ['$claimedMinor', '$amountMinor'] } },
+              n: { $sum: 1 },
+            },
+          },
+        ])
+        .toArray(),
+      this.db
+        .collection('contributions')
+        .aggregate<{ _id: Types.ObjectId; n: number }>([
+          { $match: { groupGiftId: { $in: ids }, ...paymentStateFilter('disputed') } },
+          { $group: { _id: '$groupGiftId', n: { $sum: 1 } } },
+        ])
+        .toArray(),
+    ]);
+    const waiting = new Map(awaiting.map((a) => [String(a._id), a]));
+    const disputes = new Map(disputed.map((a) => [String(a._id), a.n]));
+    return rows.map((r) => ({
+      ...r,
+      awaitingMinor: waiting.get(r.id)?.minor ?? 0,
+      awaitingPayments: waiting.get(r.id)?.n ?? 0,
+      openDisputes: disputes.get(r.id) ?? 0,
+    }));
+  }
+
+  /**
+   * What a gift's payments add up to beyond the stored total: money awaiting
+   * the host, open disputes, whether the host settled the rest, and the price
+   * changes the group agreed to or the host left alone.
+   */
+  private async paymentFacts(d: Doc): Promise<Record<string, unknown>> {
+    const giftId = d._id as Types.ObjectId;
+    const contributions = await this.db
+      .collection('contributions')
+      .find({ groupGiftId: giftId })
+      .project({
+        status: 1,
+        amountMinor: 1,
+        claimedMinor: 1,
+        reviewedAt: 1,
+        disputedAt: 1,
+        idempotencyKey: 1,
+      })
+      .toArray();
+    const awaiting = contributions.filter((c) => c.status === 'pledged');
+    const settled = contributions.find(
+      (c) => paymentKindOf(c) === 'settle_up' && c.status === 'confirmed',
+    );
+    const itemIds = [
+      ...(Array.isArray(d.priceBaselines) ? (d.priceBaselines as Doc[]) : []),
+      ...(Array.isArray(d.priceDismissals) ? (d.priceDismissals as Doc[]) : []),
+    ].map((x) => x.itemId as Types.ObjectId);
+    const titles = new Map(
+      (itemIds.length
+        ? await this.db
+            .collection('wishlist_items')
+            .find({ _id: { $in: itemIds } })
+            .project({ title: 1 })
+            .toArray()
+        : []
+      ).map((i) => [String(i._id), str(i.title)]),
+    );
+    return {
+      awaitingMinor: awaiting.reduce(
+        (sum, c) => sum + (num(c.claimedMinor) ?? num(c.amountMinor) ?? 0),
+        0,
+      ),
+      awaitingPayments: awaiting.length,
+      openDisputes: contributions.filter((c) => isDisputed(c)).length,
+      settledByHostMinor: settled ? num(settled.amountMinor) : null,
+      priceBaselines: (Array.isArray(d.priceBaselines) ? (d.priceBaselines as Doc[]) : []).map(
+        (b) => ({
+          itemId: id(b.itemId),
+          itemTitle: titles.get(String(b.itemId)) ?? null,
+          amountMinor: num(b.amountMinor),
+        }),
+      ),
+      priceDismissals: (Array.isArray(d.priceDismissals) ? (d.priceDismissals as Doc[]) : []).map(
+        (x) => ({
+          itemId: id(x.itemId),
+          itemTitle: titles.get(String(x.itemId)) ?? null,
+          currentMinor: num(x.currentMinor),
+          outOfStock: x.outOfStock === true,
+        }),
+      ),
+    };
+  }
+
+  /** The gift a payment belongs to: its title, and whether it was called off. */
+  private async withGift(rows: ExplorerRow[]): Promise<ExplorerRow[]> {
+    const giftIds = [
+      ...new Set(rows.map((r) => str(r.groupGiftId)).filter((x): x is string => !!x)),
+    ];
+    if (giftIds.length === 0) return rows;
+    const gifts = await this.db
+      .collection('group_gifts')
+      .find({ _id: { $in: giftIds.map((x) => new Types.ObjectId(x)) } })
+      .project({ title: 1, status: 1, initiatorId: 1, currency: 1 })
+      .toArray();
+    const byId = new Map(gifts.map((g) => [String(g._id), g]));
+    return rows.map((r) => {
+      const g = byId.get(String(r.groupGiftId));
+      return {
+        ...r,
+        giftTitle: str(g?.title),
+        giftStatus: str(g?.status),
+        hostId: id(g?.initiatorId),
+        currency: str(g?.currency) ?? 'INR',
+      };
+    });
   }
 
   // ── Detail ─────────────────────────────────────────────────────────────────
@@ -615,7 +800,10 @@ export class AdminMoneyService {
             charges: (Array.isArray(d.charges) ? (d.charges as Doc[]) : []).map((c) => ({
               label: str(c.label),
               amountMinor: num(c.amountMinor),
+              reason: str(c.reason),
+              addedAt: at(c.addedAt),
             })),
+            ...(await this.paymentFacts(d)),
             contributionMode: str(d.contributionMode),
             overfundPolicy: str(d.overfundPolicy),
             visibility: str(d.visibility),
@@ -658,6 +846,21 @@ export class AdminMoneyService {
         };
       case 'webhooks':
         return { values: { payload: d.payload ?? null }, userIds: [] };
+      case 'payments': {
+        const gift = await this.db
+          .collection('group_gifts')
+          .findOne({ _id: d.groupGiftId as Types.ObjectId }, { projection: { status: 1 } });
+        return {
+          values: {
+            message: str(d.message),
+            anonymous: d.anonymous === true,
+            groupGiftId: id(d.groupGiftId),
+            // A cancelled gift is frozen: a claim left waiting stays waiting.
+            leftWaiting: gift?.status === 'cancelled' && d.status === 'pledged',
+          },
+          userIds: [],
+        };
+      }
     }
   }
 
@@ -756,20 +959,60 @@ export class AdminMoneyService {
         return { ok: true };
       }
 
-      case 'group-gifts:cancel':
+      case 'group-gifts:cancel': {
+        const leftWaiting = await this.db
+          .collection('contributions')
+          .countDocuments({ groupGiftId: doc._id as Types.ObjectId, status: 'pledged' });
         await this.groupGifts.cancelAsAdmin(rowId, by, note);
-        await record('cancel', { status: str(doc.status) }, { status: 'cancelled' });
+        // Claims still waiting stay waiting: a cancelled gift is frozen.
+        await record(
+          'cancel',
+          { status: str(doc.status) },
+          { status: 'cancelled' },
+          { paymentsLeftWaiting: leftWaiting },
+        );
         return { ok: true };
+      }
       case 'group-gifts:refund-contribution': {
         const contributionId = child(input.contributionId, 'contributionId');
+        const contribution = await this.db.collection('contributions').findOne({
+          _id: new Types.ObjectId(contributionId),
+          groupGiftId: doc._id as Types.ObjectId,
+        });
+        if (!contribution) {
+          throw new AppException(
+            ErrorCode.NOT_FOUND,
+            'That payment is not on this group gift',
+            404,
+          );
+        }
+        if (paymentKindOf(contribution) !== 'member') {
+          throw new AppException(
+            ErrorCode.CONTENT_ACTION_INVALID,
+            'That is the host’s own money, not a member’s payment',
+            400,
+          );
+        }
+        if (contribution.status !== 'confirmed') {
+          // Only money the host confirmed arrived can be given back.
+          const why: Record<string, string> = {
+            pledged:
+              'The host has not confirmed that payment yet, so nothing has arrived to refund',
+            not_received: 'Nothing arrived for that payment, so there is nothing to refund',
+            refunded: 'That payment is already refunded',
+          };
+          throw new AppException(
+            ErrorCode.CONTENT_ACTION_INVALID,
+            why[String(contribution.status)] ?? 'That payment cannot be refunded',
+            400,
+          );
+        }
         await this.groupGifts.refundContributionAsAdmin(rowId, contributionId, actor.id);
         await record(
           'refund_contribution',
-          { status: 'confirmed' },
+          { status: str(contribution.status), amountMinor: num(contribution.amountMinor) },
           { status: 'refunded' },
-          {
-            contributionId,
-          },
+          { contributionId },
         );
         return { ok: true };
       }
@@ -838,15 +1081,25 @@ export class AdminMoneyService {
       gmvMinor: number;
       giftsBought: number;
       groupCollectedMinor: number;
+      groupMemberMinor: number;
+      groupHostMinor: number;
+      groupRefundedMinor: number;
       commissionByStatus: Record<string, number>;
       commissionMinor: number;
     }[];
-    totals: { gmvMinor: number; groupCollectedMinor: number; commissionMinor: number };
+    totals: {
+      gmvMinor: number;
+      groupCollectedMinor: number;
+      groupMemberMinor: number;
+      groupHostMinor: number;
+      groupRefundedMinor: number;
+      commissionMinor: number;
+    };
   }> {
     const range = monthRange(from, to);
     const monthOf = (field: string) => ({ $dateToString: { format: '%Y-%m', date: `$${field}` } });
 
-    const [gmv, collected, commission] = await Promise.all([
+    const [gmv, collected, refunded, commission] = await Promise.all([
       this.db
         .collection('gifts')
         .aggregate<{ _id: string; minor: number; n: number }>([
@@ -866,11 +1119,52 @@ export class AdminMoneyService {
           },
         ])
         .toArray(),
+      // A group payment counts in the month the host confirmed it arrived.
+      // The host's own share and settle-up are counted apart from members'.
       this.db
         .collection('contributions')
+        .aggregate<{ _id: string; member: number; host: number }>([
+          { $match: { status: 'confirmed' } },
+          { $addFields: { at: { $ifNull: ['$reviewedAt', '$createdAt'] } } },
+          { $match: { at: range } },
+          {
+            $addFields: {
+              hostMoney: {
+                $or: [
+                  { $eq: ['$idempotencyKey', HOST_SHARE_KEY] },
+                  {
+                    $regexMatch: {
+                      input: { $ifNull: ['$idempotencyKey', ''] },
+                      regex: '^settle:',
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          {
+            $group: {
+              _id: monthOf('at'),
+              member: { $sum: { $cond: ['$hostMoney', 0, '$amountMinor'] } },
+              host: { $sum: { $cond: ['$hostMoney', '$amountMinor', 0] } },
+            },
+          },
+        ])
+        .toArray(),
+      // Money actually handed back to members. A host keeping the extra is a
+      // RETURN to themselves, not a refund, and is left out.
+      this.db
+        .collection('settlements')
         .aggregate<{ _id: string; minor: number }>([
-          { $match: { createdAt: range, status: 'confirmed' } },
-          { $group: { _id: monthOf('createdAt'), minor: { $sum: '$amountMinor' } } },
+          {
+            $match: {
+              direction: 'return',
+              status: 'confirmed',
+              confirmedAt: range,
+              $expr: { $ne: ['$contributorId', '$hostId'] },
+            },
+          },
+          { $group: { _id: monthOf('confirmedAt'), minor: { $sum: '$amountMinor' } } },
         ])
         .toArray(),
       this.db
@@ -894,6 +1188,9 @@ export class AdminMoneyService {
         gmvMinor: number;
         giftsBought: number;
         groupCollectedMinor: number;
+        groupMemberMinor: number;
+        groupHostMinor: number;
+        groupRefundedMinor: number;
         commissionByStatus: Record<string, number>;
         commissionMinor: number;
       }
@@ -906,6 +1203,9 @@ export class AdminMoneyService {
           gmvMinor: 0,
           giftsBought: 0,
           groupCollectedMinor: 0,
+          groupMemberMinor: 0,
+          groupHostMinor: 0,
+          groupRefundedMinor: 0,
           commissionByStatus: {},
           commissionMinor: 0,
         };
@@ -914,7 +1214,14 @@ export class AdminMoneyService {
       return row;
     };
     for (const g of gmv) Object.assign(monthRow(g._id), { gmvMinor: g.minor, giftsBought: g.n });
-    for (const c of collected) monthRow(c._id).groupCollectedMinor = c.minor;
+    for (const c of collected) {
+      Object.assign(monthRow(c._id), { groupMemberMinor: c.member, groupHostMinor: c.host });
+    }
+    for (const r of refunded) monthRow(r._id).groupRefundedMinor = r.minor;
+    // What stayed in group gifts: everything confirmed, less what went back.
+    for (const m of months.values()) {
+      m.groupCollectedMinor = m.groupMemberMinor + m.groupHostMinor - m.groupRefundedMinor;
+    }
     for (const c of commission) {
       const row = monthRow(c._id.m);
       const status = c._id.s ?? 'unknown';
@@ -927,6 +1234,9 @@ export class AdminMoneyService {
       totals: {
         gmvMinor: list.reduce((s, m) => s + m.gmvMinor, 0),
         groupCollectedMinor: list.reduce((s, m) => s + m.groupCollectedMinor, 0),
+        groupMemberMinor: list.reduce((s, m) => s + m.groupMemberMinor, 0),
+        groupHostMinor: list.reduce((s, m) => s + m.groupHostMinor, 0),
+        groupRefundedMinor: list.reduce((s, m) => s + m.groupRefundedMinor, 0),
         commissionMinor: list.reduce((s, m) => s + m.commissionMinor, 0),
       },
     };
@@ -945,6 +1255,9 @@ export class AdminMoneyService {
       gmvMinor: m.gmvMinor,
       giftsBought: m.giftsBought,
       groupCollectedMinor: m.groupCollectedMinor,
+      groupMemberMinor: m.groupMemberMinor,
+      groupHostMinor: m.groupHostMinor,
+      groupRefundedMinor: m.groupRefundedMinor,
       commissionMinor: m.commissionMinor,
       ...Object.fromEntries(statuses.map((s) => [`commission_${s}`, m.commissionByStatus[s] ?? 0])),
     }));

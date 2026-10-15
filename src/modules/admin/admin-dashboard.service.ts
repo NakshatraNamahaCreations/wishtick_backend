@@ -1,3 +1,4 @@
+import { paymentStateFilter, withGiftStatus } from './group-gift-payments';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -14,6 +15,7 @@ import {
   WebhookEventStatus,
   type WebhookEventDocument,
 } from 'src/modules/gifting/schemas/webhook-event.schema';
+import { GroupGiftStatus } from 'src/modules/group-gifts/group-gift.types';
 import {
   GroupGift,
   type GroupGiftDocument,
@@ -99,7 +101,10 @@ export interface DashboardView {
     gmvMinor30d: number;
     groupGiftsOpen: number;
     groupGiftsFunded: number;
+    /** Confirmed money on open gifts, after refunds. */
     groupGiftCollectedMinorOpen: number;
+    /** Money members say they sent that the host has not confirmed yet. */
+    groupGiftAwaitingMinor: number;
     clicks30d: number;
     conversions30d: number;
     commissionMinor30d: number;
@@ -256,6 +261,7 @@ export class AdminDashboardService {
       groupGiftsOpen,
       groupGiftsFunded,
       collected,
+      awaiting,
       clicks30d,
       conv,
     ] = await Promise.all([
@@ -269,6 +275,19 @@ export class AdminDashboardService {
       this.groupGifts.countDocuments({ status: 'open' }).exec(),
       this.groupGifts.countDocuments({ status: 'funded' }).exec(),
       this.sum(this.groupGifts, 'collectedAmountMinor', { status: 'open' }),
+      // Beside the open gifts' confirmed money, so only the open gifts' waiting money.
+      this.groupGifts.db
+        .collection('contributions')
+        .aggregate<{ minor: number }>([
+          { $match: paymentStateFilter('awaiting') },
+          ...withGiftStatus(this.groupGifts.collection.name),
+          { $match: { 'gift.status': GroupGiftStatus.OPEN } },
+          {
+            $group: { _id: null, minor: { $sum: { $ifNull: ['$claimedMinor', '$amountMinor'] } } },
+          },
+        ])
+        .toArray()
+        .then((r) => r[0]?.minor ?? 0),
       this.clicks.countDocuments({ createdAt: { $gte: ago(30) } }).exec(),
       this.conversions
         .aggregate<{ n: number; commission: number }>([
@@ -291,6 +310,7 @@ export class AdminDashboardService {
       groupGiftsOpen,
       groupGiftsFunded,
       groupGiftCollectedMinorOpen: collected,
+      groupGiftAwaitingMinor: awaiting,
       clicks30d,
       conversions30d: conv[0]?.n ?? 0,
       commissionMinor30d: conv[0]?.commission ?? 0,
@@ -308,6 +328,8 @@ export class AdminDashboardService {
       failedReels,
       failedMedia,
       failedJobs,
+      paymentsWaiting,
+      paymentDisputes,
     ] = await Promise.all([
       this.reports.countDocuments({ status: ReportStatus.OPEN }).exec(),
       this.reports
@@ -322,6 +344,23 @@ export class AdminDashboardService {
       this.reels.countDocuments({ status: 'failed' }).exec(),
       this.media.countDocuments({ status: MediaStatus.FAILED, createdAt: { $gte: ago(7) } }).exec(),
       this.failedJobs(),
+      // A member said they paid two days ago and the host still has not said. A cancelled
+      // gift is frozen — its host can no longer answer — so its claims are not counted.
+      this.reports.db
+        .collection('contributions')
+        .aggregate<{ n: number }>([
+          { $match: { ...paymentStateFilter('awaiting'), createdAt: { $lt: ago(2) } } },
+          ...withGiftStatus(this.groupGifts.collection.name),
+          {
+            $match: {
+              'gift.status': { $nin: [GroupGiftStatus.CANCELLED, GroupGiftStatus.REFUNDING] },
+            },
+          },
+          { $count: 'n' },
+        ])
+        .toArray()
+        .then((r) => r[0]?.n ?? 0),
+      this.reports.db.collection('contributions').countDocuments(paymentStateFilter('disputed')),
     ]);
 
     const items: Snapshot['attention'] = [
@@ -344,6 +383,20 @@ export class AdminDashboardService {
         label: 'Gift holds past their expiry',
         count: stuck,
         tone: 'warn',
+        permission: AdminPermission.MONEY_VIEW,
+      },
+      {
+        key: 'payments-disputed',
+        label: 'Group gift payments in dispute',
+        count: paymentDisputes,
+        tone: 'warn',
+        permission: AdminPermission.MONEY_VIEW,
+      },
+      {
+        key: 'payments-waiting',
+        label: 'Group gift payments the host has not confirmed (2d+)',
+        count: paymentsWaiting,
+        tone: 'info',
         permission: AdminPermission.MONEY_VIEW,
       },
       {
