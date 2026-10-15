@@ -778,10 +778,24 @@ export class ChatService {
       return !cut || row.doc._id.toString() > cut.toString();
     });
 
+    const previews = kept.map(
+      (row) =>
+        [row._id.toString(), toMessagePreviewView(this.messageModel.hydrate(row.doc))] as const,
+    );
+
+    // Each sender's name, in one lookup for the whole page: a group chat's row
+    // says who wrote its last line.
+    const senderIds = [...new Set(previews.flatMap(([, p]) => (p.senderId ? [p.senderId] : [])))];
+    const names = new Map(
+      (await this.wishmates.identitiesOf(senderIds)).map((i) => [
+        i.userId,
+        i.displayName?.trim() || (i.username ? `@${i.username}` : null),
+      ]),
+    );
     return new Map(
-      kept.map((row) => [
-        row._id.toString(),
-        toMessagePreviewView(this.messageModel.hydrate(row.doc)),
+      previews.map(([chatId, p]) => [
+        chatId,
+        { ...p, senderName: p.senderId ? (names.get(p.senderId) ?? null) : null },
       ]),
     );
   }

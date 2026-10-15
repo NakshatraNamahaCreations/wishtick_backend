@@ -307,8 +307,15 @@ export class DiscoverService {
     // a search too narrow to fill the shelf still falls back to a full one.
     const keywords = audienceKeywords(entry.occasionKey, relationWord(entry.relation));
 
-    const items = await this.safeSearch({ category, keywords, pageSize: CANDIDATE_POOL });
+    // The narrowed search unavailable — the vendor's quota spent, say — is no
+    // reason to drop the person: the plain category may still be answered,
+    // from the cache or from saved products. Dropping here used to skip the
+    // `broaden` retry below entirely, since a dropped draft is never retried.
+    const narrowed = await this.safeSearch({ category, keywords, pageSize: CANDIDATE_POOL });
+    const items =
+      narrowed ?? (keywords ? await this.safeSearch({ category, pageSize: CANDIDATE_POOL }) : null);
     if (items === null) return null;
+    const searched = narrowed === null ? null : keywords;
 
     const section: DiscoverSection = {
       kind: DiscoverSectionKind.PERSON_OCCASION,
@@ -326,11 +333,11 @@ export class DiscoverService {
       maxPriceMinor: null,
       minPriceMinor: null,
       items,
-      exploreQuery: { category, keywords, minPriceMinor: null, maxPriceMinor: null },
+      exploreQuery: { category, keywords: searched, minPriceMinor: null, maxPriceMinor: null },
     };
     return {
       section,
-      ...(keywords ? { broaden: category } : {}),
+      ...(searched ? { broaden: category } : {}),
       fallbacks: fallbackShelves(entry.occasionKey, entry.relation),
     };
   }

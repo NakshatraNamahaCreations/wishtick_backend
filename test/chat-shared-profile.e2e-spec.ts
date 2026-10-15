@@ -327,6 +327,43 @@ describe('Shared profiles in chat (e2e)', () => {
     });
 
     // So the app can offer them as places to send a profile, by name.
+    // The Messages screen reads "Rohit: Tickets are confirmed!" on a group's
+    // row — so the list says who wrote the last line.
+    it('names who sent the last message, for every chat in the list', async () => {
+      const owner = await newUser('Owner');
+      const initiator = await newUser('Initiator');
+      const { item } = await wishlistWithItem(owner);
+      const gg = (
+        (
+          await request(app.getHttpServer())
+            .post(`${V1}/items/${item}/group-gift`)
+            .set(auth(initiator.token))
+            .set('Idempotency-Key', randomUUID())
+            .send({ title: 'Speaker for Owner', targetAmountMinor: 1000 })
+            .expect(201)
+        ).body as Envelope<{ chatId: string }>
+      ).data;
+      await share(initiator, gg.chatId, { body: 'Tickets are confirmed!' }).expect(201);
+      const { a, b, chatId } = await thread();
+      await share(a, chatId, { body: 'See you there' }).expect(201);
+
+      const listOf = async (actor: Actor) =>
+        (
+          (await request(app.getHttpServer()).get(`${V1}/chats`).set(auth(actor.token)).expect(200))
+            .body as Envelope<
+            { id: string; lastMessage: { body: string; senderName: string | null } | null }[]
+          >
+        ).data;
+
+      const group = (await listOf(initiator)).find((c) => c.id === gg.chatId);
+      expect(group?.lastMessage).toMatchObject({
+        body: 'Tickets are confirmed!',
+        senderName: 'Initiator',
+      });
+      const direct = (await listOf(b)).find((c) => c.id === chatId);
+      expect(direct?.lastMessage?.senderName).toBe('Asha');
+    });
+
     it('lists both by name', async () => {
       const owner = await newUser('Owner');
       const initiator = await newUser('Initiator');

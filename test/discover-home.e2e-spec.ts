@@ -2,6 +2,8 @@ import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
 import { getConnectionToken } from '@nestjs/mongoose';
 import { Types, type Connection } from 'mongoose';
+import { FixtureProductProvider } from 'src/modules/products/providers/fixture-provider';
+import { ProviderGuard } from 'src/modules/products/providers/provider-guard.service';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
 interface Envelope<T> {
@@ -588,6 +590,68 @@ describe('Sprint 4: Home & Discover (e2e)', () => {
 
     it('requires a bearer token', async () => {
       await request(app.getHttpServer()).get(`${V1}/discover/feed`).expect(401);
+    });
+
+    // The vendor's monthly quota ran out (SerpApi's free 250, spent by the
+    // middle of the month), every cached shelf aged past its day, and Discover
+    // went blank: "Nothing to suggest just yet." The price shelves ask only
+    // for a price range, which the saved-products fallback refused, and a
+    // person's shelf was dropped on its narrowed search before it could try
+    // its plain category.
+    describe('when product search has run out', () => {
+      let fixture: FixtureProductProvider;
+
+      const outOfSearches = async () => {
+        fixture.faults = { fail: true };
+        // A day on: no cached copy of any search is left to serve.
+        const keys = await ctx.redis.keys('*products:search*');
+        if (keys.length > 0) await ctx.redis.del(...keys);
+      };
+
+      beforeEach(() => {
+        fixture = app.get(FixtureProductProvider);
+      });
+
+      afterEach(() => {
+        fixture.faults = {};
+        app.get(ProviderGuard).resetBreaker('fixture');
+      });
+
+      it('still fills the shelves from products shown before', async () => {
+        const token = await newUser();
+        await addDate(token, 5).expect(201);
+        // Seen while search worked, so they are saved.
+        const before = await getFeed(token);
+        expect(before.sections.length).toBeGreaterThan(0);
+
+        await outOfSearches();
+        const feed = await getFeed(token);
+
+        const kinds = feed.sections.map((s) => s.kind);
+        expect(kinds).toEqual(expect.arrayContaining(['person_occasion', 'price_band', 'premium']));
+        for (const section of feed.sections) {
+          expect(section.items.length).toBeGreaterThan(0);
+        }
+      });
+
+      it('keeps the price shelves inside their bounds when served from saved products', async () => {
+        const token = await newUser();
+        await getFeed(token);
+
+        await outOfSearches();
+        const feed = await getFeed(token);
+
+        const band = feed.sections.find((s) => s.kind === 'price_band');
+        expect(band?.items.length).toBeGreaterThan(0);
+        for (const item of band?.items ?? []) {
+          expect(item.amountMinor!).toBeLessThanOrEqual(band!.maxPriceMinor!);
+        }
+        const premium = feed.sections.find((s) => s.kind === 'premium');
+        expect(premium?.items.length).toBeGreaterThan(0);
+        for (const item of premium?.items ?? []) {
+          expect(item.amountMinor!).toBeGreaterThanOrEqual(premium!.minPriceMinor!);
+        }
+      });
     });
   });
 

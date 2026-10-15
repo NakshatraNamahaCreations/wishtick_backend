@@ -504,14 +504,21 @@ export class ProductsService {
    * mat" finds "Boldfit Yoga Mats for Women" — with the query's category and
    * price range applied as the provider would. Only this provider's rows: a
    * product from another is one whose links and ids nothing else here reads.
+   *
+   * A price range alone is a question too — Discover's "Gifts Under ₹1,000"
+   * and "Premium Picks" shelves ask nothing else. Those used to be refused
+   * here, so when the vendor's monthly quota ran out and the cached copies
+   * aged past a day, Discover went entirely blank while thousands of saved
+   * products sat unused.
    */
   private async catalogueSearch(query: ProductSearchQuery): Promise<ProductSearchResult | null> {
     const words = (query.q ?? '').trim().split(/\s+/).filter(Boolean).slice(0, 8);
-    if (words.length === 0 && !query.category) return null;
 
     const price: Record<string, number> = {};
     if (query.minPriceMinor !== undefined) price.$gte = query.minPriceMinor;
     if (query.maxPriceMinor !== undefined) price.$lte = query.maxPriceMinor;
+    // Nothing at all to go on: every saved product is not an answer.
+    if (words.length === 0 && !query.category && Object.keys(price).length === 0) return null;
 
     const filter = {
       provider: this.provider.name,

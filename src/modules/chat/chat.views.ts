@@ -54,6 +54,11 @@ export interface MessagePreviewView {
   /** Empty for a deleted message, and for one that is only attachments. */
   body: string;
   hasAttachments: boolean;
+  /**
+   * Who sent it, by name — so a group chat's row can read "Rohit: Tickets are
+   * confirmed!". Null for a system message, and for a sender with no name.
+   */
+  senderName: string | null;
   createdAt: Date;
 }
 
@@ -135,6 +140,8 @@ export function toMessagePreviewView(m: MessageDocument): MessagePreviewView {
     kind: m.kind,
     body: body.length > PREVIEW_MAX_CHARS ? `${body.slice(0, PREVIEW_MAX_CHARS)}…` : body,
     hasAttachments: !deleted && m.attachments.length > 0,
+    // Filled in by the service, which can look people up.
+    senderName: null,
     createdAt: m.createdAt,
   };
 }
