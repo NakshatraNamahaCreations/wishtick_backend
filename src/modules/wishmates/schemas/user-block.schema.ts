@@ -4,6 +4,29 @@ import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 export type UserBlockDocument = HydratedDocument<UserBlock>;
 
 /**
+ * The WishMates connection a block put on hold, to be given back on unblock.
+ *
+ * Who asked whom, and when, so the restored link is the same connection rather
+ * than a new one dated today.
+ */
+@Schema({ _id: false })
+export class HeldLink {
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true })
+  requesterId!: Types.ObjectId;
+
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true })
+  addresseeId!: Types.ObjectId;
+
+  @Prop({ type: Date, required: true })
+  createdAt!: Date;
+
+  @Prop({ type: Date, default: null })
+  respondedAt!: Date | null;
+}
+
+export const HeldLinkSchema = SchemaFactory.createForClass(HeldLink);
+
+/**
  * One person blocking another.
  *
  * A row per direction, unlike [WishLink]'s one row per pair: blocking is one
@@ -23,6 +46,15 @@ export class UserBlock {
 
   @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true, index: true })
   blockedId!: Types.ObjectId;
+
+  /**
+   * The two were WishMates when the block was made: the connection is held
+   * here, not ended. While it is held the blocked person can still write to
+   * the blocker — the messages wait, unseen — and unblocking puts the
+   * connection back. Null when there was nothing to hold.
+   */
+  @Prop({ type: HeldLinkSchema, default: null })
+  heldLink!: HeldLink | null;
 
   createdAt!: Date;
 }

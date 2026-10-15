@@ -550,6 +550,9 @@ export class NotificationListener {
             chatId: e.chatId,
             senderId: e.senderId,
             direct: e.direct,
+            // A group gift's chat is opened through its gift.
+            chatType: e.chatType,
+            chatRefId: e.chatRefId,
           },
         });
       }

@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
+  USER_UNBLOCKED,
   WISHMATE_ACCEPTED,
   WISHMATE_REQUESTED,
+  type UserUnblockedEvent,
   type WishmateAcceptedEvent,
   type WishmateRequestedEvent,
 } from 'src/common/events/domain-events';
@@ -597,10 +599,15 @@ export class WishmatesService {
   /**
    * Blocks someone.
    *
-   * Ends whatever was between the two — a connection, a request either way,
-   * a remembered decline — so nothing is left for either to act on: no chat
-   * (that needs an accepted link), no WishMates-only lists, no pending
-   * request to accept later. Silent: nobody is told.
+   * Takes away whatever was between the two — a connection, a request either
+   * way, a remembered decline — so nothing is left for either to act on: no
+   * WishMates-only lists, no pending request to accept later. Silent: nobody
+   * is told.
+   *
+   * A connection is *held*, not ended (see [UserBlock.heldLink]). While it is
+   * held the blocked person can still write to the blocker, who sees none of
+   * it until they unblock — and unblocking gives the connection back, with
+   * everything that was written while it stood.
    *
    * Idempotent: blocking someone already blocked changes nothing.
    */
@@ -609,13 +616,28 @@ export class WishmatesService {
       throw new AppException(ErrorCode.BLOCK_SELF, 'You cannot block yourself.', 400);
     }
     await this.assertUserExists(targetId);
+    const accepted = await this.links
+      .findOne({ ...this.pairFilter(viewerId, targetId), status: WishLinkStatus.ACCEPTED })
+      .exec();
     await this.blocks
       .updateOne(
         {
           blockerId: new Types.ObjectId(viewerId),
           blockedId: new Types.ObjectId(targetId),
         },
-        { $setOnInsert: { createdAt: new Date() } },
+        {
+          $setOnInsert: {
+            createdAt: new Date(),
+            heldLink: accepted
+              ? {
+                  requesterId: accepted.requesterId,
+                  addresseeId: accepted.addresseeId,
+                  createdAt: accepted.createdAt,
+                  respondedAt: accepted.respondedAt,
+                }
+              : null,
+          },
+        },
         { upsert: true },
       )
       .exec();
@@ -623,19 +645,79 @@ export class WishmatesService {
   }
 
   /**
-   * Lifts the viewer's own block. Nothing comes back with it — the old
-   * connection stays ended; either can send a new request.
+   * Lifts the viewer's own block, and gives back the connection it held, if
+   * it held one — so the two are WishMates again and the messages written
+   * while it stood reach the viewer (the chat module does that part, on
+   * [USER_UNBLOCKED]).
    *
-   * Their block on the viewer, if they made one, is theirs and stays.
+   * Their block on the viewer, if they made one, is theirs and stays — and
+   * the connection waits on it: it is handed to their block, to come back
+   * when they lift it.
    */
   async unblock(viewerId: string, targetId: string): Promise<void> {
     if (!Types.ObjectId.isValid(targetId)) return;
-    await this.blocks
-      .deleteOne({
+    const lifted = await this.blocks
+      .findOneAndDelete({
         blockerId: new Types.ObjectId(viewerId),
         blockedId: new Types.ObjectId(targetId),
       })
       .exec();
+    if (!lifted) return;
+
+    const held = lifted.heldLink;
+    if (held) {
+      const theirs = await this.blocks
+        .findOne({
+          blockerId: new Types.ObjectId(targetId),
+          blockedId: new Types.ObjectId(viewerId),
+        })
+        .exec();
+      if (theirs) {
+        if (!theirs.heldLink) {
+          await this.blocks.updateOne({ _id: theirs._id }, { $set: { heldLink: held } }).exec();
+        }
+      } else {
+        // Nothing could have been written for the pair while the block stood
+        // (requests across a block are refused), so this is a clean slate.
+        await this.links.deleteMany(this.pairFilter(viewerId, targetId)).exec();
+        await this.links.create({
+          requesterId: held.requesterId,
+          addresseeId: held.addresseeId,
+          status: WishLinkStatus.ACCEPTED,
+          respondedAt: held.respondedAt ?? held.createdAt,
+          createdAt: held.createdAt,
+        });
+      }
+    }
+    // Awaited: the app reloads the thread as soon as this answers, and the
+    // messages handed over must already be there to load.
+    await this.emitter.emitAsync(USER_UNBLOCKED, {
+      blockerId: viewerId,
+      blockedId: targetId,
+    } satisfies UserUnblockedEvent);
+  }
+
+  /**
+   * Whether [senderId] may write to [recipientId] in a direct chat.
+   *
+   * WishMates may. So may someone [recipientId] blocked while the two were
+   * WishMates: they are not told about the block, so their side of the
+   * conversation carries on — what they write waits, unseen, until the block
+   * is lifted (see [block]). Nobody may write to someone they blocked
+   * themselves.
+   */
+  async canMessage(senderId: string, recipientId: string): Promise<boolean> {
+    if (await this.areWishmates(senderId, recipientId)) return true;
+    if (!Types.ObjectId.isValid(senderId) || !Types.ObjectId.isValid(recipientId)) return false;
+    if (await this.hasBlocked(senderId, recipientId)) return false;
+    const held = await this.blocks
+      .exists({
+        blockerId: new Types.ObjectId(recipientId),
+        blockedId: new Types.ObjectId(senderId),
+        heldLink: { $ne: null },
+      })
+      .exec();
+    return held !== null;
   }
 
   /** The people the viewer has blocked, most recent first — to unblock. */
@@ -672,7 +754,8 @@ export class WishmatesService {
     return row !== null;
   }
 
-  private async hasBlocked(blockerId: string, blockedId: string): Promise<boolean> {
+  /** Whether [blockerId] has blocked [blockedId] — one direction only. */
+  async hasBlocked(blockerId: string, blockedId: string): Promise<boolean> {
     if (!Types.ObjectId.isValid(blockerId) || !Types.ObjectId.isValid(blockedId)) return false;
     const row = await this.blocks
       .exists({

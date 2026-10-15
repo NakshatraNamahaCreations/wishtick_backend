@@ -229,7 +229,11 @@ export class ChatGateway
     await this.chat.addParticipant(chat._id, user.id);
     (client.data.chats ??= new Set()).add(chatId);
     await this.presence.enteredChat(user.id, chatId);
-    client.to(chatRoom(chatId)).emit(WS_EVENT.PRESENCE, { chatId, userId: user.id, online: true });
+    (await this.roomExceptBlocked(client, chatId, user.id)).emit(WS_EVENT.PRESENCE, {
+      chatId,
+      userId: user.id,
+      online: true,
+    });
     return { joined: chatId };
   }
 
@@ -243,23 +247,41 @@ export class ChatGateway
     await client.leave(chatRoom(chatId));
     client.data.chats?.delete(chatId);
     await this.presence.leftChat(user.id, chatId);
-    client.to(chatRoom(chatId)).emit(WS_EVENT.PRESENCE, { chatId, userId: user.id, online: false });
+    (await this.roomExceptBlocked(client, chatId, user.id)).emit(WS_EVENT.PRESENCE, {
+      chatId,
+      userId: user.id,
+      online: false,
+    });
     return { left: chatId };
   }
 
   @SubscribeMessage(WS_EVENT.TYPING)
-  onTyping(
+  async onTyping(
     @ConnectedSocket() client: AuthedSocket,
     @MessageBody() body: { chatId?: string; typing?: boolean },
-  ): void {
+  ): Promise<void> {
     const user = ChatGateway.requireUser(client);
     const chatId = ChatGateway.requireChatId(body);
     // Only sockets that have joined the room hear it; a non-member never does.
-    client.to(chatRoom(chatId)).emit(WS_EVENT.TYPING, {
+    (await this.roomExceptBlocked(client, chatId, user.id)).emit(WS_EVENT.TYPING, {
       chatId,
       userId: user.id,
       typing: body.typing !== false,
     });
+  }
+
+  /**
+   * The rest of the chat's room, minus anyone this user has blocked or been
+   * blocked by. Somebody who blocked you must not watch you typing a message
+   * they will not get until they unblock — nor, the other way, see you come
+   * and go.
+   */
+  private async roomExceptBlocked(client: AuthedSocket, chatId: string, userId: string) {
+    const blocked = await this.wishmates.blockedIdsEitherWay(userId);
+    return blocked.reduce(
+      (emitter, id) => emitter.except(userRoom(id.toString())),
+      client.to(chatRoom(chatId)),
+    );
   }
 
   // ── Broadcast fan-out (from ChatService, both REST and socket paths) ─────────

@@ -367,6 +367,17 @@ export interface WishmateAcceptedEvent {
 }
 
 /**
+ * Somebody lifted their block. The chat module listens, to hand over the
+ * messages the blocked person wrote while it stood.
+ */
+export const USER_UNBLOCKED = 'wishmate.unblocked';
+
+export interface UserUnblockedEvent {
+  blockerId: string;
+  blockedId: string;
+}
+
+/**
  * Somebody wrote in a conversation.
  *
  * Chat delivery was websocket-only, which means it reached exactly the people
@@ -389,6 +400,13 @@ export interface ChatMessagePostedEvent {
   body: string;
   /** True for a direct message, which reads differently from a group. */
   direct: boolean;
+  /**
+   * What the chat belongs to — `direct`, `wishlist` or `group_gift` — and the
+   * id of that wishlist or group gift. A tapped push opens a group gift's
+   * chat through its gift, so the app needs both to get there.
+   */
+  chatType: string;
+  chatRefId: string;
 }
 
 export const WISHLIST_PARTICIPANT_REVOKED = 'wishlist.participant_revoked';

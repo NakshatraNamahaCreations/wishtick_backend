@@ -1,8 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { createHash } from 'node:crypto';
+import { USER_UNBLOCKED, type UserUnblockedEvent } from 'src/common/events/domain-events';
 import { AppException } from 'src/common/errors/app.exception';
 import { WishmatesService } from 'src/modules/wishmates/wishmates.service';
 import { ErrorCode } from 'src/common/errors/error-codes';
@@ -95,11 +96,13 @@ export class ChatService {
     if (viewerId === otherId) {
       throw new AppException(ErrorCode.CHAT_NOT_FOUND, 'Chat not found', 404);
     }
-    if (!(await this.wishmates.areWishmates(viewerId, otherId))) {
+    // WishMates — or someone the other person blocked while they were, who is
+    // not told and whose side carries on (see [WishmatesService.canMessage]).
+    if (!(await this.wishmates.canMessage(viewerId, otherId))) {
       // History survives an unfriending, and a block — so a thread the two
       // already have still opens, to be read. Nothing can be sent in it
-      // (posting and reacting check the link again), and no *new* thread is
-      // started without one.
+      // (posting and reacting check again), and no *new* thread is started
+      // without a connection.
       const existing = await this.chatModel
         .findOne({
           type: ChatType.DIRECT,
@@ -209,10 +212,12 @@ export class ChatService {
       // History survives an unfriending — deleting a conversation because a
       // link was removed destroys something both people wrote. Posting does
       // not: reaching someone requires a live connection, and removing one is
-      // the clearest way of saying you no longer want to be reached.
+      // the clearest way of saying you no longer want to be reached. A block
+      // is the exception on one side only: the person blocked is not told,
+      // and can still write — see [postMessage] for where that goes.
       if (opts.forPost) {
         const other = chat.participantIds.find((id) => id.toString() !== userId);
-        if (other && !(await this.wishmates.areWishmates(userId, other.toString()))) {
+        if (other && !(await this.wishmates.canMessage(userId, other.toString()))) {
           throw new AppException(
             ErrorCode.NOT_WISHMATES,
             'You can only message your WishMates.',
@@ -284,6 +289,11 @@ export class ChatService {
     if (dto.surprise && chat.type === ChatType.WISHLIST && ownerId && ownerId !== userId) {
       hideFromUserIds.push(new Types.ObjectId(ownerId));
     }
+    // Written to someone who blocked the sender: kept, and kept from them —
+    // no delivery, no notification, no unread — until they unblock, when
+    // [releaseHeldMessages] hands it over. The sender sees it sent, as ever.
+    const recipient = await this.blockerOf(chat, userId);
+    if (recipient) hideFromUserIds.push(recipient);
 
     const [message] = await this.messageModel.create([
       {
@@ -492,6 +502,17 @@ export class ChatService {
     const { chat } = await this.authorize(message.chatId.toString(), userId);
     if (chat.type === ChatType.DIRECT) {
       await this.authorize(message.chatId.toString(), userId, { forPost: true });
+      // A message can wait out a block; a reaction lands on a message the
+      // blocker can already see, so it cannot — refused like any other
+      // reaction across a closed thread.
+      const other = chat.participantIds.find((id) => id.toString() !== userId);
+      if (other && (await this.wishmates.blockedEitherWay(userId, other.toString()))) {
+        throw new AppException(
+          ErrorCode.NOT_WISHMATES,
+          'You can only message your WishMates.',
+          403,
+        );
+      }
     }
 
     const uid = new Types.ObjectId(userId);
@@ -531,8 +552,11 @@ export class ChatService {
       }
       upTo = new Types.ObjectId(messageId);
     } else {
+      // The newest message this reader can *see*. Counting a hidden one would
+      // mark it read — a message held across a block would show its sender
+      // as read, and arrive already read when the block lifts.
       const latest = await this.messageModel
-        .findOne({ chatId: chat._id })
+        .findOne({ chatId: chat._id, hideFromUserIds: { $ne: new Types.ObjectId(userId) } })
         .sort({ _id: -1 })
         .select('_id')
         .exec();
@@ -564,8 +588,10 @@ export class ChatService {
    */
   async clearForUser(chatId: string, userId: string): Promise<{ clearedUpTo: string | null }> {
     const { chat } = await this.authorize(chatId, userId);
+    // Up to what this reader has seen: a message still held from them across
+    // a block was never theirs to delete, and arrives when the block lifts.
     const latest = await this.messageModel
-      .findOne({ chatId: chat._id })
+      .findOne({ chatId: chat._id, hideFromUserIds: { $ne: new Types.ObjectId(userId) } })
       .sort({ _id: -1 })
       .select('_id')
       .exec();
@@ -796,8 +822,19 @@ export class ChatService {
     }
     if (wanted.size === 0) return new Map();
 
-    const identities = await this.wishmates.identitiesOf([...new Set(wanted.values())]);
-    const byUser = new Map(identities.map((i) => [i.userId, i]));
+    const [identities, blocked] = await Promise.all([
+      this.wishmates.identitiesOf([...new Set(wanted.values())]),
+      this.wishmates.blockedIdsEitherWay(userId),
+    ]);
+    // Across a block, either way, nobody's comings and goings are shown —
+    // the same rule the Blocked users list keeps.
+    const unseen = new Set(blocked.map((id) => id.toString()));
+    const byUser = new Map(
+      identities.map((i) => [
+        i.userId,
+        unseen.has(i.userId) ? { ...i, online: false, lastSeenAt: null } : i,
+      ]),
+    );
 
     const result = new Map<string, PublicIdentity>();
     for (const [chatId, otherId] of wanted) {
@@ -870,6 +907,51 @@ export class ChatService {
     } satisfies ChatForceLeave & { chatId: string });
   }
 
+  // ── Across a block ───────────────────────────────────────────────────────────
+
+  /**
+   * The other person in a direct chat, if they have blocked [senderId] — the
+   * one a new message from [senderId] must be held from. Null otherwise, and
+   * for every other kind of chat.
+   */
+  private async blockerOf(chat: ChatDocument, senderId: string): Promise<Types.ObjectId | null> {
+    if (chat.type !== ChatType.DIRECT) return null;
+    const other = chat.participantIds.find((id) => id.toString() !== senderId);
+    if (!other) return null;
+    return (await this.wishmates.hasBlocked(other.toString(), senderId)) ? other : null;
+  }
+
+  /**
+   * A block was lifted: everything the blocked person wrote to the blocker
+   * while it stood reaches them now, as unread.
+   *
+   * Only their direct thread, and only messages hidden from the blocker —
+   * which, in a direct chat, nothing but a block ever does (the anti-spoiler
+   * hide is for wishlist chats alone). No notifications for the backlog: it
+   * is there when they open the chat, which is where they just were.
+   */
+  @OnEvent(USER_UNBLOCKED)
+  async releaseHeldMessages(event: UserUnblockedEvent): Promise<void> {
+    const chat = await this.chatModel
+      .findOne({
+        type: ChatType.DIRECT,
+        refId: ChatService.directRefId(event.blockerId, event.blockedId),
+      })
+      .exec();
+    if (!chat) return;
+    const blocker = new Types.ObjectId(event.blockerId);
+    await this.messageModel
+      .updateMany(
+        {
+          chatId: chat._id,
+          senderId: new Types.ObjectId(event.blockedId),
+          hideFromUserIds: blocker,
+        },
+        { $pull: { hideFromUserIds: blocker } },
+      )
+      .exec();
+  }
+
   // ── Internals ────────────────────────────────────────────────────────────────
 
   private async afterNewMessage(
@@ -919,6 +1001,8 @@ export class ChatService {
       recipientIds,
       body: previewBody ?? message.body,
       direct: chat.type === ChatType.DIRECT,
+      chatType: chat.type,
+      chatRefId: chat.refId.toString(),
     } satisfies ChatMessagePostedEvent);
   }
 
