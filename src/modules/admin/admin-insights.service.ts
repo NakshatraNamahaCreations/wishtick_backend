@@ -1,4 +1,5 @@
 import { paymentKindFilter, paymentStateFilter } from './group-gift-payments';
+import { NOT_EMAIL } from './notification-channels';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectConnection } from '@nestjs/mongoose';
@@ -505,7 +506,7 @@ export class AdminInsightsService {
       const rows = await this.db
         .collection('delivery_logs')
         .aggregate<{ _id: { c: string; s: string }; n: number }>([
-          { $match: { createdAt: dayRange(from, to) } },
+          { $match: { createdAt: dayRange(from, to), ...NOT_EMAIL } },
           { $group: { _id: { c: '$channel', s: '$status' }, n: { $sum: 1 } } },
         ])
         .toArray();

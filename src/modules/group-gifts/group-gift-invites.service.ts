@@ -75,6 +75,8 @@ export interface GroupGiftInviteDetailView extends GroupGiftInviteView {
    * to. Paying is how they accept, so it has to be possible from here.
    */
   suggestedAmountsMinor: number[];
+  /** The most they may put in — see [GroupGiftView.contributableMinor]. */
+  contributableMinor: number;
   hostName: string;
   hostUpiId: string | null;
   /**
@@ -376,6 +378,7 @@ export class GroupGiftInvitesService {
       contributorCount: gift.contributorCount,
       deadline: gift.deadline,
       suggestedAmountsMinor: gift.suggestedAmountsMinor ?? [],
+      contributableMinor: await this.shares.contributableMinor(gift),
       hostName: names.get(gift.initiatorId.toString()) ?? 'A friend',
       hostUpiId: gift.hostUpiId ?? null,
       contributors: contributions.map((c) => ({

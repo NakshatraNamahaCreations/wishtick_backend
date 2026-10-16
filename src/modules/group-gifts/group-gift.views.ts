@@ -158,6 +158,13 @@ export interface GroupGiftView {
   myRefundedMinor: number;
   /** Everybody's payments still awaiting the host, summed. */
   pendingAmountMinor: number;
+  /**
+   * The most anybody may contribute right now: what is still needed to reach
+   * the goal, with payments awaiting the host counted as in. Zero when the
+   * goal is met or the gift is not taking money. The contribute sheet caps
+   * its amount at this, and the server refuses anything above it.
+   */
+  contributableMinor: number;
   /** The viewer's own payments still awaiting the host. */
   myPendingMinor: number;
   /** The viewer's own payments and where each stands, newest first. */
@@ -431,6 +438,7 @@ export function toGroupGiftView(input: {
     cancelReason: gift.cancelReason ?? null,
     myRefundedMinor: 0,
     pendingAmountMinor: 0,
+    contributableMinor: 0,
     myPendingMinor: 0,
     myPayments: [],
     createdAt: gift.createdAt,

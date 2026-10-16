@@ -1869,13 +1869,13 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
           {
             userId: uid,
             type: 'gift_purchased',
-            channel: 'email',
+            channel: 'sms',
             refId: `r-${seq}`,
             dedupeKey: `k-${seq}-1-${Date.now()}`,
             status: 'failed',
-            destination: 'asha.rao@example.com',
+            destination: '+919876543210',
             providerRef: null,
-            error: 'mailbox full',
+            error: 'carrier rejected',
             createdAt: new Date(),
             updatedAt: new Date(),
           },
@@ -1885,10 +1885,11 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
             channel: 'email',
             refId: `r-${seq}`,
             dedupeKey: `k-${seq}-2-${Date.now()}`,
-            status: 'sent',
+            // Wishtick sends no email: a log of one is never shown.
+            status: 'failed',
             destination: 'asha.rao@example.com',
-            providerRef: 'p1',
-            error: null,
+            providerRef: null,
+            error: 'mailbox full',
             createdAt: new Date(),
             updatedAt: new Date(),
           },
@@ -1902,8 +1903,17 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
           .expect(200)
       ).body as Envelope<{ items: { destination: string; error: string }[] }>;
       expect(failed.data.items).toHaveLength(1);
-      expect(failed.data.items[0].error).toBe('mailbox full');
-      expect(failed.data.items[0].destination).not.toContain('asha.rao');
+      expect(failed.data.items[0].error).toBe('carrier rejected');
+      expect(failed.data.items[0].destination).not.toContain('9876543210');
+      // Asking for email by name does not bring it back.
+      const asked = (
+        await request(server())
+          .get(`${V1}/admin/notifications/deliveries`)
+          .query({ owner: user.userId, channel: 'email' })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { error: string }[] }>;
+      expect(asked.data.items.map((d) => d.error)).not.toContain('mailbox full');
 
       const overview = (
         await request(server())
@@ -1911,8 +1921,9 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
           .set(auth(token))
           .expect(200)
       ).body as Envelope<{ byChannel: { channel: string; counts: Record<string, number> }[] }>;
-      const email = overview.data.byChannel.find((c) => c.channel === 'email')!;
-      expect(email.counts.failed).toBeGreaterThanOrEqual(1);
+      const sms = overview.data.byChannel.find((c) => c.channel === 'sms')!;
+      expect(sms.counts.failed).toBeGreaterThanOrEqual(1);
+      expect(overview.data.byChannel.map((c) => c.channel)).not.toContain('email');
 
       // An analyst has no business with notifications.
       await request(server())
@@ -1933,6 +1944,7 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         'in_app',
         'push',
       ]);
+      expect(list.data.flatMap((t) => t.channels)).not.toContain('email');
 
       const preview = (
         await request(server())
@@ -1953,8 +1965,8 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
 
     it('lets an address receive again, on the record', async () => {
       const token = await adminToken();
-      const address = `bounce-${seq}-${Date.now()}@example.com`;
-      await app.get(NotificationService).suppress(NotificationChannel.EMAIL, address);
+      const address = `+9198${String(Date.now()).slice(-8)}`;
+      await app.get(NotificationService).suppress(NotificationChannel.SMS, address);
 
       const listed = (
         await request(server())
@@ -1966,27 +1978,28 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         channels: { channel: string; addresses: string[] }[];
       }>;
       expect(listed.data.revealed).toBe(true);
-      expect(listed.data.channels.find((c) => c.channel === 'email')!.addresses).toContain(address);
+      expect(listed.data.channels.map((c) => c.channel)).toEqual(['sms']);
+      expect(listed.data.channels[0].addresses).toContain(address);
 
-      // Support can look, but not change who receives mail.
+      // Support can look, but not change who receives texts.
       await request(server())
         .post(`${V1}/admin/notifications/suppressions/remove`)
         .set(auth(await roleToken('support')))
-        .send({ channel: 'email', address, reason: 'Fixed mailbox' })
+        .send({ channel: 'sms', address, reason: 'Number works again' })
         .expect(403);
 
       await request(server())
         .post(`${V1}/admin/notifications/suppressions/remove`)
         .set(auth(token))
-        .send({ channel: 'email', address, reason: 'Fixed mailbox' })
+        .send({ channel: 'sms', address, reason: 'Number works again' })
         .expect(200);
       expect(
-        await app.get(NotificationService).isSuppressedAddress(NotificationChannel.EMAIL, address),
+        await app.get(NotificationService).isSuppressedAddress(NotificationChannel.SMS, address),
       ).toBe(false);
       await request(server())
         .post(`${V1}/admin/notifications/suppressions/remove`)
         .set(auth(token))
-        .send({ channel: 'email', address, reason: 'Again' })
+        .send({ channel: 'sms', address, reason: 'Again' })
         .expect(404);
     });
 

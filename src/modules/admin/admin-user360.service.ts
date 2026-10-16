@@ -1,3 +1,4 @@
+import { NOT_EMAIL } from './notification-channels';
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types, type mongo } from 'mongoose';
@@ -306,7 +307,7 @@ const SECTIONS: Record<string, SectionSpec> = {
   deliveries: {
     collection: 'delivery_logs',
     permission: AdminPermission.NOTIFICATIONS_VIEW,
-    filter: (uid) => ({ userId: uid }),
+    filter: (uid) => ({ userId: uid, ...NOT_EMAIL }),
     sort: { createdAt: -1 },
     view: (d) => ({
       id: id(d._id)!,

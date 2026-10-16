@@ -9,6 +9,7 @@ import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { QUEUE } from 'src/infra/queue/queue.constants';
 import { SchedulerRegistry } from 'src/infra/queue/scheduler-registry';
+import { NOT_EMAIL, shownChannels } from './notification-channels';
 import { DeviceTokenService } from 'src/modules/notifications/device-token.service';
 import { NotificationRenderer } from 'src/modules/notifications/notification.renderer';
 import { NotificationService } from 'src/modules/notifications/notification.service';
@@ -115,7 +116,10 @@ const SPECS: Record<NotificationKind, ListSpec<NotificationQuery>> = {
     sorts: { created: 'createdAt' },
     filter: (q) => ({
       ...(q.type ? { type: q.type } : {}),
-      ...(q.channel ? { channel: q.channel } : {}),
+      ...NOT_EMAIL,
+      ...(q.channel && q.channel !== String(NotificationChannel.EMAIL)
+        ? { channel: q.channel }
+        : {}),
       ...(q.status ? { status: q.status } : {}),
     }),
     row: (d) => ({
@@ -166,6 +170,7 @@ const SECTIONS: Record<NotificationKind, Record<string, SectionSpec>> = {
         userId: p.userId as Types.ObjectId,
         type: str(p.type),
         refId: str(p.refId),
+        ...NOT_EMAIL,
       }),
       view: (r) => SPECS.deliveries.row(r),
       userRefs: [],
@@ -328,13 +333,13 @@ export class AdminNotificationsService implements OnModuleInit {
     const [byChannel, byType, daily] = await Promise.all([
       logs
         .aggregate<{ _id: { c: string; s: string }; n: number }>([
-          { $match: { createdAt: { $gte: since } } },
+          { $match: { createdAt: { $gte: since }, ...NOT_EMAIL } },
           { $group: { _id: { c: '$channel', s: '$status' }, n: { $sum: 1 } } },
         ])
         .toArray(),
       logs
         .aggregate<{ _id: string; total: number; failed: number }>([
-          { $match: { createdAt: { $gte: since } } },
+          { $match: { createdAt: { $gte: since }, ...NOT_EMAIL } },
           {
             $group: {
               _id: '$type',
@@ -347,7 +352,7 @@ export class AdminNotificationsService implements OnModuleInit {
         .toArray(),
       logs
         .aggregate<{ _id: string; sent: number; failed: number }>([
-          { $match: { createdAt: { $gte: since } } },
+          { $match: { createdAt: { $gte: since }, ...NOT_EMAIL } },
           {
             $group: {
               _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
@@ -395,7 +400,7 @@ export class AdminNotificationsService implements OnModuleInit {
    */
   async suppressions(admin: AuthenticatedAdmin) {
     const whole = admin.permissions.includes(AdminPermission.SENSITIVE_VIEW);
-    const channels = [NotificationChannel.EMAIL, NotificationChannel.SMS];
+    const channels = [NotificationChannel.SMS];
     const lists = await Promise.all(channels.map((c) => this.notifications.listSuppressed(c)));
     return {
       revealed: whole,
@@ -439,7 +444,7 @@ export class AdminNotificationsService implements OnModuleInit {
   templates() {
     return Object.entries(NOTIFICATION_SPECS).map(([type, spec]) => ({
       type,
-      channels: spec.channels,
+      channels: shownChannels(spec.channels),
       priority: spec.priority,
       category: spec.category,
       template: spec.template,

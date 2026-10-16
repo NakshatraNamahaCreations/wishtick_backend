@@ -575,17 +575,12 @@ export class GroupGiftService {
                 );
               }
 
-              // What is already spoken for counts against the target too, or
-              // claims awaiting the host could promise it several times over.
-              const awaiting = await this.contributionModel
-                .aggregate<{ total: number }>([
-                  { $match: { groupGiftId: gg._id, status: ContributionStatus.PLEDGED } },
-                  { $group: { _id: null, total: { $sum: '$amountMinor' } } },
-                ])
-                .session(session)
-                .exec();
-              const remaining =
-                gg.targetAmountMinor - gg.collectedAmountMinor - (awaiting[0]?.total ?? 0);
+              // Nobody may put in more than is still needed — the goal less
+              // what is in, less what is awaiting the host. Refused rather than
+              // trimmed, whatever the gift's overfund policy says: the money is
+              // sent outside the app, so recording less than was entered would
+              // leave someone having sent more than the group shows.
+              const remaining = await this.shares.contributableMinor(gg, session);
               if (remaining <= 0) {
                 throw new AppException(
                   ErrorCode.GROUP_GIFT_NOT_OPEN,
@@ -593,17 +588,15 @@ export class GroupGiftService {
                   409,
                 );
               }
-              let amount = dto.amountMinor;
+              const amount = dto.amountMinor;
               if (amount > remaining) {
-                if (gg.overfundPolicy === OverfundPolicy.REJECT) {
-                  throw new AppException(
-                    ErrorCode.CONTRIBUTION_EXCEEDS_TARGET,
-                    `Only ${remaining} minor units remain; this group rejects over-target contributions`,
-                    409,
-                    { remaining },
-                  );
-                }
-                amount = remaining; // CAP: land exactly on target.
+                throw new AppException(
+                  ErrorCode.CONTRIBUTION_EXCEEDS_TARGET,
+                  // Said to the person paying, so in rupees.
+                  `Only ${rupees(remaining)} is still needed to reach the goal.`,
+                  409,
+                  { remaining },
+                );
               }
 
               const now = new Date();
@@ -2705,6 +2698,7 @@ export class GroupGiftService {
       ])
       .exec();
     view.pendingAmountMinor = awaiting[0]?.total ?? 0;
+    view.contributableMinor = await this.shares.contributableMinor(gift);
 
     const missing = [...new Set(rows.map((r) => r.userId.toString()))].filter(
       (id) => !known.has(id),

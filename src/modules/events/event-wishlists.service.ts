@@ -327,6 +327,18 @@ export class EventWishlistsService {
     }
 
     const wishlist = await this.wishlists.findById(submission.wishlistId).exec();
+
+    // The guest taking back an offer the host has not answered: the request
+    // is deleted, not kept as removed. Nothing was ever linked, so there is
+    // nothing to record — and a kept row would hold the one-offer-per-list-
+    // per-event index, so the same list could never be offered here again.
+    // A host's decline, and a removal after approval, keep theirs.
+    if (isOwner && submission.status === EventWishlistSubmissionStatus.PENDING) {
+      await this.model.deleteOne({ _id: submission._id }).exec();
+      submission.status = EventWishlistSubmissionStatus.REMOVED;
+      return this.toView(submission, wishlist ?? undefined);
+    }
+
     if (wishlist && submission.status === EventWishlistSubmissionStatus.APPROVED) {
       wishlist.eventId = null;
 

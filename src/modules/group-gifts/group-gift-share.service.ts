@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
-import { Connection, Model, Types } from 'mongoose';
+import { ClientSession, Connection, Model, Types } from 'mongoose';
 import {
   GROUP_GIFT_CONFIRM_REMINDER_DUE,
   GROUP_GIFT_FUNDED,
@@ -13,6 +13,7 @@ import {
 import { LockService } from 'src/infra/redis/lock.service';
 import { equalSplit, hostShareOf, type EqualSplit } from './equal-split';
 import {
+  CONTRIBUTABLE_GROUP_GIFT_STATUSES,
   ContributionMode,
   ContributionStatus,
   GroupGiftStatus,
@@ -121,6 +122,47 @@ export class GroupGiftShareService {
       paid.set(id, (paid.get(id) ?? 0) - r.total);
     }
     return paid;
+  }
+
+  /**
+   * The most one more contribution may be: the goal, less what is in hand —
+   * net of refunds the host has sent but not yet seen arrive — less what
+   * members say they sent that the host has yet to confirm. Zero once the
+   * goal is met, or once the gift stops taking money.
+   *
+   * Pending claims count against it, or two people could each be offered the
+   * last ₹500 and both send it. And it is the limit, not a suggestion: the
+   * money goes to the host outside the app, so trimming a larger amount down
+   * on our side would record less than somebody actually sent.
+   *
+   * Read inside the contribution's transaction when given its [session], so
+   * the check and the write see the same total.
+   */
+  async contributableMinor(gift: GroupGiftDocument, session?: ClientSession): Promise<number> {
+    if (!CONTRIBUTABLE_GROUP_GIFT_STATUSES.includes(gift.status)) return 0;
+    // One after the other: a transaction's session takes one operation at a time.
+    const awaiting = await this.contributionModel
+      .aggregate<{ total: number }>([
+        { $match: { groupGiftId: gift._id, status: ContributionStatus.PLEDGED } },
+        { $group: { _id: null, total: { $sum: '$amountMinor' } } },
+      ])
+      .session(session ?? null)
+      .exec();
+    const sent = await this.settlementModel
+      .aggregate<{ total: number }>([
+        {
+          $match: {
+            groupGiftId: gift._id,
+            direction: SettlementDirection.RETURN,
+            status: SettlementStatus.SENT,
+          },
+        },
+        { $group: { _id: null, total: { $sum: '$amountMinor' } } },
+      ])
+      .session(session ?? null)
+      .exec();
+    const held = gift.collectedAmountMinor - (sent[0]?.total ?? 0);
+    return Math.max(0, gift.targetAmountMinor - held - (awaiting[0]?.total ?? 0));
   }
 
   /** What each person says they sent that the host has not confirmed yet. */

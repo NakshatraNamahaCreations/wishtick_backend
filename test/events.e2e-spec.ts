@@ -1790,12 +1790,12 @@ describe('Events & invites (e2e)', () => {
       await ctx.drainNotifications();
     };
 
-    const inAppFor = async (actor: Actor): Promise<{ type: string }[]> => {
+    const inAppFor = async (actor: Actor): Promise<{ type: string; refId: string }[]> => {
       const res = await request(app.getHttpServer())
         .get(`${V1}/notifications`)
         .set(auth(actor.token))
         .expect(200);
-      return (res.body as Envelope<{ type: string }[]>).data;
+      return (res.body as Envelope<{ type: string; refId: string }[]>).data;
     };
 
     it("badges the host's event list with how many offers are waiting", async () => {
@@ -1857,9 +1857,13 @@ describe('Events & invites (e2e)', () => {
       }>;
       await settle();
 
-      expect(
-        (await inAppFor(host)).filter((n) => n.type === 'event_wishlist_offered'),
-      ).toHaveLength(1);
+      const told = (await inAppFor(host)).filter((n) => n.type === 'event_wishlist_offered');
+      expect(told).toHaveLength(1);
+      // Addressed by the event, which is what the host's app opens — the
+      // queue with Accept and Decline is on the event's page. The bare
+      // submission id it used to carry addressed no screen, so a tap went
+      // nowhere.
+      expect(told[0].refId).toBe(`${event.id}:${offered.data.id}`);
       // And not to the guest, who is the one who sent it.
       expect(
         (await inAppFor(guest)).filter((n) => n.type === 'event_wishlist_offered'),
@@ -1871,9 +1875,50 @@ describe('Events & invites (e2e)', () => {
         .expect(200);
       await settle();
 
-      expect(
-        (await inAppFor(guest)).filter((n) => n.type === 'event_wishlist_answered'),
-      ).toHaveLength(1);
+      const answered = (await inAppFor(guest)).filter((n) => n.type === 'event_wishlist_answered');
+      expect(answered).toHaveLength(1);
+      expect(answered[0].refId).toBe(`${event.id}:${offered.data.id}`);
+    });
+
+    // The guest's own way out while the host has not answered — the row on
+    // their invitation offers to withdraw it.
+    it('lets the guest withdraw an offer the host has not answered', async () => {
+      const host = await newUser('Rohan');
+      const guest = await newUser('Priya');
+      const event = await publicEvent(host);
+      await attend(guest, event.slug);
+      const listId = await privateList(guest, 'For Rohan');
+      const offered = (await offer(guest, event.id, listId).expect(200)).body as Envelope<{
+        id: string;
+      }>;
+
+      await request(app.getHttpServer())
+        .delete(`${V1}/events/${event.id}/wishlist-requests/${offered.data.id}`)
+        .set(auth(guest.token))
+        .expect(200);
+
+      // Gone from the host's queue and from the guest's own list…
+      const queue = (
+        await request(app.getHttpServer())
+          .get(`${V1}/events/${event.id}/wishlist-requests`)
+          .set(auth(host.token))
+          .expect(200)
+      ).body as Envelope<{ id: string }[]>;
+      expect(queue.data.map((r) => r.id)).not.toContain(offered.data.id);
+      const mine = (
+        await request(app.getHttpServer())
+          .get(`${V1}/event-wishlist-requests/mine`)
+          .set(auth(guest.token))
+          .expect(200)
+      ).body as Envelope<{ id: string }[]>;
+      expect(mine.data.map((r) => r.id)).not.toContain(offered.data.id);
+      // …and nothing left for the host to answer: the request is gone.
+      await request(app.getHttpServer())
+        .post(`${V1}/events/${event.id}/wishlist-requests/${offered.data.id}/approve`)
+        .set(auth(host.token))
+        .expect(404);
+      // The list is free to be offered again.
+      await offer(guest, event.id, listId).expect(200);
     });
 
     it('tells the guest when the host declines, too', async () => {

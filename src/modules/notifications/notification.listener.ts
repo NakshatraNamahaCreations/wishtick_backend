@@ -636,9 +636,13 @@ export class NotificationListener {
       await this.notifications.enqueue({
         userId: e.hostId,
         type: NotificationType.EVENT_WISHLIST_OFFERED,
-        // The submission, not the event: a host with two offers on one party
-        // has two things to answer, and collapsing them would hide the second.
-        refId: e.submissionId,
+        // The event leads, as every host-side event notification's does: it
+        // is what the app opens — the queue with Accept and Decline is on the
+        // host's event page — and the bare submission id it used to be
+        // addressed no screen at all, so tapping it went nowhere. The
+        // submission still follows: a host with two offers on one party has
+        // two things to answer, and collapsing them would hide the second.
+        refId: `${e.eventId}:${e.submissionId}`,
         payload: {
           guestName: e.guestName,
           eventTitle: e.eventTitle,
@@ -655,7 +659,8 @@ export class NotificationListener {
       await this.notifications.enqueue({
         userId: e.guestId,
         type: NotificationType.EVENT_WISHLIST_ANSWERED,
-        refId: e.submissionId,
+        // Event first, for the same reason as the offer's.
+        refId: `${e.eventId}:${e.submissionId}`,
         payload: {
           eventTitle: e.eventTitle,
           wishlistTitle: e.wishlistTitle,

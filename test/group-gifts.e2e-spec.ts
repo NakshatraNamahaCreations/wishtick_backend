@@ -62,6 +62,7 @@ interface GroupGiftView {
   thankYouAt: string | null;
   share?: { slug: string; url: string; hasPasscode: boolean };
   pendingAmountMinor: number;
+  contributableMinor: number;
   myPendingMinor: number;
   myPayments: PaymentClaim[];
   payments?: PaymentClaim[];
@@ -726,7 +727,11 @@ describe('Group gifting (e2e)', () => {
   // ── Over-target policy ──────────────────────────────────────────────────────
 
   describe('over-target policy', () => {
-    it('caps an over-target contribution so the total lands exactly on target', async () => {
+    // The owner's rule: nobody may put in more than is still needed. It used to
+    // be trimmed to fit under the default policy — but the money is sent to
+    // the host outside the app, so somebody who sent ₹600 was recorded as
+    // having given ₹400. Refused instead, saying how much is left.
+    it('refuses more than is still needed, even where it used to be trimmed', async () => {
       const owner = await newUser();
       const initiator = await newUser();
       const a = await newUser();
@@ -738,12 +743,58 @@ describe('Group gifting (e2e)', () => {
           overfundPolicy: OverfundPolicy.CAP,
         }).expect(201)
       ).body as Envelope<GroupGiftView>;
-
       await paid(a, gg.data.id, { amountMinor: 600 });
-      const capped = (await paid(b, gg.data.id, { amountMinor: 600 })).body;
-      // Only 400 remained; the 600 was capped to it and the gift funded exactly.
-      expect(capped.data.collectedAmountMinor).toBe(1000);
-      expect(capped.data.status).toBe('funded');
+
+      const res = await contribute(b, gg.data.id, { amountMinor: 600 }).expect(409);
+      const body = res.body as Envelope<never>;
+      expect(body.error?.code).toBe(ErrorCode.CONTRIBUTION_EXCEEDS_TARGET);
+      expect(body.error?.details).toEqual({ remaining: 400 });
+      expect((await groupGiftModel.findById(gg.data.id).exec())!.collectedAmountMinor).toBe(600);
+
+      // Exactly what is left is fine, and funds it.
+      const rest = (await paid(b, gg.data.id, { amountMinor: 400 })).body;
+      expect(rest.data.collectedAmountMinor).toBe(1000);
+      expect(rest.data.status).toBe('funded');
+    });
+
+    it('counts payments still awaiting the host as already in', async () => {
+      const owner = await newUser();
+      const initiator = await newUser();
+      const a = await newUser();
+      const b = await newUser();
+      const { itemId } = await wishlistWithItem(owner);
+      const gg = (await createGroupGift(initiator, itemId, { targetAmountMinor: 1000 }).expect(201))
+        .body as Envelope<GroupGiftView>;
+
+      // Said they sent ₹700; the host has not confirmed it yet.
+      await contribute(a, gg.data.id, { amountMinor: 700 }).expect(201);
+
+      const res = await contribute(b, gg.data.id, { amountMinor: 400 }).expect(409);
+      expect((res.body as Envelope<never>).error?.details).toEqual({ remaining: 300 });
+      await contribute(b, gg.data.id, { amountMinor: 300 }).expect(201);
+    });
+
+    it('tells the app the most anybody may put in', async () => {
+      const owner = await newUser();
+      const initiator = await newUser();
+      const a = await newUser();
+      const b = await newUser();
+      const { itemId } = await wishlistWithItem(owner);
+      const gg = (await createGroupGift(initiator, itemId, { targetAmountMinor: 1000 }).expect(201))
+        .body as Envelope<GroupGiftView>;
+      expect(gg.data.contributableMinor).toBe(1000);
+
+      await paid(a, gg.data.id, { amountMinor: 250 });
+      await contribute(b, gg.data.id, { amountMinor: 150 }).expect(201);
+
+      const view = (
+        await request(app.getHttpServer())
+          .get(`${V1}/group-gifts/${gg.data.id}`)
+          .set(auth(b.token))
+          .expect(200)
+      ).body as Envelope<GroupGiftView>;
+      // ₹250 in, ₹150 awaiting the host: ₹600 still to come.
+      expect(view.data.contributableMinor).toBe(600);
     });
 
     it('rejects an over-target contribution when the policy is reject', async () => {
