@@ -9,9 +9,14 @@ import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { QUEUE } from 'src/infra/queue/queue.constants';
 import { SchedulerRegistry } from 'src/infra/queue/scheduler-registry';
-import { NOT_EMAIL, shownChannels } from './notification-channels';
+import { SENT_CHANNELS_ONLY, isShownChannel, shownChannels } from './notification-channels';
 import { DeviceTokenService } from 'src/modules/notifications/device-token.service';
-import { NotificationRenderer } from 'src/modules/notifications/notification.renderer';
+import { NotificationWordingStore } from 'src/modules/notifications/notification-wording.store';
+import {
+  NotificationRenderer,
+  builtInWording,
+  fillInsOf,
+} from 'src/modules/notifications/notification.renderer';
 import { NotificationService } from 'src/modules/notifications/notification.service';
 import {
   NOTIFICATION_SPECS,
@@ -116,10 +121,8 @@ const SPECS: Record<NotificationKind, ListSpec<NotificationQuery>> = {
     sorts: { created: 'createdAt' },
     filter: (q) => ({
       ...(q.type ? { type: q.type } : {}),
-      ...NOT_EMAIL,
-      ...(q.channel && q.channel !== String(NotificationChannel.EMAIL)
-        ? { channel: q.channel }
-        : {}),
+      ...SENT_CHANNELS_ONLY,
+      ...(q.channel && isShownChannel(q.channel) ? { channel: q.channel } : {}),
       ...(q.status ? { status: q.status } : {}),
     }),
     row: (d) => ({
@@ -170,7 +173,7 @@ const SECTIONS: Record<NotificationKind, Record<string, SectionSpec>> = {
         userId: p.userId as Types.ObjectId,
         type: str(p.type),
         refId: str(p.refId),
-        ...NOT_EMAIL,
+        ...SENT_CHANNELS_ONLY,
       }),
       view: (r) => SPECS.deliveries.row(r),
       userRefs: [],
@@ -209,6 +212,7 @@ export class AdminNotificationsService implements OnModuleInit {
     private readonly registry: SchedulerRegistry,
     private readonly notifications: NotificationService,
     private readonly renderer: NotificationRenderer,
+    private readonly wording: NotificationWordingStore,
     private readonly devices: DeviceTokenService,
     private readonly user360: AdminUser360Service,
     private readonly audit: AuditService,
@@ -333,13 +337,13 @@ export class AdminNotificationsService implements OnModuleInit {
     const [byChannel, byType, daily] = await Promise.all([
       logs
         .aggregate<{ _id: { c: string; s: string }; n: number }>([
-          { $match: { createdAt: { $gte: since }, ...NOT_EMAIL } },
+          { $match: { createdAt: { $gte: since }, ...SENT_CHANNELS_ONLY } },
           { $group: { _id: { c: '$channel', s: '$status' }, n: { $sum: 1 } } },
         ])
         .toArray(),
       logs
         .aggregate<{ _id: string; total: number; failed: number }>([
-          { $match: { createdAt: { $gte: since }, ...NOT_EMAIL } },
+          { $match: { createdAt: { $gte: since }, ...SENT_CHANNELS_ONLY } },
           {
             $group: {
               _id: '$type',
@@ -352,7 +356,7 @@ export class AdminNotificationsService implements OnModuleInit {
         .toArray(),
       logs
         .aggregate<{ _id: string; sent: number; failed: number }>([
-          { $match: { createdAt: { $gte: since }, ...NOT_EMAIL } },
+          { $match: { createdAt: { $gte: since }, ...SENT_CHANNELS_ONLY } },
           {
             $group: {
               _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
@@ -448,7 +452,103 @@ export class AdminNotificationsService implements OnModuleInit {
       priority: spec.priority,
       category: spec.category,
       template: spec.template,
+      edited: this.wording.get(type) !== null,
+      editable: type !== String(NotificationType.ADMIN_ANNOUNCEMENT),
     }));
+  }
+
+  /**
+   * What one notification says in the app and on a push: the built-in
+   * wording, any saved in its place, and the fill-ins it can use.
+   */
+  wordingOf(type: string) {
+    const t = this.typeOf(type);
+    const builtIn = builtInWording(t);
+    const saved = this.wording.get(t);
+    return {
+      type: t,
+      builtIn: { title: builtIn.title, body: builtIn.body },
+      saved: saved
+        ? {
+            title: saved.title,
+            body: saved.body,
+            updatedAt: saved.updatedAt?.toISOString() ?? null,
+            updatedBy: saved.updatedByEmail,
+          }
+        : null,
+      fillIns: builtIn.fillIns,
+      // An announcement says what the admin writes when sending it.
+      editable: t !== NotificationType.ADMIN_ANNOUNCEMENT,
+    };
+  }
+
+  /** Saves new wording for one notification; it is what people get from now on. */
+  async saveWording(
+    type: string,
+    wording: { title: string; body: string },
+    reason: string,
+    actor: AuthenticatedAdmin,
+    ip: string | null,
+  ) {
+    const t = this.typeOf(type);
+    const title = wording.title.trim();
+    const body = wording.body.trim();
+    if (t === NotificationType.ADMIN_ANNOUNCEMENT) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        'An announcement says what you write when you send it',
+        400,
+      );
+    }
+    const allowed = new Set(builtInWording(t).fillIns);
+    const unknown = [...new Set([...fillInsOf(title), ...fillInsOf(body)])].filter(
+      (k) => !allowed.has(k),
+    );
+    if (unknown.length > 0) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        `This notification has nothing to fill in for ${unknown.map((k) => `{${k}}`).join(', ')}`,
+        400,
+      );
+    }
+    const before = this.wording.get(t);
+    await this.wording.save(t, { title, body }, { id: actor.id, email: actor.email });
+    await this.audit.record({
+      actor,
+      action: 'notifications.wording_edit',
+      targetType: 'notification',
+      targetId: null,
+      before: before ? { title: before.title, body: before.body } : { wording: 'built-in' },
+      after: { title, body },
+      meta: { reason, type: t },
+      ip,
+    });
+    return this.wordingOf(t);
+  }
+
+  /** Drops saved wording for one notification: the built-in wording is used again. */
+  async resetWording(type: string, reason: string, actor: AuthenticatedAdmin, ip: string | null) {
+    const t = this.typeOf(type);
+    const before = this.wording.get(t);
+    if (!before) {
+      throw new AppException(
+        ErrorCode.NOT_FOUND,
+        'This notification uses the built-in wording',
+        404,
+      );
+    }
+    await this.wording.reset(t);
+    await this.audit.record({
+      actor,
+      action: 'notifications.wording_reset',
+      targetType: 'notification',
+      targetId: null,
+      before: { title: before.title, body: before.body },
+      after: { wording: 'built-in' },
+      meta: { reason, type: t },
+      ip,
+    });
+    return this.wordingOf(t);
   }
 
   /**

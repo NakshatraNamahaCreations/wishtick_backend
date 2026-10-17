@@ -1,6 +1,8 @@
 import { paymentKindFilter, paymentStateFilter } from './group-gift-payments';
-import { NOT_EMAIL } from './notification-channels';
+import { SENT_CHANNELS_ONLY, isShownChannel } from './notification-channels';
 import { Injectable } from '@nestjs/common';
+import { AppException } from 'src/common/errors/app.exception';
+import { ErrorCode } from 'src/common/errors/error-codes';
 import { ConfigService } from '@nestjs/config';
 import { InjectConnection } from '@nestjs/mongoose';
 import { Connection, Types, type mongo } from 'mongoose';
@@ -68,6 +70,25 @@ export interface RetentionCohort {
   d1: number | null;
   d7: number | null;
   d30: number | null;
+}
+
+/** Which number on the analytics desk to list the people behind, and its settings. */
+export interface PeopleQuery {
+  /** e.g. `funnel.onboarded`, `retention.d7`, `gifting.purchased`, `deliveries.failed`. */
+  metric: string;
+  from?: string;
+  to?: string;
+  /** The overview's snapshot day. */
+  day?: string;
+  /** Retention: how many weeks are shown, a cohort's week, and the week after joining. */
+  weeks?: number;
+  week?: string;
+  k?: number;
+  source?: string;
+  type?: string;
+  channel?: string;
+  page?: number;
+  limit?: number;
 }
 
 export interface RawEventQuery {
@@ -506,7 +527,7 @@ export class AdminInsightsService {
       const rows = await this.db
         .collection('delivery_logs')
         .aggregate<{ _id: { c: string; s: string }; n: number }>([
-          { $match: { createdAt: dayRange(from, to), ...NOT_EMAIL } },
+          { $match: { createdAt: dayRange(from, to), ...SENT_CHANNELS_ONLY } },
           { $group: { _id: { c: '$channel', s: '$status' }, n: { $sum: 1 } } },
         ])
         .toArray();
@@ -590,6 +611,405 @@ export class AdminInsightsService {
           .sort((a, b) => b.searches - a.searches),
       };
     });
+  }
+
+  // ── The people behind a number ──────────────────────────────────────────────
+
+  /**
+   * Everyone a number on the analytics desk counts, newest first: the people
+   * behind a funnel step, a retention figure, a gifting outcome, an event
+   * reply or a delivery outcome. Each list is drawn from the same records, by
+   * the same rules, as its number — so the two always agree.
+   */
+  async people(q: PeopleQuery): Promise<
+    AdminPage<{
+      id: string;
+      name: string | null;
+      /** When they did the thing counted. */
+      at: Date | null;
+      /** How many times, where one person can be counted more than once. */
+      times: number;
+      joinedAt: Date | null;
+    }> & { metric: string; withoutAccount: number }
+  > {
+    const { page, limit } = pageOf(q.page, q.limit, 25);
+    const { hits, withoutAccount } = await this.peopleBehind(q);
+    const byPerson = new Map<string, { at: Date | null; times: number }>();
+    for (const h of hits) {
+      if (!h.userId) continue;
+      const key = h.userId;
+      const seen = byPerson.get(key);
+      if (!seen) byPerson.set(key, { at: h.at, times: 1 });
+      else {
+        seen.times += 1;
+        if (h.at && (!seen.at || h.at > seen.at)) seen.at = h.at;
+      }
+    }
+    const ordered = [...byPerson].sort(
+      ([, a], [, b]) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0),
+    );
+    const slice = ordered.slice((page - 1) * limit, page * limit);
+    const ids = slice.map(([k]) => k);
+    const [names, users] = await Promise.all([
+      this.user360.namesFor(ids),
+      this.db
+        .collection('users')
+        .find({ _id: { $in: ids.map((k) => new Types.ObjectId(k)) } })
+        .project({ createdAt: 1 })
+        .toArray(),
+    ]);
+    const joined = new Map(users.map((u) => [String(u._id), at(u.createdAt)]));
+    return {
+      metric: q.metric,
+      items: slice.map(([k, v]) => ({
+        id: k,
+        name: names[k] ?? null,
+        at: v.at,
+        times: v.times,
+        joinedAt: joined.get(k) ?? null,
+      })),
+      total: ordered.length,
+      page,
+      limit,
+      withoutAccount,
+    };
+  }
+
+  /** Who [q.metric] counts, one hit per record. */
+  private async peopleBehind(
+    q: PeopleQuery,
+  ): Promise<{ hits: { userId: string | null; at: Date | null }[]; withoutAccount: number }> {
+    const from = q.from ?? dayOf(new Date(Date.now() - 30 * DAY_MS));
+    const to = q.to ?? dayOf(new Date());
+    const range = dayRange(from, to);
+    const hitsOf = async (
+      collection: string,
+      filter: Doc,
+      who: string,
+      when: string,
+    ): Promise<{ userId: string | null; at: Date | null }[]> =>
+      (
+        await this.db
+          .collection(collection)
+          .find(filter)
+          .project({ [who]: 1, [when]: 1 })
+          .toArray()
+      ).map((d) => ({
+        userId: id(who.split('.').reduce<unknown>((o, k) => (o as Doc | undefined)?.[k], d)),
+        at: at(d[when]),
+      }));
+    const none = { withoutAccount: 0 };
+    const [group, part] = q.metric.split('.') as [string, string | undefined];
+
+    switch (group) {
+      case 'active': {
+        // The rollup's windows: the day, or the 7 or 30 days ending with it.
+        const day = q.day ?? dayOf(new Date());
+        const end = Date.parse(`${day}T00:00:00.000Z`) + DAY_MS;
+        const span = part === 'month' ? 30 : part === 'week' ? 7 : 1;
+        const rows = await this.db
+          .collection('analytics_events')
+          .aggregate<{ _id: Types.ObjectId; last: Date }>([
+            {
+              $match: {
+                ts: { $gte: new Date(end - span * DAY_MS), $lt: new Date(end) },
+                userId: { $ne: null },
+              },
+            },
+            { $group: { _id: '$userId', last: { $max: '$ts' } } },
+          ])
+          .toArray();
+        return { hits: rows.map((r) => ({ userId: id(r._id), at: r.last })), ...none };
+      }
+
+      case 'signups': {
+        // As the rollup counts them: the signup event, by its source.
+        const source = q.source ?? 'organic';
+        return {
+          hits: await hitsOf(
+            'analytics_events',
+            {
+              name: 'signup',
+              ts: range,
+              source: source === 'organic' ? { $in: [null, 'organic'] } : source,
+            },
+            'userId',
+            'ts',
+          ),
+          ...none,
+        };
+      }
+
+      case 'created': {
+        const made: Record<string, [string, Doc, string]> = {
+          wishlistsCreated: ['wishlists', {}, 'ownerId'],
+          eventsCreated: ['events', {}, 'hostId'],
+          giftsCreated: ['gifts', {}, 'gifterId'],
+          giftsFulfilled: ['gifts', { status: 'fulfilled' }, 'gifterId'],
+          groupGiftsCreated: ['group_gifts', {}, 'initiatorId'],
+          reelsCreated: ['reel_collections', {}, 'initiatorId'],
+          reelsReleased: ['reel_collections', { status: 'released' }, 'initiatorId'],
+        };
+        const spec = made[part ?? ''];
+        if (!spec) break;
+        const [collection, filter, who] = spec;
+        return {
+          hits: await hitsOf(collection, { ...filter, createdAt: range }, who, 'createdAt'),
+          ...none,
+        };
+      }
+
+      case 'funnel': {
+        const users = await this.db
+          .collection('users')
+          .find({ createdAt: range, deletedAt: null })
+          .project({ createdAt: 1 })
+          .toArray();
+        const ids = users.map((u) => u._id as Types.ObjectId);
+        const firstBy = async (collection: string, owner: string, field: string, match: Doc = {}) =>
+          (
+            await this.db
+              .collection(collection)
+              .aggregate<{ _id: unknown; first: Date }>([
+                {
+                  $match: {
+                    [owner]: { $in: owner.startsWith('props.') ? ids.map(String) : ids },
+                    ...match,
+                  },
+                },
+                { $group: { _id: `$${owner}`, first: { $min: `$${field}` } } },
+              ])
+              .toArray()
+          ).map((r) => ({ userId: id(r._id), at: r.first }));
+        switch (part) {
+          case 'signed_up':
+            return {
+              hits: users.map((u) => ({ userId: id(u._id), at: at(u.createdAt) })),
+              ...none,
+            };
+          case 'onboarded':
+            return {
+              hits: await firstBy('user_profiles', 'userId', 'onboardingCompletedAt', {
+                onboardingCompletedAt: { $ne: null },
+              }),
+              ...none,
+            };
+          case 'wishlist':
+            return { hits: await firstBy('wishlists', 'ownerId', 'createdAt'), ...none };
+          case 'item':
+            return { hits: await firstBy('wishlist_items', 'ownerId', 'createdAt'), ...none };
+          case 'shared':
+            return {
+              hits: await firstBy('analytics_events', 'props.ownerId', 'ts', {
+                name: 'wishlist_link_opened',
+              }),
+              ...none,
+            };
+        }
+        break;
+      }
+
+      case 'retention':
+        return { hits: await this.retentionPeople(q), ...none };
+
+      case 'gifting': {
+        const single = { createdAt: range, type: GiftType.SINGLE };
+        const gifts = await this.db
+          .collection('gifts')
+          .find(part === 'self' ? { createdAt: range, type: GiftType.SELF } : single)
+          .project({ gifterId: 1, status: 1, createdAt: 1, purchasedAt: 1, 'history.by': 1 })
+          .toArray();
+        const expired = (g: Doc) =>
+          Array.isArray(g.history) && (g.history as Doc[]).some((h) => h.by === 'system:expiry');
+        const pick: Record<string, (g: Doc) => boolean> = {
+          reserved: () => true,
+          self: () => true,
+          purchased: (g) => g.purchasedAt instanceof Date,
+          expired,
+          cancelled: (g) => g.status === GiftStatus.CANCELLED && !expired(g),
+          held: (g) => g.status === GiftStatus.RESERVED,
+        };
+        const keep = pick[part ?? ''];
+        if (!keep) break;
+        return {
+          hits: gifts.filter(keep).map((g) => ({
+            userId: id(g.gifterId),
+            at: at(part === 'purchased' ? g.purchasedAt : g.createdAt),
+          })),
+          ...none,
+        };
+      }
+
+      case 'groupGifts': {
+        const gifts = await this.db
+          .collection('group_gifts')
+          .find({ createdAt: range })
+          .project({ initiatorId: 1, status: 1, createdAt: 1 })
+          .toArray();
+        if (part === 'contributors') {
+          return {
+            hits: await hitsOf(
+              'contributions',
+              {
+                groupGiftId: { $in: gifts.map((g) => g._id as Types.ObjectId) },
+                ...paymentKindFilter('member'),
+              },
+              'userId',
+              'createdAt',
+            ),
+            ...none,
+          };
+        }
+        const funded: string[] = [
+          GroupGiftStatus.FUNDED,
+          GroupGiftStatus.PURCHASING,
+          GroupGiftStatus.PURCHASED,
+          GroupGiftStatus.FULFILLED,
+        ];
+        const pick: Record<string, (s: string) => boolean> = {
+          started: () => true,
+          funded: (s) => funded.includes(s),
+          open: (s) => s === String(GroupGiftStatus.OPEN),
+          cancelled: (s) =>
+            s === String(GroupGiftStatus.CANCELLED) || s === String(GroupGiftStatus.REFUNDING),
+        };
+        const keep = pick[part ?? ''];
+        if (!keep) break;
+        return {
+          hits: gifts
+            .filter((g) => keep(String(g.status)))
+            .map((g) => ({ userId: id(g.initiatorId), at: at(g.createdAt) })),
+          ...none,
+        };
+      }
+
+      case 'events': {
+        const events = await this.db
+          .collection('events')
+          .find({ createdAt: range, ...(q.type ? { type: q.type } : {}) })
+          .project({ hostId: 1, createdAt: 1 })
+          .toArray();
+        if (part === 'created') {
+          return {
+            hits: events.map((e) => ({ userId: id(e.hostId), at: at(e.createdAt) })),
+            ...none,
+          };
+        }
+        const rsvp: Record<string, Doc> = {
+          invited: {},
+          yes: { rsvp: 'yes' },
+          no: { rsvp: 'no' },
+          maybe: { rsvp: 'maybe' },
+          pending: { rsvp: { $in: [null, 'pending'] } },
+        };
+        const which = rsvp[part ?? ''];
+        if (!which) break;
+        const invites = await this.db
+          .collection('event_invites')
+          .find({ eventId: { $in: events.map((e) => e._id as Types.ObjectId) }, ...which })
+          .project({ invitedUserId: 1, respondedAt: 1, createdAt: 1 })
+          .toArray();
+        return {
+          hits: invites.map((i) => ({
+            userId: id(i.invitedUserId),
+            at: at(i.respondedAt ?? i.createdAt),
+          })),
+          // Guests invited by phone number who have no account to open.
+          withoutAccount: invites.filter((i) => !i.invitedUserId).length,
+        };
+      }
+
+      case 'deliveries': {
+        const channel = q.channel ?? 'push';
+        if (!isShownChannel(channel)) return { hits: [], ...none };
+        const status = part === 'sent' || part === 'failed' ? part : { $nin: ['sent', 'failed'] };
+        return {
+          hits: await hitsOf(
+            'delivery_logs',
+            { createdAt: range, channel, status },
+            'userId',
+            'createdAt',
+          ),
+          ...none,
+        };
+      }
+    }
+    throw new AppException(ErrorCode.VALIDATION_FAILED, `Nothing to list for ${q.metric}`, 400);
+  }
+
+  /**
+   * The people behind a retention figure, by the same rules as [retention]:
+   * `retention.d1|d7|d30` — back on that day after joining; `retention.cohort`
+   * with [week] and [k] — the cohort itself (k = 0), or those back in week k.
+   */
+  private async retentionPeople(
+    q: PeopleQuery,
+  ): Promise<{ userId: string | null; at: Date | null }[]> {
+    const weeks = q.weeks ?? 8;
+    const thisWeek = weekStart(new Date());
+    const start = thisWeek - (weeks - 1) * 7 * DAY_MS;
+    let users = await this.db
+      .collection('users')
+      .find({ createdAt: { $gte: new Date(start) }, deletedAt: null })
+      .project({ createdAt: 1 })
+      .toArray();
+    const part = q.metric.split('.')[1];
+    // A cohort's week narrows any of these to the people who joined that week.
+    if (q.week) {
+      const ws = Date.parse(`${q.week}T00:00:00.000Z`);
+      users = users.filter((u) => weekStart(u.createdAt as Date) === ws);
+    }
+    if (part === 'cohort' && (q.k ?? 0) === 0) {
+      return users.map((u) => ({ userId: id(u._id), at: at(u.createdAt) }));
+    }
+    const rows = await this.db
+      .collection('analytics_events')
+      .aggregate<{ _id: { u: Types.ObjectId; d: string }; last: Date }>([
+        {
+          $match: {
+            userId: { $in: users.map((u) => u._id as Types.ObjectId) },
+            ts: { $gte: new Date(start) },
+          },
+        },
+        {
+          $group: {
+            _id: { u: '$userId', d: { $dateToString: { format: '%Y-%m-%d', date: '$ts' } } },
+            last: { $max: '$ts' },
+          },
+        },
+      ])
+      .toArray();
+    const days = new Map<string, Map<number, Date>>();
+    const joinedDay = new Map(users.map((u) => [String(u._id), startOfDay(u.createdAt as Date)]));
+    for (const r of rows) {
+      const key = String(r._id.u);
+      const offset = Math.round(
+        (Date.parse(`${r._id.d}T00:00:00Z`) - (joinedDay.get(key) ?? 0)) / DAY_MS,
+      );
+      if (!days.has(key)) days.set(key, new Map());
+      days.get(key)!.set(offset, r.last);
+    }
+    const today = startOfDay(new Date());
+    const backOn = (pick: (offset: number) => boolean) =>
+      users.flatMap((u) => {
+        const seen = [...(days.get(String(u._id)) ?? new Map<number, Date>())].filter(([o]) =>
+          pick(o),
+        );
+        if (seen.length === 0) return [];
+        const last = seen.reduce((a, [, d]) => (d > a ? d : a), seen[0][1]);
+        return [{ userId: id(u._id), at: last }];
+      });
+    if (part === 'cohort') {
+      const k = q.k ?? 0;
+      return backOn((o) => o >= 7 * k && o < 7 * (k + 1));
+    }
+    const n = Number(part?.replace(/^d/, ''));
+    if (![1, 7, 30].includes(n)) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, `Nothing to list for ${q.metric}`, 400);
+    }
+    // Only people for whom that day has been and gone, as the rate counts them.
+    users = users.filter((u) => startOfDay(u.createdAt as Date) + n * DAY_MS < today);
+    return backOn((o) => o === n);
   }
 
   // ── Raw events ──────────────────────────────────────────────────────────────

@@ -1,12 +1,21 @@
 import { NotificationChannel } from 'src/modules/notifications/notification.types';
 
 /**
- * Wishtick does not send email to people, so the panel never shows it as a
- * channel: what its logs say about email is left out of every admin view.
+ * Wishtick reaches people in the app and by push. It sends no email and no SMS
+ * notifications, so the panel never shows those as channels: what the logs say
+ * about them is left out of every admin view.
  */
-export const NOT_EMAIL = { channel: { $ne: NotificationChannel.EMAIL } };
+const NOT_SENT: string[] = [NotificationChannel.EMAIL, NotificationChannel.SMS];
 
-/** [channels] without email. */
+/** A filter leaving out the channels Wishtick does not send on. */
+export const SENT_CHANNELS_ONLY = { channel: { $nin: NOT_SENT } };
+
+/** Whether [channel] is one Wishtick sends on. */
+export function isShownChannel(channel: string): boolean {
+  return !NOT_SENT.includes(channel);
+}
+
+/** [channels] without the ones Wishtick does not send on. */
 export function shownChannels<T extends string>(channels: readonly T[]): T[] {
-  return channels.filter((c) => c !== (NotificationChannel.EMAIL as string));
+  return channels.filter(isShownChannel);
 }

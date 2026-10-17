@@ -39,6 +39,7 @@ import { migration037 } from './scripts/037-gift-delivery-date';
 import { migration038 } from './scripts/038-remove-admin-totp';
 import { migration039 } from './scripts/039-important-date-follows';
 import { migration040 } from './scripts/040-block-held-link';
+import { migration041 } from './scripts/041-notification-wordings';
 
 /** Every migration must be registered here to run. Order comes from the id. */
 export const MIGRATIONS: Migration[] = [
@@ -82,6 +83,7 @@ export const MIGRATIONS: Migration[] = [
   migration038,
   migration039,
   migration040,
+  migration041,
 ];
 
 export { MigrationRunner } from './migration.runner';

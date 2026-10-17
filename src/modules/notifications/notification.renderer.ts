@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import mjml2html from 'mjml';
+import { NotificationWordingStore } from './notification-wording.store';
 import { NotificationType } from './notification.types';
 
 export interface RenderedNotification {
@@ -21,27 +22,67 @@ interface Content {
   cta?: { label: string; url: string };
 }
 
-const s = (p: Record<string, unknown>, key: string, fallback = ''): string => {
+/**
+ * A payload that writes each detail out as its fill-in — `{itemTitle}`, or
+ * `{itemTitle|a gift}` with its fallback — so rendering the built-in copy with
+ * it gives that copy as an editable template.
+ */
+const PROBE = Symbol('wording-probe');
+type Payload = Record<string | symbol, unknown>;
+
+const s = (p: Payload, key: string, fallback = ''): string => {
+  if (p[PROBE]) return fallback ? `{${key}|${fallback}}` : `{${key}}`;
   const v = p[key];
   return typeof v === 'string' && v.trim() ? v : fallback;
 };
 
-const money = (p: Record<string, unknown>, key: string): string => {
+const money = (p: Payload, key: string): string => {
+  if (p[PROBE]) return `{${key}}`;
   const minor = p[key];
   const currency = s(p, 'currency', 'INR');
   if (typeof minor !== 'number') return '';
   return `${currency} ${(minor / 100).toFixed(2)}`;
 };
 
+/** A fill-in in saved wording: `{key}` or `{key|fallback}`. */
+const FILL_IN = /\{([a-zA-Z][a-zA-Z0-9]*)(?:\|([^{}]*))?\}/g;
+
+/** Details that are links, not words: never offered as a fill-in. */
+const NOT_WORDS = new Set(['url', 'appUrl', 'currency', 'imageUrl']);
+
+/** Saved wording with [payload]'s details put in; a missing one takes its fallback. */
+export function fillWording(
+  template: string,
+  payload: Record<string, unknown>,
+  /** Each detail's stand-in when it is missing, for fill-ins written without one. */
+  fallbacks: Record<string, string> = {},
+): string {
+  return template
+    .replace(FILL_IN, (_, key: string, written?: string) => {
+      const fallback = written ?? fallbacks[key] ?? '';
+      if (/Minor$/.test(key)) return money(payload, key) || fallback;
+      const v = payload[key];
+      if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+      return s(payload, key, fallback);
+    })
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+/** The fill-ins a piece of wording uses. */
+export function fillInsOf(template: string): string[] {
+  return [...template.matchAll(FILL_IN)].map((m) => m[1]);
+}
+
 /** Someone/anonymous-safe name. */
-const who = (p: Record<string, unknown>, key: string): string => s(p, key, 'Someone');
+const who = (p: Payload, key: string): string => s(p, key, 'Someone');
 
 /**
  * The per-type copy. Pure functions of the (already-resolved) payload, so they
  * are trivially snapshot-tested and the renderer never reaches back into the
  * database. Adding a type is adding an entry, matching the registry.
  */
-const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content> = {
+const CONTENT: Record<NotificationType, (p: Payload) => Content> = {
   [NotificationType.WELCOME]: (p) => ({
     subject: 'Welcome to Wishtick 🎁',
     title: `Welcome, ${s(p, 'name', 'friend')}!`,
@@ -205,7 +246,7 @@ const CONTENT: Record<NotificationType, (p: Record<string, unknown>) => Content>
     title:
       Number(p.count ?? 0) === 1
         ? '1 payment to confirm'
-        : `${Number(p.count ?? 0)} payments to confirm`,
+        : `${p[PROBE] ? '{count}' : Number(p.count ?? 0)} payments to confirm`,
     lines: [
       `${money(p, 'totalMinor')} for ${s(p, 'title', 'your group gift')} is waiting for you to confirm it arrived. It doesn't count until you do.`,
     ],
@@ -616,8 +657,73 @@ const layout = (content: Content, unsubscribeUrl: string | null): string => {
 </mjml>`;
 };
 
+/** Details that say yes or no, which read as nothing in a sentence. */
+const FLAGS = new Set(['approved', 'refundCancelled']);
+
+/**
+ * One notification's built-in wording as a template, and the details it can
+ * use: rendered with a payload that answers every question with its fill-in
+ * and remembers what was asked.
+ */
+export function builtInWording(type: NotificationType): {
+  title: string;
+  body: string;
+  fillIns: string[];
+  /** What the built-in copy says when a detail is missing — "Someone", "a gift". */
+  fallbacks: Record<string, string>;
+} {
+  const asked = new Set<string>();
+  const probe = new Proxy(
+    {},
+    {
+      get: (_, key) => {
+        if (key === PROBE) return true;
+        if (typeof key === 'string') asked.add(key);
+        return undefined;
+      },
+    },
+  );
+  const c = CONTENT[type](probe);
+  const title = c.title;
+  const body = c.lines[0] ?? '';
+  const fillIns = [...new Set([...fillInsOf(title), ...fillInsOf(body), ...asked])].filter(
+    (k) => !NOT_WORDS.has(k) && !FLAGS.has(k),
+  );
+  const fallbacks: Record<string, string> = {};
+  for (const m of [title, ...c.lines].join('\n').matchAll(FILL_IN)) {
+    if (m[2] && !(m[1] in fallbacks)) fallbacks[m[1]] = m[2];
+  }
+  return { title, body, fillIns, fallbacks };
+}
+
+/** Built-in fallbacks per type, worked out once. */
+const FALLBACKS = new Map<NotificationType, Record<string, string>>();
+const fallbacksOf = (type: NotificationType): Record<string, string> => {
+  let f = FALLBACKS.get(type);
+  if (!f) {
+    f = builtInWording(type).fallbacks;
+    FALLBACKS.set(type, f);
+  }
+  return f;
+};
+
 @Injectable()
 export class NotificationRenderer {
+  constructor(@Optional() private readonly wording?: NotificationWordingStore) {}
+
+  /** The copy for [type], with an admin's saved wording in place of the built-in one. */
+  private contentOf(type: NotificationType, payload: Record<string, unknown>): Content {
+    const c = CONTENT[type](payload);
+    const saved = this.wording?.get(type);
+    if (!saved) return c;
+    const fallbacks = fallbacksOf(type);
+    return {
+      ...c,
+      title: fillWording(saved.title, payload, fallbacks) || c.title,
+      lines: [fillWording(saved.body, payload, fallbacks) || (c.lines[0] ?? '')],
+    };
+  }
+
   /** In-app title/body (and SMS one-liner) — synchronous, no MJML compilation. */
   content(
     type: NotificationType,
@@ -628,7 +734,7 @@ export class NotificationRenderer {
     text: string;
     sms: string;
   } {
-    const c = CONTENT[type](payload);
+    const c = this.contentOf(type, payload);
     const text = c.lines.join('\n\n') + (c.cta?.url ? `\n\n${c.cta.label}: ${c.cta.url}` : '');
     // SMS: the headline plus a link if there is one — kept to one line.
     const sms = c.cta?.url ? `${c.title} — ${c.cta.url}` : c.title;
@@ -641,7 +747,7 @@ export class NotificationRenderer {
     payload: Record<string, unknown>,
     opts: { unsubscribeUrl?: string | null } = {},
   ): Promise<RenderedNotification> {
-    const c = CONTENT[type](payload);
+    const c = this.contentOf(type, payload);
     const flat = this.content(type, payload);
     const { html } = await mjml2html(layout(c, opts.unsubscribeUrl ?? null), {
       validationLevel: 'skip',

@@ -7,6 +7,7 @@ import {
   Ip,
   Param,
   Post,
+  Put,
   Query,
   Req,
   StreamableFile,
@@ -31,6 +32,7 @@ import {
   BroadcastDryRunDto,
   BroadcastDto,
   NotificationListQueryDto,
+  NotificationWordingDto,
   OverviewQueryDto,
   PageQueryDto,
   PreviewNotificationDto,
@@ -97,6 +99,44 @@ export class AdminNotificationsController {
   @ApiOperation({ summary: 'Every notification: channels, priority, category' })
   templates(): unknown {
     return this.centre.templates();
+  }
+
+  @Get('templates/:type/wording')
+  @RequirePermission(AdminPermission.NOTIFICATIONS_VIEW)
+  @ApiOperation({ summary: 'What one notification says: built-in, saved, and its fill-ins' })
+  wording(@Param('type') type: string): unknown {
+    return this.centre.wordingOf(type);
+  }
+
+  @Put('templates/:type/wording')
+  @RequirePermission(AdminPermission.NOTIFICATIONS_SEND)
+  @ApiOperation({ summary: 'Save new wording for one notification (reason required, audited)' })
+  saveWording(
+    @CurrentAdmin() actor: AuthenticatedAdmin,
+    @Param('type') type: string,
+    @Body() dto: NotificationWordingDto,
+    @Ip() ip: string,
+  ): Promise<unknown> {
+    return this.centre.saveWording(
+      type,
+      { title: dto.title, body: dto.body },
+      dto.reason,
+      actor,
+      ip ?? null,
+    );
+  }
+
+  @Post('templates/:type/wording/reset')
+  @RequirePermission(AdminPermission.NOTIFICATIONS_SEND)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Go back to the built-in wording (reason required, audited)' })
+  resetWording(
+    @CurrentAdmin() actor: AuthenticatedAdmin,
+    @Param('type') type: string,
+    @Body() dto: AdminReasonDto,
+    @Ip() ip: string,
+  ): Promise<unknown> {
+    return this.centre.resetWording(type, dto.reason, actor, ip ?? null);
   }
 
   @Post('templates/:type/preview')

@@ -14,8 +14,12 @@ import {
 } from 'src/modules/analytics/schemas/analytics-event.schema';
 import { WishlistVisibility } from 'src/modules/wishlists/wishlist.types';
 import { GroupGiftReconcileService } from 'src/modules/group-gifts/group-gift-reconcile.service';
+import { NotificationRenderer } from 'src/modules/notifications/notification.renderer';
 import { NotificationService } from 'src/modules/notifications/notification.service';
-import { NotificationChannel } from 'src/modules/notifications/notification.types';
+import {
+  NotificationChannel,
+  NotificationType,
+} from 'src/modules/notifications/notification.types';
 import { SchedulerRegistry } from 'src/infra/queue/scheduler-registry';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
@@ -764,7 +768,7 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         .expect(400);
     });
 
-    it('rotates a share link and archives a list, both on the record', async () => {
+    it('archives a list on the record, and leaves its share link to the owner', async () => {
       const token = await adminToken();
       const owner = await newUser();
       const listId = await wishlist(owner, `Share list ${seq}`, WishlistVisibility.PUBLIC);
@@ -776,12 +780,13 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         ).slug;
       const before = await slugOf();
 
+      // The panel no longer replaces a share link: the action is gone.
       await request(server())
         .post(`${V1}/admin/content/wishlists/${listId}/actions/rotate-share`)
         .set(auth(token))
         .send({ reason: 'Link leaked publicly' })
-        .expect(200);
-      expect(await slugOf()).not.toBe(before);
+        .expect(400);
+      expect(await slugOf()).toBe(before);
 
       await request(server())
         .post(`${V1}/admin/content/wishlists/${listId}/actions/archive`)
@@ -815,7 +820,7 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
           .expect(200)
       ).body as Envelope<{ items: { action: string }[] }>;
       expect(audit.data.items.map((a) => a.action)).toEqual(
-        expect.arrayContaining(['content.rotate_share', 'content.remove', 'content.restore']),
+        expect.arrayContaining(['content.remove', 'content.restore']),
       );
     });
 
@@ -1869,9 +1874,23 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
           {
             userId: uid,
             type: 'gift_purchased',
-            channel: 'sms',
+            channel: 'push',
             refId: `r-${seq}`,
             dedupeKey: `k-${seq}-1-${Date.now()}`,
+            status: 'failed',
+            destination: null,
+            providerRef: null,
+            error: 'device unregistered',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          {
+            userId: uid,
+            type: 'gift_purchased',
+            channel: 'sms',
+            refId: `r-${seq}`,
+            dedupeKey: `k-${seq}-3-${Date.now()}`,
+            // Nor any SMS notification.
             status: 'failed',
             destination: '+919876543210',
             providerRef: null,
@@ -1903,17 +1922,18 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
           .expect(200)
       ).body as Envelope<{ items: { destination: string; error: string }[] }>;
       expect(failed.data.items).toHaveLength(1);
-      expect(failed.data.items[0].error).toBe('carrier rejected');
-      expect(failed.data.items[0].destination).not.toContain('9876543210');
-      // Asking for email by name does not bring it back.
-      const asked = (
-        await request(server())
-          .get(`${V1}/admin/notifications/deliveries`)
-          .query({ owner: user.userId, channel: 'email' })
-          .set(auth(token))
-          .expect(200)
-      ).body as Envelope<{ items: { error: string }[] }>;
-      expect(asked.data.items.map((d) => d.error)).not.toContain('mailbox full');
+      expect(failed.data.items[0].error).toBe('device unregistered');
+      // Asking for email or SMS by name does not bring them back.
+      for (const channel of ['email', 'sms']) {
+        const asked = (
+          await request(server())
+            .get(`${V1}/admin/notifications/deliveries`)
+            .query({ owner: user.userId, channel })
+            .set(auth(token))
+            .expect(200)
+        ).body as Envelope<{ items: { error: string }[] }>;
+        expect(asked.data.items.map((d) => d.error)).toEqual(['device unregistered']);
+      }
 
       const overview = (
         await request(server())
@@ -1921,9 +1941,10 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
           .set(auth(token))
           .expect(200)
       ).body as Envelope<{ byChannel: { channel: string; counts: Record<string, number> }[] }>;
-      const sms = overview.data.byChannel.find((c) => c.channel === 'sms')!;
-      expect(sms.counts.failed).toBeGreaterThanOrEqual(1);
+      const push = overview.data.byChannel.find((c) => c.channel === 'push')!;
+      expect(push.counts.failed).toBeGreaterThanOrEqual(1);
       expect(overview.data.byChannel.map((c) => c.channel)).not.toContain('email');
+      expect(overview.data.byChannel.map((c) => c.channel)).not.toContain('sms');
 
       // An analyst has no business with notifications.
       await request(server())
@@ -1945,6 +1966,7 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         'push',
       ]);
       expect(list.data.flatMap((t) => t.channels)).not.toContain('email');
+      expect(list.data.flatMap((t) => t.channels)).not.toContain('sms');
 
       const preview = (
         await request(server())
@@ -1961,6 +1983,107 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         .set(auth(token))
         .send({})
         .expect(404);
+    });
+
+    it('edits what a notification says, and the app and pushes say it from then on', async () => {
+      const token = await adminToken();
+      const path = `${V1}/admin/notifications/templates/memory_reply/wording`;
+      type Wording = {
+        builtIn: { title: string; body: string };
+        saved: { title: string; body: string; updatedBy: string | null } | null;
+        fillIns: string[];
+        editable: boolean;
+      };
+      const read = async () =>
+        ((await request(server()).get(path).set(auth(token)).expect(200)).body as Envelope<Wording>)
+          .data;
+      const built = await read();
+      expect(built.saved).toBeNull();
+      expect(built.builtIn.title).toBe('{authorName|Someone} wrote back');
+      expect(built.fillIns).toEqual(expect.arrayContaining(['authorName', 'capsuleTitle']));
+
+      // A fill-in this notification has no detail for is refused.
+      const bad = await request(server())
+        .put(path)
+        .set(auth(token))
+        .send({ title: '{guestName} wrote', body: 'Hi', reason: 'Warmer words' })
+        .expect(400);
+      expect(JSON.stringify(bad.body)).toContain('{guestName}');
+      // Support can read the wording but not change it.
+      await request(server())
+        .put(path)
+        .set(auth(await roleToken('support')))
+        .send({ title: '{authorName} wrote back', body: 'Hi', reason: 'Warmer words' })
+        .expect(403);
+
+      await request(server())
+        .put(path)
+        .set(auth(token))
+        .send({
+          title: '{authorName} replied to your wishes 💌',
+          body: 'Open the app to read what they said about {capsuleTitle}.',
+          reason: 'Warmer words',
+        })
+        .expect(200);
+      expect((await read()).saved).toMatchObject({
+        title: '{authorName} replied to your wishes 💌',
+      });
+
+      // What the in-app notification and the push are built from.
+      const renderer = app.get(NotificationRenderer);
+      expect(
+        renderer.content(NotificationType.MEMORY_REPLY, {
+          authorName: 'Asha',
+          capsuleTitle: 'Ravi’s birthday',
+        }),
+      ).toMatchObject({
+        title: 'Asha replied to your wishes 💌',
+        text: expect.stringContaining('Open the app to read what they said about Ravi’s birthday.'),
+      });
+      // A missing detail falls back the way the built-in wording did.
+      expect(renderer.content(NotificationType.MEMORY_REPLY, {}).title).toBe(
+        'Someone replied to your wishes 💌',
+      );
+      const list = (
+        await request(server()).get(`${V1}/admin/notifications/templates`).set(auth(token))
+      ).body as Envelope<{ type: string; edited: boolean; editable: boolean }[]>;
+      expect(list.data.find((t) => t.type === 'memory_reply')).toMatchObject({ edited: true });
+      expect(list.data.find((t) => t.type === 'admin_announcement')?.editable).toBe(false);
+
+      // Back to the built-in wording.
+      await request(server())
+        .post(`${path}/reset`)
+        .set(auth(token))
+        .send({ reason: 'Trying the old words' })
+        .expect(200);
+      expect((await read()).saved).toBeNull();
+      expect(renderer.content(NotificationType.MEMORY_REPLY, { authorName: 'Asha' }).title).toBe(
+        'Asha wrote back',
+      );
+      await request(server())
+        .post(`${path}/reset`)
+        .set(auth(token))
+        .send({ reason: 'Again' })
+        .expect(404);
+
+      // An announcement says what is written when it is sent.
+      await request(server())
+        .put(`${V1}/admin/notifications/templates/admin_announcement/wording`)
+        .set(auth(token))
+        .send({ title: 'News', body: 'Hi', reason: 'Trying' })
+        .expect(400);
+
+      const audit = (
+        await request(server())
+          .get(`${V1}/admin/audit`)
+          .query({ action: 'notifications.wording_edit' })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { action: string; meta: { reason: string } }[] }>;
+      expect(audit.data.items[0]).toMatchObject({
+        action: 'notifications.wording_edit',
+        meta: { reason: 'Warmer words' },
+      });
     });
 
     it('lets an address receive again, on the record', async () => {
@@ -2724,6 +2847,111 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       }
       expect(step('shared').users).toBeLessThanOrEqual(step('signed_up').users);
       expect(funnel.sharedSince).not.toBeNull();
+
+      // Each step opens on the people it counts — as many as the number says.
+      type People = {
+        total: number;
+        items: { id: string; name: string | null; at: string | null }[];
+      };
+      const peopleAt = (metric: string, extra: Record<string, string> = {}) =>
+        get<People>('people', { metric, from: today(), to: today(), limit: '100', ...extra });
+      for (const k of ['signed_up', 'onboarded', 'wishlist', 'item', 'shared']) {
+        const people = await peopleAt(`funnel.${k}`);
+        expect(people.total).toBe(step(k).users);
+        expect(people.items.map((p) => p.id)).toContain(owner.userId);
+      }
+      const shared = await peopleAt('funnel.shared');
+      expect(shared.items.map((p) => p.id)).not.toContain(visitor.userId);
+      expect(shared.items.find((p) => p.id === owner.userId)?.name).toBeTruthy();
+    });
+
+    it('lists the people behind gifting, delivery and activity numbers', async () => {
+      const token = await adminToken();
+      const owner = await newUser();
+      const gifter = await newUser();
+      const list = (
+        (
+          await request(server())
+            .post(`${V1}/wishlists`)
+            .set(auth(owner.token))
+            .send({ title: `People list ${seq}`, visibility: WishlistVisibility.PUBLIC })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+      const item = (
+        (
+          await request(server())
+            .post(`${V1}/wishlists/${list}/items`)
+            .set(auth(owner.token))
+            .send({ title: 'Lamp', price: { amountMinor: 99900 } })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+      await request(server())
+        .post(`${V1}/items/${item}/reserve`)
+        .set(auth(gifter.token))
+        .set(idem())
+        .send({})
+        .expect(201);
+      await db()
+        .collection('delivery_logs')
+        .insertMany(
+          (['push', 'sms'] as const).map((channel, i) => ({
+            userId: new Types.ObjectId(owner.userId),
+            type: 'gift_reserved',
+            channel,
+            refId: `people-${seq}`,
+            dedupeKey: `people-${seq}-${i}-${Date.now()}`,
+            status: 'failed',
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })),
+        );
+
+      const range = { from: today(), to: today() };
+      await clearCache();
+      const gifting = await get<{ reserved: number }>('gifting', range);
+      const reserved = await get<{ total: number; items: { id: string }[] }>('people', {
+        metric: 'gifting.reserved',
+        ...range,
+        limit: '100',
+      });
+      expect(reserved.total).toBeLessThanOrEqual(gifting.reserved);
+      expect(reserved.items.map((p) => p.id)).toContain(gifter.userId);
+
+      const failedPush = await get<{ items: { id: string }[] }>('people', {
+        metric: 'deliveries.failed',
+        channel: 'push',
+        ...range,
+        limit: '100',
+      });
+      expect(failedPush.items.map((p) => p.id)).toContain(owner.userId);
+      // SMS is not a channel Wishtick sends on.
+      const sms = await get<{ total: number }>('people', {
+        metric: 'deliveries.failed',
+        channel: 'sms',
+        ...range,
+      });
+      expect(sms.total).toBe(0);
+
+      // A cohort's members, and nonsense refused.
+      const monday = new Date();
+      monday.setUTCHours(0, 0, 0, 0);
+      monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+      const cohort = await get<{ items: { id: string }[] }>('people', {
+        metric: 'retention.cohort',
+        week: monday.toISOString().slice(0, 10),
+        k: '0',
+        limit: '100',
+      });
+      expect(cohort.items.map((p) => p.id)).toEqual(
+        expect.arrayContaining([owner.userId, gifter.userId]),
+      );
+      await request(server())
+        .get(`${V1}/admin/analytics/people`)
+        .query({ metric: 'gifting.exploded' })
+        .set(auth(token))
+        .expect(400);
     });
 
     it('counts a person active once a day however often they sign in, and builds cohorts', async () => {

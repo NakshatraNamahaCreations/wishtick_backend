@@ -5,7 +5,12 @@ import { AdminInsightsService } from './admin-insights.service';
 import { RequirePermission } from './admin.decorators';
 import { AdminGuard } from './admin.guard';
 import { AdminPermission } from './admin.types';
-import { AnalyticsRangeDto, RawEventsQueryDto, RetentionQueryDto } from './dto/admin.dto';
+import {
+  AnalyticsPeopleQueryDto,
+  AnalyticsRangeDto,
+  RawEventsQueryDto,
+  RetentionQueryDto,
+} from './dto/admin.dto';
 
 const day = (offset = 0): string =>
   new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10);
@@ -31,6 +36,14 @@ export class AdminInsightsController {
   @ApiOperation({ summary: 'Signup → onboarding → wishlist → item → shared, for a signup range' })
   funnel(@Query() q: AnalyticsRangeDto): Promise<unknown> {
     return this.insights.funnel(...rangeOf(q));
+  }
+
+  @Get('people')
+  @ApiOperation({
+    summary: 'The people a number counts — a funnel step, a retention figure, an outcome',
+  })
+  people(@Query() q: AnalyticsPeopleQueryDto): Promise<unknown> {
+    return this.insights.people(q);
   }
 
   @Get('retention')

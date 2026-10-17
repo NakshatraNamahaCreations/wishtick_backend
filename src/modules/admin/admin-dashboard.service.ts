@@ -1,5 +1,5 @@
 import { paymentStateFilter, withGiftStatus } from './group-gift-payments';
-import { NOT_EMAIL } from './notification-channels';
+import { SENT_CHANNELS_ONLY } from './notification-channels';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -342,7 +342,7 @@ export class AdminDashboardService {
         .exec(),
       this.webhooks.countDocuments({ status: WebhookEventStatus.UNMATCHED }).exec(),
       this.deliveries
-        .countDocuments({ status: 'failed', createdAt: { $gte: ago(1) }, ...NOT_EMAIL })
+        .countDocuments({ status: 'failed', createdAt: { $gte: ago(1) }, ...SENT_CHANNELS_ONLY })
         .exec(),
       this.reels.countDocuments({ status: 'failed' }).exec(),
       this.media.countDocuments({ status: MediaStatus.FAILED, createdAt: { $gte: ago(7) } }).exec(),

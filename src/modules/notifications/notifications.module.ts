@@ -17,7 +17,12 @@ import { DeviceTokenService } from './device-token.service';
 import { NotificationController } from './notification.controller';
 import { NotificationListener } from './notification.listener';
 import { NotificationProcessor } from './notification.processor';
+import { NotificationWordingStore } from './notification-wording.store';
 import { NotificationRenderer } from './notification.renderer';
+import {
+  NotificationWording,
+  NotificationWordingSchema,
+} from './schemas/notification-wording.schema';
 import { NotificationService } from './notification.service';
 import { DeliveryLog, DeliveryLogSchema } from './schemas/delivery-log.schema';
 import {
@@ -38,6 +43,7 @@ import { ThankYouService } from './thank-you.service';
       { name: DeliveryLog.name, schema: DeliveryLogSchema },
       { name: DeviceToken.name, schema: DeviceTokenSchema },
       { name: ThankYouNote.name, schema: ThankYouNoteSchema },
+      { name: NotificationWording.name, schema: NotificationWordingSchema },
       // Read-only, for resolving display context and thank-you context. Schemas,
       // not modules — the notification module subscribes to events, it does not
       // depend on those features.
@@ -64,10 +70,17 @@ import { ThankYouService } from './thank-you.service';
     DeviceTokenService,
     ThankYouService,
     NotificationRenderer,
+    NotificationWordingStore,
     NotificationListener,
     NotificationProcessor,
   ],
-  // The renderer too: the admin panel previews every notification's wording.
-  exports: [NotificationService, DeviceTokenService, NotificationRenderer],
+  // The renderer and the wording too: the admin panel previews and edits what
+  // every notification says.
+  exports: [
+    NotificationService,
+    DeviceTokenService,
+    NotificationRenderer,
+    NotificationWordingStore,
+  ],
 })
 export class NotificationsModule {}

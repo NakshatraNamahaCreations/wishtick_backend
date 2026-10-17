@@ -906,6 +906,20 @@ export class UnsuppressDto extends AdminReasonDto {
   address!: string;
 }
 
+export class NotificationWordingDto extends AdminReasonDto {
+  @ApiProperty({ description: 'The headline. Fill-ins like {itemTitle} take the details.' })
+  @IsString()
+  @Length(1, 80)
+  @Transform(trim)
+  title!: string;
+
+  @ApiProperty({ description: 'The line under it, as the app and a push show it.' })
+  @IsString()
+  @Length(1, 300)
+  @Transform(trim)
+  body!: string;
+}
+
 export class PreviewNotificationDto {
   @ApiPropertyOptional({ description: 'Values for the blanks; left out, fallbacks show.' })
   @IsOptional()
@@ -1089,6 +1103,73 @@ export class RetentionQueryDto {
   @Min(2)
   @Max(26)
   weeks?: number;
+}
+
+/** Which number on the analytics desk to list the people behind. */
+export class AnalyticsPeopleQueryDto extends PageQueryDto {
+  @ApiProperty({
+    description:
+      'active.day|week|month, signups, created.<what>, funnel.<step>, retention.d1|d7|d30, ' +
+      'retention.cohort, gifting.<outcome>, groupGifts.<outcome>, events.<outcome>, deliveries.<outcome>',
+  })
+  @IsString()
+  @Matches(/^[a-zA-Z]+(\.[a-zA-Z_0-9]+)?$/)
+  @MaxLength(60)
+  metric!: string;
+
+  @ApiPropertyOptional({ description: 'Start day, YYYY-MM-DD (UTC).' })
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  from?: string;
+
+  @ApiPropertyOptional({ description: 'End day, YYYY-MM-DD (UTC).' })
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  to?: string;
+
+  @ApiPropertyOptional({ description: 'The overview’s snapshot day, YYYY-MM-DD.' })
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  day?: string;
+
+  @ApiPropertyOptional({ minimum: 2, maximum: 26 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2)
+  @Max(26)
+  weeks?: number;
+
+  @ApiPropertyOptional({ description: 'A retention cohort’s week (its Monday), YYYY-MM-DD.' })
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  week?: string;
+
+  @ApiPropertyOptional({ description: 'Weeks after joining; 0 is the cohort itself.' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(26)
+  k?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  source?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  type?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  channel?: string;
 }
 
 /** The raw analytics event stream's filters. */

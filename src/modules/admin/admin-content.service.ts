@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
-import { customAlphabet } from 'nanoid';
 import { Connection, Types, type mongo } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
@@ -118,7 +117,7 @@ export interface ContentDetail {
 
 /** The actions each kind offers, and what each needs besides a reason. */
 export const CONTENT_ACTIONS: Record<ContentKind, string[]> = {
-  wishlists: ['archive', 'unarchive', 'rotate-share', 'remove-item'],
+  wishlists: ['archive', 'unarchive', 'remove-item'],
   items: ['hide', 'unhide', 'reset-status'],
   events: ['cancel', 'unpublish', 'remove-cover', 'remove-invite-media'],
   memories: ['unlock', 'relock', 'remove-wish', 'remove-reply'],
@@ -142,8 +141,6 @@ const PRIVATE_MEDIA = new Set<string>([
   MediaPurpose.MEMORY_REPLY,
   MediaPurpose.THANK_YOU,
 ]);
-
-const generateSlug = customAlphabet('23456789abcdefghijkmnpqrstuvwxyz', 16);
 
 /** A content list: a [ListSpec], and the takedown kind its records are. */
 interface KindSpec extends ListSpec<ContentQuery> {
@@ -1229,16 +1226,6 @@ export class AdminContentService {
           await col.updateOne({ _id }, { $set: { archivedAt: null } });
           await record('unarchive', { archivedAt: 'set' }, { archivedAt: null });
         });
-      case 'wishlists:rotate-share': {
-        const before = String((doc.share as Doc | undefined)?.slug ?? '');
-        const slug = generateSlug();
-        await col.updateOne(
-          { _id },
-          { $set: { 'share.slug': slug, 'share.rotatedAt': new Date() } },
-        );
-        await record('rotate_share', { slug: before }, { slug });
-        return { ok: true };
-      }
       case 'wishlists:remove-item': {
         const itemId = childId(input.itemId, 'itemId');
         const item = await this.db
