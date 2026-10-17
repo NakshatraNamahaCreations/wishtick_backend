@@ -1170,33 +1170,38 @@ export class AnalyticsPeopleQueryDto extends PageQueryDto {
   @IsString()
   @MaxLength(20)
   channel?: string;
-}
 
-/** The raw analytics event stream's filters. */
-export class RawEventsQueryDto extends PageQueryDto {
-  @ApiPropertyOptional({ description: 'Event name, exactly.' })
+  @ApiPropertyOptional({ description: 'A search’s words, for searches.term.' })
   @IsOptional()
   @IsString()
-  @MaxLength(80)
-  name?: string;
+  @MaxLength(200)
+  term?: string;
+}
 
-  @ApiPropertyOptional({ description: 'User id.' })
+/** The search log's filters. */
+export class SearchLogQueryDto extends PageQueryDto {
+  @ApiPropertyOptional({ description: 'Words in the search.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  q?: string;
+
+  @ApiPropertyOptional({ description: 'Who searched.' })
   @IsOptional()
   @IsMongoId()
   user?: string;
 
-  @ApiPropertyOptional({ description: 'Part of an anonymous (signed-out) id.' })
+  @ApiPropertyOptional({ enum: ['live', 'cached', 'stale'] })
   @IsOptional()
-  @IsString()
-  @MaxLength(120)
-  q?: string;
+  @IsIn(['live', 'cached', 'stale'])
+  freshness?: string;
 
-  @ApiPropertyOptional({ description: 'YYYY-MM-DD' })
+  @ApiPropertyOptional({ description: 'Start day, YYYY-MM-DD (UTC).' })
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
   from?: string;
 
-  @ApiPropertyOptional({ description: 'YYYY-MM-DD' })
+  @ApiPropertyOptional({ description: 'End day, YYYY-MM-DD (UTC).' })
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
   to?: string;

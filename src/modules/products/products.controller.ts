@@ -6,6 +6,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { ResolveUrlDto, SearchProductsQueryDto } from './dto/product.dto';
 import type { NormalizedProduct, ProviderCategory, ResultFreshness } from './product.types';
 import { ProductsService, type SearchResponse } from './products.service';
@@ -38,8 +39,11 @@ export class ProductsController {
       'and these are last-known results rather than an error.',
   })
   @ApiResponseDoc({ status: 503, description: 'PRODUCT_SEARCH_UNAVAILABLE — down with no cache' })
-  search(@Query() query: SearchProductsQueryDto): Promise<SearchResponse> {
-    return this.products.search({
+  async search(
+    @CurrentUser('id') userId: string,
+    @Query() query: SearchProductsQueryDto,
+  ): Promise<SearchResponse> {
+    const q = {
       q: query.q,
       category: query.category,
       minPriceMinor: query.minPriceMinor,
@@ -47,7 +51,10 @@ export class ProductsController {
       page: query.page ?? 1,
       pageSize: query.pageSize ?? 20,
       platform: query.platform,
-    });
+    };
+    const result = await this.products.search(q);
+    this.products.logSearch(userId, q, result);
+    return result;
   }
 
   @Get('categories')

@@ -40,6 +40,7 @@ import { migration038 } from './scripts/038-remove-admin-totp';
 import { migration039 } from './scripts/039-important-date-follows';
 import { migration040 } from './scripts/040-block-held-link';
 import { migration041 } from './scripts/041-notification-wordings';
+import { migration042 } from './scripts/042-search-logs';
 
 /** Every migration must be registered here to run. Order comes from the id. */
 export const MIGRATIONS: Migration[] = [
@@ -84,6 +85,7 @@ export const MIGRATIONS: Migration[] = [
   migration039,
   migration040,
   migration041,
+  migration042,
 ];
 
 export { MigrationRunner } from './migration.runner';

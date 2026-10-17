@@ -2865,6 +2865,72 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       expect(shared.items.find((p) => p.id === owner.userId)?.name).toBeTruthy();
     });
 
+    it('logs what people search for, and who, and whether the cache answered', async () => {
+      const token = await adminToken();
+      const searcher = await newUser();
+      const words = `Bluetooth Speaker ${seq}`;
+      // The same words twice (the second from the cache), in different case and
+      // spacing, then something else — and a second page, which is not a new search.
+      for (const q of [words, `  ${words.toUpperCase()}  `, `lamp ${seq}`]) {
+        await request(server())
+          .get(`${V1}/products/search`)
+          .query({ q })
+          .set(auth(searcher.token))
+          .expect(200);
+      }
+      await request(server())
+        .get(`${V1}/products/search`)
+        .query({ q: `lamp ${seq}`, page: 2 })
+        .set(auth(searcher.token))
+        .expect(200);
+      const mine = () =>
+        db()
+          .collection('search_logs')
+          .countDocuments({ userId: new Types.ObjectId(searcher.userId) });
+      await eventually(async () => (await mine()) === 3);
+
+      await clearCache();
+      const range = { from: today(), to: today() };
+      const activity = await get<{
+        searches: number;
+        people: number;
+        fromCache: number;
+        topSearches: { query: string; searches: number; people: number }[];
+        topSearchers: { id: string; searches: number }[];
+      }>('search-activity', range);
+      expect(activity.searches).toBeGreaterThanOrEqual(3);
+      expect(activity.fromCache).toBeGreaterThanOrEqual(1);
+      expect(
+        activity.topSearches.find((t) => t.query.toLowerCase() === words.toLowerCase()),
+      ).toMatchObject({ searches: 2, people: 1 });
+      expect(activity.topSearchers.find((s) => s.id === searcher.userId)?.searches).toBe(3);
+
+      const log = await get<{ total: number; items: { query: string; freshness: string }[] }>(
+        'search-activity/log',
+        { user: searcher.userId },
+      );
+      expect(log.total).toBe(3);
+      expect(log.items.map((i) => i.freshness)).toContain('cached');
+
+      const who = await get<{ items: { id: string; times: number }[] }>('people', {
+        metric: 'searches.term',
+        term: words,
+        ...range,
+      });
+      expect(who.items).toEqual([expect.objectContaining({ id: searcher.userId, times: 2 })]);
+
+      const history = (
+        (
+          await request(server())
+            .get(`${V1}/admin/users/${searcher.userId}/sections/searches`)
+            .set(auth(token))
+            .expect(200)
+        ).body as Envelope<{ items: { query: string }[] }>
+      ).data;
+      expect(history.items).toHaveLength(3);
+      expect(history.items[0].query).toBe(`lamp ${seq}`);
+    });
+
     it('lists the people behind gifting, delivery and activity numbers', async () => {
       const token = await adminToken();
       const owner = await newUser();
@@ -2993,13 +3059,15 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       expect(retention.cohorts[0].weeks).toHaveLength(3);
       expect(retention.activeSince).not.toBeNull();
 
-      const raw = await get<{ items: { name: string; userId: string }[]; total: number }>('raw', {
-        name: 'active',
-        user: user.id,
-      });
-      expect(raw.total).toBe(1);
-      const names = await get<string[]>('raw/names');
-      expect(names).toEqual(expect.arrayContaining(['signup', 'active']));
+      // Signed in three times today, recorded as active once.
+      expect(
+        await eventModel.countDocuments({ name: 'active', userId: new Types.ObjectId(user.id) }),
+      ).toBe(1);
+      // The raw event stream is no longer part of the panel.
+      await request(server())
+        .get(`${V1}/admin/analytics/raw`)
+        .set(auth(await adminToken()))
+        .expect(404);
     });
 
     it('reports gifting, group gifts, events and notifications for a range', async () => {
@@ -3054,7 +3122,7 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       const group = await get<{ started: number; fundedRate: number | null }>('group-gifts', range);
       expect(typeof group.started).toBe('number');
       const events = await get<{ created: number; replies: Record<string, number> }>(
-        'events',
+        'occasions',
         range,
       );
       expect(events.replies).toEqual(expect.objectContaining({ yes: expect.any(Number) }));

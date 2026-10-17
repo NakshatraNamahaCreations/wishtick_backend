@@ -10,6 +10,7 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { GiftSuggestionsQueryDto } from './dto/suggestions.dto';
 import { SuggestionsService } from './suggestions.service';
 import { SearchProductsQueryDto } from '../products/dto/product.dto';
+import { ProductsService } from '../products/products.service';
 import type { GiftSuggestionsView, RecipientSearchView } from './suggestions.views';
 
 /**
@@ -28,7 +29,10 @@ const SUGGESTIONS_THROTTLE = { default: { limit: 30, ttl: 60_000 } };
 @Controller()
 @ApiBearerAuth()
 export class SuggestionsController {
-  constructor(private readonly suggestions: SuggestionsService) {}
+  constructor(
+    private readonly suggestions: SuggestionsService,
+    private readonly products: ProductsService,
+  ) {}
 
   @Get('people/:userId/gift-suggestions')
   @Throttle(SUGGESTIONS_THROTTLE)
@@ -61,12 +65,12 @@ export class SuggestionsController {
   @ApiResponseDoc({ status: 403, description: 'NOT_WISHMATES' })
   @ApiResponseDoc({ status: 404, description: 'NOT_FOUND' })
   @ApiResponseDoc({ status: 503, description: 'PRODUCT_SEARCH_UNAVAILABLE' })
-  giftSearch(
+  async giftSearch(
     @CurrentUser('id') viewerId: string,
     @Param('userId') userId: string,
     @Query() query: SearchProductsQueryDto,
   ): Promise<RecipientSearchView> {
-    return this.suggestions.searchFor(viewerId, userId, {
+    const q = {
       q: query.q,
       category: query.category,
       minPriceMinor: query.minPriceMinor,
@@ -74,6 +78,10 @@ export class SuggestionsController {
       page: query.page ?? 1,
       pageSize: query.pageSize ?? 20,
       platform: query.platform,
-    });
+    };
+    const result = await this.suggestions.searchFor(viewerId, userId, q);
+    // A search the viewer typed, the same as one on the search screen.
+    this.products.logSearch(viewerId, q, result);
+    return result;
   }
 }

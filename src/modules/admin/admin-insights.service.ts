@@ -70,6 +70,17 @@ export interface RetentionCohort {
   d1: number | null;
   d7: number | null;
   d30: number | null;
+  /** The people behind each figure, so it can be said as "3 of 13". */
+  counts: { d1: BackCount; d7: BackCount; d30: BackCount; weeks: (number | null)[] };
+}
+
+/**
+ * How many came back on a day after joining, of how many that day has
+ * already come for — someone who joined yesterday cannot be back a week later yet.
+ */
+export interface BackCount {
+  back: number;
+  eligible: number;
 }
 
 /** Which number on the analytics desk to list the people behind, and its settings. */
@@ -87,16 +98,8 @@ export interface PeopleQuery {
   source?: string;
   type?: string;
   channel?: string;
-  page?: number;
-  limit?: number;
-}
-
-export interface RawEventQuery {
-  name?: string;
-  user?: string;
-  q?: string;
-  from?: string;
-  to?: string;
+  /** A search's words, for `searches.term`. */
+  term?: string;
   page?: number;
   limit?: number;
 }
@@ -104,9 +107,10 @@ export interface RawEventQuery {
 /**
  * The analytics desk's deeper reads: the signup funnel, retention by weekly
  * cohort, and how gifting, group gifts, events, notifications and product
- * search are doing over a range — plus the raw event stream for debugging.
+ * search are doing over a range, what people searched for, and the people
+ * behind each of those numbers.
  *
- * Everything but the raw stream is computed from the records themselves
+ * It is computed from the records themselves
  * (users, gifts, invites…) rather than from client events, so it is right for
  * the past too. Retention and the "shared" step are the exceptions: they need
  * the server's own `active` and `wishlist_link_opened` events, which start on
@@ -226,7 +230,14 @@ export class AdminInsightsService {
    */
   retention(weeks: number): Promise<{
     cohorts: RetentionCohort[];
-    overall: { d1: number | null; d7: number | null; d30: number | null };
+    overall: {
+      d1: number | null;
+      d7: number | null;
+      d30: number | null;
+      /** Everyone who joined in the weeks shown. */
+      joined: number;
+      counts: { d1: BackCount; d7: BackCount; d30: BackCount };
+    };
     activeSince: Date | null;
   }> {
     return this.cached(`retention:${weeks}:${dayOf(new Date())}`, async () => {
@@ -280,20 +291,21 @@ export class AdminInsightsService {
         const ws = start + w * 7 * DAY_MS;
         const members = users.filter((u) => weekStart(u.createdAt as Date) === ws);
         const weekRates: (number | null)[] = [];
+        const weekBack: (number | null)[] = [];
         for (let k = 1; k < weeks - w; k++) {
           // Week k after joining is over for the whole cohort only once the
           // cohort's last day plus k weeks has passed.
           if (ws + (k + 1) * 7 * DAY_MS > now) {
             weekRates.push(null);
+            weekBack.push(null);
             continue;
           }
           const back = members.filter((u) => offsets(u).some((o) => o >= 7 * k && o < 7 * (k + 1)));
           weekRates.push(pct(back.length, members.length));
+          weekBack.push(back.length);
         }
-        const [d1, d7, d30] = [1, 7, 30].map((d) => {
-          const r = rate(members, d);
-          return pct(r.back, r.eligible);
-        });
+        const days = [1, 7, 30].map((d) => rate(members, d));
+        const [d1, d7, d30] = days.map((r) => pct(r.back, r.eligible));
         cohorts.push({
           week: dayOf(new Date(ws)),
           size: members.length,
@@ -301,15 +313,23 @@ export class AdminInsightsService {
           d1,
           d7,
           d30,
+          counts: {
+            d1: days[0],
+            d7: days[1],
+            d30: days[2],
+            weeks: weekBack,
+          },
         });
       }
 
-      const overall = Object.fromEntries(
-        ([1, 7, 30] as const).map((d) => {
-          const r = rate(users, d);
-          return [`d${d}`, pct(r.back, r.eligible)];
-        }),
-      ) as { d1: number | null; d7: number | null; d30: number | null };
+      const all = ([1, 7, 30] as const).map((d) => rate(users, d));
+      const overall = {
+        d1: pct(all[0].back, all[0].eligible),
+        d7: pct(all[1].back, all[1].eligible),
+        d30: pct(all[2].back, all[2].eligible),
+        joined: users.length,
+        counts: { d1: all[0], d7: all[1], d30: all[2] },
+      };
       return { cohorts, overall, activeSince: await this.firstEvent('active') };
     });
   }
@@ -611,6 +631,171 @@ export class AdminInsightsService {
           .sort((a, b) => b.searches - a.searches),
       };
     });
+  }
+
+  // ── What people search for ──────────────────────────────────────────────────
+
+  /**
+   * The searches people typed in the range, from the search log: how many, by
+   * how many people, how many the cache answered, and what was searched most
+   * and by whom. The log starts on the day it shipped and keeps 180 days.
+   */
+  searchActivity(
+    from: string,
+    to: string,
+  ): Promise<{
+    searches: number;
+    people: number;
+    fromCache: number;
+    live: number;
+    stale: number;
+    foundNothing: number;
+    topSearches: {
+      query: string;
+      searches: number;
+      people: number;
+      foundNothing: number;
+      lastAt: Date | null;
+    }[];
+    topSearchers: { id: string; name: string | null; searches: number; lastAt: Date | null }[];
+    loggingSince: Date | null;
+  }> {
+    return this.cached(`search-activity:${from}:${to}`, async () => {
+      const logs = this.db.collection('search_logs');
+      const match = { createdAt: dayRange(from, to) };
+      const [totals, byFreshness, topSearches, topSearchers, first] = await Promise.all([
+        logs
+          .aggregate<{ searches: number; people: string[]; empty: number }>([
+            { $match: match },
+            {
+              $group: {
+                _id: null,
+                searches: { $sum: 1 },
+                people: { $addToSet: '$userId' },
+                empty: { $sum: { $cond: [{ $eq: ['$results', 0] }, 1, 0] } },
+              },
+            },
+          ])
+          .toArray(),
+        logs
+          .aggregate<{ _id: string; n: number }>([
+            { $match: match },
+            { $group: { _id: '$freshness', n: { $sum: 1 } } },
+          ])
+          .toArray(),
+        logs
+          .aggregate<{
+            _id: string;
+            query: string;
+            searches: number;
+            people: unknown[];
+            empty: number;
+            lastAt: Date;
+          }>([
+            { $match: { ...match, normalized: { $ne: '' } } },
+            {
+              $group: {
+                _id: '$normalized',
+                query: { $last: '$query' },
+                searches: { $sum: 1 },
+                people: { $addToSet: '$userId' },
+                empty: { $sum: { $cond: [{ $eq: ['$results', 0] }, 1, 0] } },
+                lastAt: { $max: '$createdAt' },
+              },
+            },
+            { $sort: { searches: -1, lastAt: -1 } },
+            { $limit: 25 },
+          ])
+          .toArray(),
+        logs
+          .aggregate<{ _id: Types.ObjectId; searches: number; lastAt: Date }>([
+            { $match: match },
+            { $group: { _id: '$userId', searches: { $sum: 1 }, lastAt: { $max: '$createdAt' } } },
+            { $sort: { searches: -1, lastAt: -1 } },
+            { $limit: 25 },
+          ])
+          .toArray(),
+        logs.find().sort({ createdAt: 1 }).limit(1).project({ createdAt: 1 }).next(),
+      ]);
+      const names = await this.user360.namesFor(topSearchers.map((s) => String(s._id)));
+      const fresh = (k: string) => byFreshness.find((r) => r._id === k)?.n ?? 0;
+      return {
+        searches: totals[0]?.searches ?? 0,
+        people: totals[0]?.people.length ?? 0,
+        fromCache: fresh('cached'),
+        live: fresh('live'),
+        stale: fresh('stale'),
+        foundNothing: totals[0]?.empty ?? 0,
+        topSearches: topSearches.map((t) => ({
+          query: t.query || t._id,
+          searches: t.searches,
+          people: t.people.length,
+          foundNothing: t.empty,
+          lastAt: t.lastAt,
+        })),
+        topSearchers: topSearchers.map((s) => ({
+          id: String(s._id),
+          name: names[String(s._id)] ?? null,
+          searches: s.searches,
+          lastAt: s.lastAt,
+        })),
+        loggingSince: at(first?.createdAt),
+      };
+    });
+  }
+
+  /** Every search in the log, newest first, filtered by words, person or source. Not cached. */
+  async searchLog(q: {
+    q?: string;
+    user?: string;
+    freshness?: string;
+    from?: string;
+    to?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<
+    AdminPage<{
+      id: string;
+      userId: string | null;
+      query: string;
+      category: string | null;
+      platform: string | null;
+      freshness: string;
+      results: number;
+      createdAt: Date | null;
+    }> & { names: Record<string, string> }
+  > {
+    const { page, limit } = pageOf(q.page, q.limit);
+    const filter: Doc = {};
+    const range = dayRange(q.from, q.to);
+    if (range) filter.createdAt = range;
+    if (q.q?.trim()) {
+      filter.normalized = { $regex: escapeRegex(q.q.trim().toLowerCase()), $options: 'i' };
+    }
+    if (q.user) filter.userId = oid(q.user) ?? new Types.ObjectId('000000000000000000000000');
+    if (q.freshness) filter.freshness = q.freshness;
+    const col = this.db.collection('search_logs');
+    const [docs, total] = await Promise.all([
+      col
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .toArray(),
+      col.countDocuments(filter),
+    ]);
+    const items = docs.map((d) => ({
+      id: id(d._id)!,
+      userId: id(d.userId),
+      query: str(d.query) ?? '',
+      category: str(d.category),
+      platform: str(d.platform),
+      freshness: str(d.freshness) ?? 'live',
+      results: typeof d.results === 'number' ? d.results : 0,
+      createdAt: at(d.createdAt),
+    }));
+    const users = [...new Set(items.map((i) => i.userId).filter((x): x is string => !!x))];
+    return { items, total, page, limit, names: await this.user360.namesFor(users) };
   }
 
   // ── The people behind a number ──────────────────────────────────────────────
@@ -919,6 +1104,16 @@ export class AdminInsightsService {
         };
       }
 
+      case 'searches': {
+        // `searches.all` — everyone who searched; `searches.term` — who searched [q.term].
+        const filter: Doc = { createdAt: range };
+        if (part === 'term') filter.normalized = (q.term ?? '').trim().toLowerCase();
+        else if (part === 'cached') filter.freshness = 'cached';
+        else if (part === 'empty') filter.results = 0;
+        else if (part !== 'all') break;
+        return { hits: await hitsOf('search_logs', filter, 'userId', 'createdAt'), ...none };
+      }
+
       case 'deliveries': {
         const channel = q.channel ?? 'push';
         if (!isShownChannel(channel)) return { hits: [], ...none };
@@ -1010,57 +1205,5 @@ export class AdminInsightsService {
     // Only people for whom that day has been and gone, as the rate counts them.
     users = users.filter((u) => startOfDay(u.createdAt as Date) + n * DAY_MS < today);
     return backOn((o) => o === n);
-  }
-
-  // ── Raw events ──────────────────────────────────────────────────────────────
-
-  /** The raw event stream, newest first — for checking what the apps send. Not cached. */
-  async rawEvents(q: RawEventQuery): Promise<
-    AdminPage<{
-      id: string;
-      name: string;
-      userId: string | null;
-      anonymousId: string | null;
-      source: string | null;
-      props: unknown;
-      ts: Date | null;
-    }> & { names: Record<string, string> }
-  > {
-    const { page, limit } = pageOf(q.page, q.limit);
-    const filter: Doc = {};
-    if (q.name) filter.name = q.name;
-    if (q.user) filter.userId = oid(q.user) ?? new Types.ObjectId('000000000000000000000000');
-    if (q.q?.trim()) filter.anonymousId = { $regex: escapeRegex(q.q.trim()), $options: 'i' };
-    const range = dayRange(q.from, q.to);
-    if (range) filter.ts = range;
-    const col = this.db.collection('analytics_events');
-    const [docs, total] = await Promise.all([
-      col
-        .find(filter)
-        .sort({ ts: -1 })
-        .skip((page - 1) * limit)
-        .limit(limit)
-        .toArray(),
-      col.countDocuments(filter),
-    ]);
-    const items = docs.map((d) => ({
-      id: id(d._id)!,
-      name: String(d.name),
-      userId: id(d.userId),
-      anonymousId: str(d.anonymousId),
-      source: str(d.source),
-      props: (d.props ?? {}) as unknown,
-      ts: at(d.ts),
-    }));
-    const users = [...new Set(items.map((i) => i.userId).filter((x): x is string => !!x))];
-    return { items, total, page, limit, names: await this.user360.namesFor(users) };
-  }
-
-  /** The event names the stream holds, for the raw view's filter. */
-  eventNames(): Promise<string[]> {
-    return this.cached('event-names', async () => {
-      const names = await this.db.collection('analytics_events').distinct('name');
-      return names.filter((n): n is string => typeof n === 'string').sort();
-    });
   }
 }

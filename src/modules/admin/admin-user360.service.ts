@@ -318,6 +318,22 @@ const SECTIONS: Record<string, SectionSpec> = {
       createdAt: at(d.createdAt),
     }),
   },
+  /** The product searches they typed, newest first — kept 180 days. */
+  searches: {
+    collection: 'search_logs',
+    permission: AdminPermission.ANALYTICS_VIEW,
+    filter: (uid) => ({ userId: uid }),
+    sort: { createdAt: -1 },
+    view: (d) => ({
+      id: id(d._id)!,
+      query: d.query ?? '',
+      category: d.category ?? null,
+      platform: d.platform ?? null,
+      freshness: d.freshness ?? 'live',
+      results: typeof d.results === 'number' ? d.results : 0,
+      createdAt: at(d.createdAt),
+    }),
+  },
   'important-dates': {
     collection: 'important_dates',
     permission: AdminPermission.USERS_VIEW,

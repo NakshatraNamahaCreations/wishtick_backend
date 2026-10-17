@@ -8,8 +8,8 @@ import { AdminPermission } from './admin.types';
 import {
   AnalyticsPeopleQueryDto,
   AnalyticsRangeDto,
-  RawEventsQueryDto,
   RetentionQueryDto,
+  SearchLogQueryDto,
 } from './dto/admin.dto';
 
 const day = (offset = 0): string =>
@@ -38,6 +38,20 @@ export class AdminInsightsController {
     return this.insights.funnel(...rangeOf(q));
   }
 
+  // Not `analytics/searches`, nor `analytics/events` below: ad blockers' privacy
+  // lists (EasyPrivacy) block both as trackers, and the panel's box just fails.
+  @Get('search-activity')
+  @ApiOperation({ summary: 'What people searched for: totals, top searches, top searchers' })
+  searches(@Query() q: AnalyticsRangeDto): Promise<unknown> {
+    return this.insights.searchActivity(...rangeOf(q));
+  }
+
+  @Get('search-activity/log')
+  @ApiOperation({ summary: 'Every search typed, newest first, by words, person or source' })
+  searchLog(@Query() q: SearchLogQueryDto): Promise<unknown> {
+    return this.insights.searchLog(q);
+  }
+
   @Get('people')
   @ApiOperation({
     summary: 'The people a number counts — a funnel step, a retention figure, an outcome',
@@ -64,7 +78,8 @@ export class AdminInsightsController {
     return this.insights.groupGifts(...rangeOf(q));
   }
 
-  @Get('events')
+  // `occasions`, not `events`: EasyPrivacy blocks `/analytics/event…` — see above.
+  @Get('occasions')
   @ApiOperation({ summary: 'Events created in a range: invites and replies' })
   events(@Query() q: AnalyticsRangeDto): Promise<unknown> {
     return this.insights.events(...rangeOf(q));
@@ -80,17 +95,5 @@ export class AdminInsightsController {
   @ApiOperation({ summary: 'Product searches per day: from cache, empty, store tabs, paid calls' })
   search(@Query() q: AnalyticsRangeDto): Promise<unknown> {
     return this.insights.search(...rangeOf(q));
-  }
-
-  @Get('raw/names')
-  @ApiOperation({ summary: 'The event names in the raw stream' })
-  names(): Promise<string[]> {
-    return this.insights.eventNames();
-  }
-
-  @Get('raw')
-  @ApiOperation({ summary: 'The raw analytics event stream, newest first' })
-  raw(@Query() q: RawEventsQueryDto): Promise<unknown> {
-    return this.insights.rawEvents(q);
   }
 }

@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { createHash } from 'node:crypto';
@@ -19,6 +19,7 @@ import { soldOn, type PlatformKey } from './platforms';
 import { PRODUCT_PROVIDER, type IProductProvider } from './providers/product-provider.port';
 import { ProviderGuard, ProviderUnavailableError } from './providers/provider-guard.service';
 import { Product, type ProductDocument } from './schemas/product.schema';
+import { SearchLog, type SearchLogDocument } from './schemas/search-log.schema';
 
 interface CacheEnvelope<T> {
   data: T;
@@ -50,7 +51,40 @@ export class ProductsService {
     private readonly guard: ProviderGuard,
     private readonly cache: CacheService,
     private readonly config: ConfigService<AppConfig, true>,
+    @Optional()
+    @InjectModel(SearchLog.name)
+    private readonly searchLogs?: Model<SearchLogDocument>,
   ) {}
+
+  /**
+   * Notes a search a person typed — for the admin panel's search insights.
+   * The first page only, so paging is one search; never awaited by the caller's
+   * answer, and never able to fail it.
+   */
+  logSearch(
+    userId: string,
+    query: ProductSearchQuery,
+    result: { items?: unknown[]; freshness?: string },
+  ): void {
+    if (!this.searchLogs || query.page > 1 || !Types.ObjectId.isValid(userId)) return;
+    const typed = (query.q ?? '').trim().slice(0, 200);
+    if (!typed && !query.category) return;
+    this.searchLogs
+      .create({
+        userId: new Types.ObjectId(userId),
+        query: typed,
+        normalized: typed.toLowerCase().replace(/\s+/g, ' '),
+        category: query.category ?? null,
+        platform: query.platform ?? null,
+        freshness: result.freshness ?? ResultFreshness.LIVE,
+        results: Array.isArray(result.items) ? result.items.length : 0,
+      })
+      .catch((err: unknown) =>
+        this.logger.warn(
+          `Could not log a search: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+  }
 
   private get cfg(): AppConfig['products'] {
     return this.config.get('products', { infer: true });
