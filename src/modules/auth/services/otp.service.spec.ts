@@ -14,7 +14,7 @@ describe('OtpService', () => {
   let redis: Redis;
   let service: OtpService;
 
-  const buildService = (overrides: Partial<Record<string, number>> = {}): OtpService => {
+  const buildService = (overrides: Partial<Record<string, number | string>> = {}): OtpService => {
     const otpConfig = {
       length: 6,
       ttlSeconds: 600,
@@ -162,6 +162,44 @@ describe('OtpService', () => {
         service.verify(PURPOSE, 'someone.else@example.com', code),
         ErrorCode.OTP_INVALID,
       );
+    });
+  });
+
+  // The review/test login: one number, a fixed code, no waiting.
+  describe('the review number', () => {
+    const REVIEW = '+911234567890';
+    const review = () =>
+      buildService({
+        length: 4,
+        resendCooldownSeconds: 60,
+        reviewPhone: REVIEW,
+        reviewCode: '0000',
+      });
+
+    it('always gets the fixed code', async () => {
+      const otp = review();
+      expect(await otp.issue(OtpPurpose.SIGN_IN, REVIEW)).toBe('0000');
+      await otp.verify(OtpPurpose.SIGN_IN, REVIEW, '0000');
+    });
+
+    it('is not held to the resend cooldown', async () => {
+      const otp = review();
+      await otp.issue(OtpPurpose.SIGN_IN, REVIEW);
+      await expect(otp.issue(OtpPurpose.SIGN_IN, REVIEW)).resolves.toBe('0000');
+    });
+
+    it('leaves every other number a random code', () => {
+      const otp = review();
+      expect(otp.isReviewNumber('+911234567891')).toBe(false);
+      expect(otp.isReviewNumber('+11234567890')).toBe(false);
+      expect(otp.isReviewNumber(REVIEW)).toBe(true);
+    });
+
+    it('is off when unset, or when the code is the wrong length', () => {
+      expect(buildService({ length: 4 }).isReviewNumber(REVIEW)).toBe(false);
+      expect(
+        buildService({ length: 6, reviewPhone: REVIEW, reviewCode: '0000' }).isReviewNumber(REVIEW),
+      ).toBe(false);
     });
   });
 });

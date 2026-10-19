@@ -29,11 +29,25 @@ export class OtpService {
    * attempt counter by forcing constant regeneration, and every resend is a real
    * SMS with a real cost attached.
    */
+  /**
+   * The review/test number (`REVIEW_PHONE`), which always takes the fixed
+   * code `REVIEW_OTP` and is never sent an SMS. False when either is unset,
+   * or the code is not the length every other code is.
+   */
+  isReviewNumber(identifier: string): boolean {
+    const { reviewPhone, reviewCode, length } = this.config.get('otp', { infer: true });
+    if (!reviewPhone || !reviewCode) return false;
+    return reviewCode.length === length && identifier.replace(/[\s()-]/g, '') === reviewPhone;
+  }
+
   async issue(purpose: OtpPurpose, identifier: string): Promise<string> {
     const cfg = this.config.get('otp', { infer: true });
     const cooldownKey = this.cooldownKey(purpose, identifier);
+    const review = this.isReviewNumber(identifier);
 
-    const cooling = await this.cache.client.ttl(cooldownKey);
+    // No SMS goes to the review number, so there is nothing to rate-limit:
+    // a reviewer asking again should not be told to wait.
+    const cooling = review ? 0 : await this.cache.client.ttl(cooldownKey);
     if (cooling > 0) {
       throw new AppException(
         ErrorCode.OTP_COOLDOWN,
@@ -43,7 +57,8 @@ export class OtpService {
       );
     }
 
-    const code = this.generateCode(cfg.length);
+    const code = review ? cfg.reviewCode : this.generateCode(cfg.length);
+    if (review) this.logger.warn(`Fixed review code issued (${purpose})`);
     const record: StoredOtp = {
       hash: this.hash(code, purpose, identifier),
       attempts: 0,
@@ -51,7 +66,7 @@ export class OtpService {
     };
 
     await this.cache.set(this.otpKey(purpose, identifier), record, cfg.ttlSeconds);
-    if (cfg.resendCooldownSeconds > 0) {
+    if (cfg.resendCooldownSeconds > 0 && !review) {
       await this.cache.set(cooldownKey, 1, cfg.resendCooldownSeconds);
     }
 

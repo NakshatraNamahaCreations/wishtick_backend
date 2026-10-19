@@ -59,6 +59,13 @@ export interface AppConfig {
     ttlSeconds: number;
     maxAttempts: number;
     resendCooldownSeconds: number;
+    /**
+     * A test number that always signs in with [reviewCode] and is never sent
+     * an SMS — the account app-store reviewers and the team log in with.
+     * Empty switches it off.
+     */
+    reviewPhone: string;
+    reviewCode: string;
   };
   passwordReset: {
     ttlSeconds: number;
@@ -327,6 +334,8 @@ export const configuration = (): AppConfig => {
       ttlSeconds: toInt(process.env.OTP_TTL_SECONDS, 600),
       maxAttempts: toInt(process.env.OTP_MAX_ATTEMPTS, 5),
       resendCooldownSeconds: toInt(process.env.OTP_RESEND_COOLDOWN_SECONDS, 60),
+      reviewPhone: (process.env.REVIEW_PHONE ?? '').trim(),
+      reviewCode: (process.env.REVIEW_OTP ?? '').trim(),
     },
     passwordReset: {
       ttlSeconds: toInt(process.env.PASSWORD_RESET_TTL_SECONDS, 1800),

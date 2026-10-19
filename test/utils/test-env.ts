@@ -37,6 +37,10 @@ process.env.OTP_MAX_ATTEMPTS = '5';
 // re-enables it explicitly.
 process.env.OTP_RESEND_COOLDOWN_SECONDS = '0';
 process.env.PASSWORD_RESET_TTL_SECONDS = '1800';
+// The review/test login, set here rather than inherited from a developer's
+// .env so the suite means the same everywhere.
+process.env.REVIEW_PHONE = '+911234567890';
+process.env.REVIEW_OTP = '0000';
 
 process.env.THROTTLE_TTL_SECONDS = '60';
 process.env.THROTTLE_LIMIT = '1000';

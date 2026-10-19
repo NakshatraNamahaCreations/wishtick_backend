@@ -53,6 +53,13 @@ export const envValidationSchema = Joi.object({
   OTP_TTL_SECONDS: Joi.number().min(60).default(600),
   OTP_MAX_ATTEMPTS: Joi.number().min(1).default(5),
   OTP_RESEND_COOLDOWN_SECONDS: Joi.number().min(0).default(60),
+  // The review/test login: this number always takes this code, no SMS sent.
+  // Both empty (the default) switches it off.
+  REVIEW_PHONE: Joi.string()
+    .pattern(/^\+\d{8,15}$/)
+    .allow('')
+    .default(''),
+  REVIEW_OTP: Joi.string().pattern(/^\d+$/).allow('').default(''),
   PASSWORD_RESET_TTL_SECONDS: Joi.number().min(60).default(1800),
 
   // Throttling

@@ -30,6 +30,10 @@ export class AuthNotificationsService {
   }
 
   async sendPhoneVerification(phone: string, code: string): Promise<void> {
+    // The review/test number signs in with a fixed code; it may not even be
+    // a real line, and texting it would cost an SMS for nothing.
+    const { reviewPhone } = this.config.get('otp', { infer: true });
+    if (reviewPhone && phone === reviewPhone) return;
     const minutes = Math.round(this.config.get('otp.ttlSeconds', { infer: true }) / 60);
     await this.sms.send({
       to: phone,

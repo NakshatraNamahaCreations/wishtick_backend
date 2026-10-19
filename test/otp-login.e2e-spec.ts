@@ -123,6 +123,39 @@ describe('Passwordless OTP sign-in (e2e)', () => {
     });
   });
 
+  // The review/test account: +91 1234567890 always signs in with 0000, and
+  // is never sent an SMS. Set by REVIEW_PHONE / REVIEW_OTP.
+  describe('the review number', () => {
+    const review = '+911234567890';
+
+    it('signs in with 0000 and is sent no SMS', async () => {
+      await requestCode(review).expect(202);
+      expect(ctx.sms.sent).toHaveLength(0);
+
+      const res = await verifyCode(review, '0000', { name: 'Reviewer' }).expect(200);
+      expect((res.body as Envelope<{ tokens: unknown }>).data.tokens).toBeDefined();
+    });
+
+    it('takes 0000 every time, not only the first', async () => {
+      for (let i = 0; i < 3; i++) {
+        await requestCode(review).expect(202);
+        await verifyCode(review, '0000', { name: 'Reviewer' }).expect(200);
+      }
+    });
+
+    it('still refuses any other code', async () => {
+      await requestCode(review).expect(202);
+      await verifyCode(review, '1111').expect(400);
+    });
+
+    it('is only +91: the same digits elsewhere get a real code', async () => {
+      const elsewhere = '+11234567890';
+      await requestCode(elsewhere).expect(202);
+      expect(ctx.sms.sent).toHaveLength(1);
+      expect(ctx.sms.lastCode()).toMatch(/^\d{4}$/);
+    });
+  });
+
   describe('code handling', () => {
     it('rejects a wrong code and reports the attempts left', async () => {
       const phone = uniquePhone();
