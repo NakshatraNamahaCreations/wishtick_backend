@@ -188,12 +188,20 @@ export class AdminModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     // Announcement pictures arrive as raw bytes (the JSON parser leaves image/*
     // bodies alone). A little over 1 MB, so the service can say "too big" itself.
+    // Option pictures (interests and their categories) arrive the same way.
     consumer
       .apply(raw({ type: ['image/*', 'application/octet-stream'], limit: '1100kb' }))
-      .forRoutes({
-        path: 'admin/notifications/broadcasts/image',
-        method: RequestMethod.POST,
-        version: '1',
-      });
+      .forRoutes(
+        {
+          path: 'admin/notifications/broadcasts/image',
+          method: RequestMethod.POST,
+          version: '1',
+        },
+        {
+          path: 'admin/catalog/taxonomy/:kind/:id/picture',
+          method: RequestMethod.POST,
+          version: '1',
+        },
+      );
   }
 }

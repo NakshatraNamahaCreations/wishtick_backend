@@ -66,6 +66,18 @@ export class AdminOpsController {
     return this.ops.retryAllFailed(name, actor, ip ?? null);
   }
 
+  @Post('queues/:name/clear-failed')
+  @RequirePermission(AdminPermission.OPS_MANAGE)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Clear every failed job in a queue without running it (audited)' })
+  clearFailed(
+    @CurrentAdmin() actor: AuthenticatedAdmin,
+    @Param('name') name: string,
+    @Ip() ip: string,
+  ): Promise<unknown> {
+    return this.ops.clearFailed(name, actor, ip ?? null);
+  }
+
   @Post('queues/:name/jobs/:id/retry')
   @RequirePermission(AdminPermission.OPS_MANAGE)
   @HttpCode(HttpStatus.OK)

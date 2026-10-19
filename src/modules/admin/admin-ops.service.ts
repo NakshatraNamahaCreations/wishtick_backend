@@ -162,6 +162,17 @@ export class AdminOpsService {
     return { retried: failed };
   }
 
+  /**
+   * Drops every failed job in a queue without running it — for failures that
+   * are stale, such as runs of a repeating job the next run has already done.
+   */
+  async clearFailed(name: string, actor: AuthenticatedAdmin, ip: string | null) {
+    const q = this.queue(name);
+    const removed = (await q.clean(0, 10_000, 'failed')).length;
+    await this.record(actor, ip, 'ops.clear_failed', 'queue', name, { jobs: removed });
+    return { removed };
+  }
+
   async removeJob(name: string, jobId: string, actor: AuthenticatedAdmin, ip: string | null) {
     const job = await this.job(name, jobId);
     if (await job.isActive()) {

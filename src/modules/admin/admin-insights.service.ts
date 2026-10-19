@@ -926,20 +926,75 @@ export class AdminInsightsService {
       }
 
       case 'created': {
-        const made: Record<string, [string, Doc, string]> = {
-          wishlistsCreated: ['wishlists', {}, 'ownerId'],
-          eventsCreated: ['events', {}, 'hostId'],
-          giftsCreated: ['gifts', {}, 'gifterId'],
-          giftsFulfilled: ['gifts', { status: 'fulfilled' }, 'gifterId'],
-          groupGiftsCreated: ['group_gifts', {}, 'initiatorId'],
-          reelsCreated: ['reel_collections', {}, 'initiatorId'],
-          reelsReleased: ['reel_collections', { status: 'released' }, 'initiatorId'],
+        // [collection, filter, who, the date that puts it in the range] — as
+        // AnalyticsService.engagement counts each number.
+        const made: Record<string, [string, Doc, string, string]> = {
+          wishlistsCreated: ['wishlists', {}, 'ownerId', 'createdAt'],
+          wishlistsPublic: ['wishlists', { visibility: 'public' }, 'ownerId', 'createdAt'],
+          wishlistsWishmates: ['wishlists', { visibility: 'wishmates' }, 'ownerId', 'createdAt'],
+          wishlistsPrivate: ['wishlists', { visibility: 'private' }, 'ownerId', 'createdAt'],
+          itemsAdded: ['wishlist_items', {}, 'ownerId', 'createdAt'],
+          eventsCreated: ['events', {}, 'hostId', 'createdAt'],
+          giftsCreated: ['gifts', {}, 'gifterId', 'createdAt'],
+          giftsReserved: ['gifts', { type: 'single' }, 'gifterId', 'createdAt'],
+          giftsPurchased: ['gifts', { type: { $ne: 'self' } }, 'gifterId', 'purchasedAt'],
+          giftsBoughtOffline: ['gifts', { mode: 'offline' }, 'gifterId', 'purchasedAt'],
+          giftsFulfilled: ['gifts', { status: 'fulfilled' }, 'gifterId', 'createdAt'],
+          itemsDelivered: ['gifts', {}, 'gifterId', 'fulfilledAt'],
+          groupGiftsCreated: ['group_gifts', {}, 'initiatorId', 'createdAt'],
+          reelsCreated: ['reel_collections', {}, 'initiatorId', 'createdAt'],
+          reelWishes: ['wishes', {}, 'authorId', 'createdAt'],
+          reelsOpenedFromLink: [
+            'reel_collections',
+            { shareCount: { $gt: 0 } },
+            'initiatorId',
+            'createdAt',
+          ],
+          reelsReleased: ['reel_collections', { status: 'released' }, 'initiatorId', 'createdAt'],
         };
+        if (part === 'invitesSent') {
+          // An invite carries its event, and the event its host — who sent it.
+          const invites = await this.db
+            .collection('event_invites')
+            .find({ createdAt: range })
+            .project({ eventId: 1, createdAt: 1 })
+            .toArray();
+          const hosts = new Map(
+            (
+              await this.db
+                .collection('events')
+                .find({ _id: { $in: invites.map((i) => i.eventId as Types.ObjectId) } })
+                .project({ hostId: 1 })
+                .toArray()
+            ).map((e) => [String(e._id), id(e.hostId)]),
+          );
+          return {
+            hits: invites.map((i) => ({
+              userId: hosts.get(String(i.eventId)) ?? null,
+              at: at(i.createdAt),
+            })),
+            ...none,
+          };
+        }
+        if (part === 'wishlistChatMessages' || part === 'groupGiftChatMessages') {
+          const chats = await this.db
+            .collection('chats')
+            .distinct('_id', { type: part === 'wishlistChatMessages' ? 'wishlist' : 'group_gift' });
+          return {
+            hits: await hitsOf(
+              'messages',
+              { createdAt: range, chatId: { $in: chats } },
+              'senderId',
+              'createdAt',
+            ),
+            ...none,
+          };
+        }
         const spec = made[part ?? ''];
         if (!spec) break;
-        const [collection, filter, who] = spec;
+        const [collection, filter, who, date] = spec;
         return {
-          hits: await hitsOf(collection, { ...filter, createdAt: range }, who, 'createdAt'),
+          hits: await hitsOf(collection, { ...filter, [date]: range }, who, date),
           ...none,
         };
       }

@@ -1,5 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { Inject, Injectable } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { STORAGE, type IStorageProvider } from 'src/infra/storage/storage.port';
 import { Connection, Model, Types, type mongo } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
@@ -207,6 +209,8 @@ export interface MetaField {
   options?: string[];
   /** Choices are the keys of another kind. */
   from?: TaxonomyKind;
+  /** Choices are the groups this kind's own options already form. */
+  groups?: boolean;
 }
 
 interface KindInfo {
@@ -214,6 +218,10 @@ interface KindInfo {
   meta: MetaField[];
   /** Whether new options may be added from the panel. */
   canAdd: boolean;
+  /** Whether options may be turned off from the panel (default true). */
+  canRetire?: boolean;
+  /** Whether each option carries a picture the panel uploads. */
+  pictures?: boolean;
   note?: string;
   /** Where the kind's keys are stored, to count how often each is in use. */
   usage: { collection: string; field: string }[];
@@ -221,7 +229,26 @@ interface KindInfo {
   fixed?: string[];
 }
 
+/**
+ * The option lists the panel manages. Sizes, fits, occasions and the rest are
+ * set in the app itself, so the panel neither shows nor changes them.
+ */
+export const PANEL_TAXONOMY_KINDS: readonly TaxonomyKind[] = [
+  TaxonomyKind.INTEREST_CATEGORY,
+  TaxonomyKind.INTEREST,
+  TaxonomyKind.COLOR,
+];
+
+/**
+ * Extras the panel sets through its own controls, never through the
+ * generic form: the picture, and a colour group's name (it follows the group).
+ */
+const MANAGED_META = ['imageUrl', 'groupLabel'];
+
 const KEY_PATTERN = /^[a-z0-9]+(?:_[a-z0-9]+)*$/;
+
+/** A squared, WebP option picture is a few tens of KB; a megabyte is generous. */
+export const OPTION_PICTURE_MAX_BYTES = 1_000_000;
 const groupMeta: MetaField[] = [
   { key: 'group', label: 'Group key', required: true, pattern: KEY_PATTERN.source },
   { key: 'groupLabel', label: 'Group name', required: true },
@@ -233,6 +260,7 @@ export const TAXONOMY_INFO: Record<TaxonomyKind, KindInfo> = {
     label: 'Interest categories',
     meta: [],
     canAdd: true,
+    pictures: true,
     note: 'The tiles on the first interests screen. A new one has no interests under it until you add some.',
     usage: [pref('interestCategories')],
   },
@@ -247,6 +275,7 @@ export const TAXONOMY_INFO: Record<TaxonomyKind, KindInfo> = {
       },
     ],
     canAdd: true,
+    pictures: true,
     note: 'Keys start with their category, so the same word under two categories never collides.',
     usage: [pref('interests')],
   },
@@ -254,9 +283,12 @@ export const TAXONOMY_INFO: Record<TaxonomyKind, KindInfo> = {
     label: 'Colours',
     meta: [
       { key: 'hex', label: 'Colour', required: true, pattern: '^#[0-9A-Fa-f]{6}$' },
-      ...groupMeta,
+      { key: 'group', label: 'Group', required: true, groups: true },
     ],
-    canAdd: true,
+    // The colours are a fixed palette: renamed, recoloured or moved between
+    // groups here, never added to or taken away.
+    canAdd: false,
+    canRetire: false,
     usage: [pref('favouriteColors')],
   },
   [TaxonomyKind.CLOTHING_SIZE]: {
@@ -354,6 +386,7 @@ export class AdminCatalogService {
     private readonly products: ProductsService,
     private readonly user360: AdminUser360Service,
     private readonly audit: AuditService,
+    @Inject(STORAGE) private readonly storage: IStorageProvider,
   ) {}
 
   private get db(): mongo.Db {
@@ -377,7 +410,7 @@ export class AdminCatalogService {
       ])
       .exec();
     const byKind = new Map(counts.map((c) => [c._id, c]));
-    return Object.values(TaxonomyKind).map((kind) => ({
+    return PANEL_TAXONOMY_KINDS.map((kind) => ({
       kind,
       label: TAXONOMY_INFO[kind].label,
       total: byKind.get(kind)?.total ?? 0,
@@ -390,11 +423,14 @@ export class AdminCatalogService {
     kind: TaxonomyKind;
     label: string;
     canAdd: boolean;
+    canRetire: boolean;
+    pictures: boolean;
     note: string | null;
     meta: MetaField[];
     choices: Record<string, { value: string; label: string }[]>;
     terms: TermRow[];
   }> {
+    this.panelKind(kind);
     const info = TAXONOMY_INFO[kind];
     const [docs, uses] = await Promise.all([
       this.terms.find({ kind }).sort({ sortOrder: 1, label: 1 }).lean().exec(),
@@ -407,17 +443,38 @@ export class AdminCatalogService {
         choices[m.key] = from.map((t) => ({ value: t.key, label: t.label }));
       } else if (m.options) {
         choices[m.key] = m.options.map((o) => ({ value: o, label: o.toUpperCase() }));
+      } else if (m.groups) {
+        choices[m.key] = this.groupsOf(docs);
       }
     }
     return {
       kind,
       label: info.label,
       canAdd: info.canAdd,
+      canRetire: info.canRetire ?? true,
+      pictures: info.pictures ?? false,
       note: info.note ?? null,
       meta: info.meta,
       choices,
       terms: docs.map((t) => this.termRow(kind, t, uses.get(t.key) ?? 0)),
     };
+  }
+
+  /** The groups a kind's options form, in the order they first appear. */
+  private groupsOf(docs: TaxonomyTerm[]): { value: string; label: string }[] {
+    const seen = new Map<string, string>();
+    for (const t of docs) {
+      const g = t.meta?.group;
+      if (g && !seen.has(g)) seen.set(g, t.meta?.groupLabel || g);
+    }
+    return [...seen].map(([value, label]) => ({ value, label }));
+  }
+
+  /** Only the lists the panel manages can be read or changed through it. */
+  private panelKind(kind: TaxonomyKind): void {
+    if (!PANEL_TAXONOMY_KINDS.includes(kind)) {
+      throw new AppException(ErrorCode.NOT_FOUND, 'This list is set in the app itself', 404);
+    }
   }
 
   private termRow(kind: TaxonomyKind, t: TaxonomyTerm, uses: number): TermRow {
@@ -475,6 +532,9 @@ export class AdminCatalogService {
       if (field.from && !(await this.terms.exists({ kind: field.from, key: value }))) {
         throw this.invalid(`${field.label} “${value}” does not exist`);
       }
+      if (field.groups && !(await this.terms.exists({ kind, 'meta.group': value }))) {
+        throw this.invalid(`There is no ${field.label.toLowerCase()} “${value}”`);
+      }
       out[k] = value;
     }
     for (const f of fields) {
@@ -501,6 +561,7 @@ export class AdminCatalogService {
     actor: AuthenticatedAdmin,
     ip: string | null,
   ): Promise<TermRow> {
+    this.panelKind(kind);
     const info = TAXONOMY_INFO[kind];
     if (!info.canAdd) {
       throw new AppException(
@@ -540,6 +601,7 @@ export class AdminCatalogService {
     actor: AuthenticatedAdmin,
     ip: string | null,
   ): Promise<TermRow> {
+    this.panelKind(kind);
     const term = await this.termOf(kind, termId);
     const before = { label: term.label, meta: { ...term.meta } };
     if (input.label !== undefined) {
@@ -548,8 +610,24 @@ export class AdminCatalogService {
       term.label = label;
     }
     if (input.meta !== undefined) {
-      // Keys sent empty are removed; keys not sent are kept.
-      term.meta = await this.checkMeta(kind, { ...term.meta, ...input.meta });
+      // Keys sent empty are removed; keys not sent are kept. The picture and a
+      // group's name are kept apart: the form never sends them.
+      const kept = Object.fromEntries(
+        Object.entries(term.meta ?? {}).filter(([k]) => MANAGED_META.includes(k)),
+      );
+      const editable = Object.fromEntries(
+        Object.entries({ ...term.meta, ...input.meta }).filter(([k]) => !MANAGED_META.includes(k)),
+      );
+      const meta = { ...kept, ...(await this.checkMeta(kind, editable)) };
+      // A colour moved to another group takes that group's name with it.
+      if (meta.group && meta.group !== before.meta.group) {
+        const peer = await this.terms
+          .findOne({ kind, 'meta.group': meta.group, _id: { $ne: term._id } })
+          .lean()
+          .exec();
+        if (peer?.meta?.groupLabel) meta.groupLabel = peer.meta.groupLabel;
+      }
+      term.meta = meta;
       term.markModified('meta');
     }
     await term.save();
@@ -575,7 +653,15 @@ export class AdminCatalogService {
     actor: AuthenticatedAdmin,
     ip: string | null,
   ): Promise<TermRow> {
+    this.panelKind(kind);
     const term = await this.termOf(kind, termId);
+    if (!active && TAXONOMY_INFO[kind].canRetire === false) {
+      throw new AppException(
+        ErrorCode.CONTENT_ACTION_INVALID,
+        `${TAXONOMY_INFO[kind].label} stay on — rename or recolour them instead`,
+        400,
+      );
+    }
     if (!active && TAXONOMY_INFO[kind].fixed?.includes(term.key)) {
       throw new AppException(
         ErrorCode.CONTENT_ACTION_INVALID,
@@ -601,6 +687,91 @@ export class AdminCatalogService {
     return this.termRow(kind, term.toObject(), (await this.usage(kind)).get(term.key) ?? 0);
   }
 
+  /**
+   * Sets an option's picture: WebP bytes the panel has already squared and
+   * converted. Stored under a new name each time, so an app that cached the
+   * old picture fetches the new one rather than showing it stale.
+   */
+  async setPicture(
+    kind: TaxonomyKind,
+    termId: string,
+    body: Buffer,
+    actor: AuthenticatedAdmin,
+    ip: string | null,
+  ): Promise<TermRow> {
+    this.panelKind(kind);
+    if (!TAXONOMY_INFO[kind].pictures) {
+      throw new AppException(
+        ErrorCode.CONTENT_ACTION_INVALID,
+        `${TAXONOMY_INFO[kind].label} have no pictures`,
+        400,
+      );
+    }
+    if (!Buffer.isBuffer(body) || body.length === 0) throw this.invalid('No picture was sent');
+    if (body.length > OPTION_PICTURE_MAX_BYTES) {
+      throw new AppException(
+        ErrorCode.VALIDATION_FAILED,
+        'The picture must be 1 MB or smaller',
+        413,
+      );
+    }
+    const isWebp =
+      body.subarray(0, 4).toString('latin1') === 'RIFF' &&
+      body.subarray(8, 12).toString('latin1') === 'WEBP';
+    if (!isWebp) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'Pictures are uploaded as WebP', 415);
+    }
+    const term = await this.termOf(kind, termId);
+    const objectKey = `taxonomy/${kind}/${term.key}-${randomUUID().slice(0, 8)}.webp`;
+    await this.storage.putObject(objectKey, body, 'image/webp');
+    const before = term.meta?.imageUrl ?? null;
+    term.meta = { ...term.meta, imageUrl: this.storage.getPublicUrl(objectKey) };
+    term.markModified('meta');
+    await term.save();
+    await this.taxonomy.bustCache();
+    await this.record(
+      actor,
+      'catalog.set_picture',
+      kind,
+      term,
+      { imageUrl: before },
+      { imageUrl: term.meta.imageUrl },
+      {},
+      ip,
+    );
+    return this.termRow(kind, term.toObject(), (await this.usage(kind)).get(term.key) ?? 0);
+  }
+
+  /** Takes an option's picture away; the app falls back to its own artwork or initial. */
+  async removePicture(
+    kind: TaxonomyKind,
+    termId: string,
+    input: TermInput,
+    actor: AuthenticatedAdmin,
+    ip: string | null,
+  ): Promise<TermRow> {
+    this.panelKind(kind);
+    const term = await this.termOf(kind, termId);
+    const before = term.meta?.imageUrl ?? null;
+    if (before) {
+      term.meta = Object.fromEntries(Object.entries(term.meta).filter(([k]) => k !== 'imageUrl'));
+      term.markModified('meta');
+      await term.save();
+      await this.taxonomy.bustCache();
+      await this.record(
+        actor,
+        'catalog.remove_picture',
+        kind,
+        term,
+        { imageUrl: before },
+        { imageUrl: null },
+        input,
+        ip,
+      );
+    }
+    return this.termRow(kind, term.toObject(), (await this.usage(kind)).get(term.key) ?? 0);
+  }
+
   /** Puts [ids] in that order; options not named keep their place after them. */
   async reorder(
     kind: TaxonomyKind,
@@ -609,6 +780,7 @@ export class AdminCatalogService {
     actor: AuthenticatedAdmin,
     ip: string | null,
   ): Promise<{ ok: true }> {
+    this.panelKind(kind);
     const docs = await this.terms.find({ kind }).sort({ sortOrder: 1, label: 1 }).exec();
     const byId = new Map(docs.map((d) => [String(d._id), d]));
     if (order.some((x) => !byId.has(x)) || new Set(order).size !== order.length) {

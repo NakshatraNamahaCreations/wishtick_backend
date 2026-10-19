@@ -269,13 +269,65 @@ export class AnalyticsService {
       const giftsFulfilled = await db
         .collection('gifts')
         .countDocuments({ ...range, status: 'fulfilled' });
+      const when = (field: string) => ({ [field]: { $gte: start, $lt: end } });
+      // Chat messages by the kind of chat they were sent in.
+      const messagesIn = async (type: string) => {
+        const chats = await db.collection('chats').distinct('_id', { type });
+        return chats.length
+          ? db.collection('messages').countDocuments({ ...range, chatId: { $in: chats } })
+          : 0;
+      };
+      const [
+        itemsAdded,
+        wishlistsPublic,
+        wishlistsWishmates,
+        wishlistsPrivate,
+        invitesSent,
+        giftsReserved,
+        giftsPurchased,
+        giftsBoughtOffline,
+        itemsDelivered,
+        wishlistChatMessages,
+        groupGiftChatMessages,
+        reelWishes,
+        reelsOpenedFromLink,
+      ] = await Promise.all([
+        db.collection('wishlist_items').countDocuments(range),
+        db.collection('wishlists').countDocuments({ ...range, visibility: 'public' }),
+        db.collection('wishlists').countDocuments({ ...range, visibility: 'wishmates' }),
+        db.collection('wishlists').countDocuments({ ...range, visibility: 'private' }),
+        db.collection('event_invites').countDocuments(range),
+        db.collection('gifts').countDocuments({ ...range, type: 'single' }),
+        db.collection('gifts').countDocuments({ ...when('purchasedAt'), type: { $ne: 'self' } }),
+        db.collection('gifts').countDocuments({ ...when('purchasedAt'), mode: 'offline' }),
+        db.collection('gifts').countDocuments(when('fulfilledAt')),
+        messagesIn('wishlist'),
+        messagesIn('group_gift'),
+        db.collection('wishes').countDocuments(range),
+        // Reels keep a running count of public opens, not a dated log, so this
+        // is the reels started in the range whose link has been opened at all.
+        db.collection('reel_collections').countDocuments({ ...range, shareCount: { $gt: 0 } }),
+      ]);
       return {
         wishlistsCreated: wishlists,
+        wishlistsPublic,
+        wishlistsWishmates,
+        wishlistsPrivate,
+        itemsAdded,
         eventsCreated: events,
+        invitesSent,
         giftsCreated: gifts,
+        giftsReserved,
+        giftsPurchased,
+        giftsBoughtOffline,
         giftsFulfilled,
+        itemsDelivered,
         groupGiftsCreated: groupGifts,
+        wishlistChatMessages,
+        groupGiftChatMessages,
         reelsCreated: reels,
+        reelWishes,
+        reelsOpenedFromLink,
         reelsReleased,
       };
     });

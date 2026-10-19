@@ -133,6 +133,11 @@ export class FakeQueue {
     return Promise.resolve();
   }
 
+  /** `Queue.clean` — no recorded job ever fails, so there is nothing to clear. */
+  clean(): Promise<string[]> {
+    return Promise.resolve([]);
+  }
+
   jobsNamed(name: string): RecordedJob[] {
     return this.added.filter((j) => j.name === name);
   }

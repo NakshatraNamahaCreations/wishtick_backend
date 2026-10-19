@@ -2374,6 +2374,13 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         .set(auth(token))
         .send({ paused: false, reason: 'Fixed' })
         .expect(200);
+      const cleared = (
+        await request(server())
+          .post(`${V1}/admin/ops/queues/scheduler/clear-failed`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ removed: number }>;
+      expect(typeof cleared.data.removed).toBe('number');
 
       await request(server()).get(`${V1}/admin/ops/queues/nonsense`).set(auth(token)).expect(404);
       // Support has no business with the machinery.
@@ -2390,7 +2397,7 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
           .expect(200)
       ).body as Envelope<{ items: { action: string }[] }>;
       expect(audit.data.items.map((a) => a.action)).toEqual(
-        expect.arrayContaining(['ops.pause_queue', 'ops.resume_queue']),
+        expect.arrayContaining(['ops.pause_queue', 'ops.resume_queue', 'ops.clear_failed']),
       );
     });
 
@@ -2495,32 +2502,41 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
     const optionsText = async (): Promise<string> =>
       JSON.stringify((await request(server()).get(`${V1}/onboarding/options`).expect(200)).body);
 
-    it('adds, relabels, retires and restores an option, and the app sees each change', async () => {
+    it('manages only interests and colours; the rest is set in the app', async () => {
       const token = await adminToken();
       const kinds = (
         await request(server()).get(`${V1}/admin/catalog/taxonomy`).set(auth(token)).expect(200)
-      ).body as Envelope<{ kind: string; total: number; canAdd: boolean }[]>;
-      expect(kinds.data.find((k) => k.kind === 'lifestyle')?.total).toBeGreaterThan(0);
-      expect(kinds.data.find((k) => k.kind === 'event_type')?.canAdd).toBe(false);
-      await optionsText(); // warm the options cache
+      ).body as Envelope<{ kind: string; canAdd: boolean }[]>;
+      expect(kinds.data.map((k) => k.kind)).toEqual(['interest_category', 'interest', 'color']);
+      expect(kinds.data.find((k) => k.kind === 'color')?.canAdd).toBe(false);
+      for (const kind of ['lifestyle', 'fit_preference', 'occasion', 'event_type', 'flavours']) {
+        await request(server())
+          .get(`${V1}/admin/catalog/taxonomy/${kind}`)
+          .set(auth(token))
+          .expect(404);
+      }
+    });
 
+    it('adds, relabels, retires and restores an interest category, and the app sees each change', async () => {
+      const token = await adminToken();
+      await optionsText(); // warm the options cache
       const key = `stargazing_${seq}`;
       const created = (
         await request(server())
-          .post(`${V1}/admin/catalog/taxonomy/lifestyle`)
+          .post(`${V1}/admin/catalog/taxonomy/interest_category`)
           .set(auth(token))
           .send({ key, label: 'Stargazing' })
           .expect(201)
       ).body as Envelope<Term>;
       expect(await optionsText()).toContain('Stargazing');
       await request(server())
-        .post(`${V1}/admin/catalog/taxonomy/lifestyle`)
+        .post(`${V1}/admin/catalog/taxonomy/interest_category`)
         .set(auth(token))
         .send({ key, label: 'Again' })
         .expect(409);
 
       await request(server())
-        .patch(`${V1}/admin/catalog/taxonomy/lifestyle/${created.data.id}`)
+        .patch(`${V1}/admin/catalog/taxonomy/interest_category/${created.data.id}`)
         .set(auth(token))
         .send({ label: 'Stargazing and astronomy', key: 'ignored' })
         .expect(200);
@@ -2529,23 +2545,23 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       expect(text).toContain(key);
 
       await request(server())
-        .post(`${V1}/admin/catalog/taxonomy/lifestyle/${created.data.id}/active`)
+        .post(`${V1}/admin/catalog/taxonomy/interest_category/${created.data.id}/active`)
         .set(auth(token))
         .send({ active: false, reason: 'Too niche' })
         .expect(200);
       text = await optionsText();
       expect(text).not.toContain(key);
-      // Retired, not deleted: the panel still lists it.
       const list = (
         await request(server())
-          .get(`${V1}/admin/catalog/taxonomy/lifestyle`)
+          .get(`${V1}/admin/catalog/taxonomy/interest_category`)
           .set(auth(token))
           .expect(200)
-      ).body as Envelope<{ terms: Term[] }>;
+      ).body as Envelope<{ terms: Term[]; pictures: boolean }>;
       expect(list.data.terms.find((t) => t.key === key)?.active).toBe(false);
+      expect(list.data.pictures).toBe(true);
 
       await request(server())
-        .post(`${V1}/admin/catalog/taxonomy/lifestyle/${created.data.id}/active`)
+        .post(`${V1}/admin/catalog/taxonomy/interest_category/${created.data.id}/active`)
         .set(auth(token))
         .send({ active: true })
         .expect(200);
@@ -2568,7 +2584,7 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       );
     });
 
-    it('checks the extras an option needs, and keeps the ones the app depends on', async () => {
+    it('keeps sub-interests under a category, and lets one move to another', async () => {
       const token = await adminToken();
       await request(server())
         .post(`${V1}/admin/catalog/taxonomy/interest`)
@@ -2580,51 +2596,154 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         .set(auth(token))
         .send({ key: `x_${seq}`, label: 'Bad category', meta: { category: 'nonsense' } })
         .expect(400);
-      await request(server())
-        .post(`${V1}/admin/catalog/taxonomy/color`)
-        .set(auth(token))
-        .send({
-          key: `c_${seq}`,
-          label: 'Bad hex',
-          meta: { hex: 'red', group: 'red', groupLabel: 'Reds' },
-        })
-        .expect(400);
-      await request(server())
-        .post(`${V1}/admin/catalog/taxonomy/lifestyle`)
-        .set(auth(token))
-        .send({ key: 'Has Spaces', label: 'Bad key' })
-        .expect(400);
-      await request(server())
-        .post(`${V1}/admin/catalog/taxonomy/event_type`)
-        .set(auth(token))
-        .send({ key: `party_${seq}`, label: 'Party' })
-        .expect(400);
-
       const interests = (
         await request(server())
           .get(`${V1}/admin/catalog/taxonomy/interest`)
           .set(auth(token))
           .expect(200)
       ).body as Envelope<{ choices: Record<string, { value: string }[]> }>;
-      const category = interests.data.choices.category[0].value;
-      await request(server())
-        .post(`${V1}/admin/catalog/taxonomy/interest`)
-        .set(auth(token))
-        .send({ key: `${category}_kites_${seq}`, label: 'Kites', meta: { category } })
-        .expect(201);
-
-      const occasions = (
+      const [first, second] = interests.data.choices.category.map((c) => c.value);
+      const kites = (
         await request(server())
-          .get(`${V1}/admin/catalog/taxonomy/occasion`)
+          .post(`${V1}/admin/catalog/taxonomy/interest`)
+          .set(auth(token))
+          .send({ key: `${first}_kites_${seq}`, label: 'Kites', meta: { category: first } })
+          .expect(201)
+      ).body as Envelope<Term & { meta: Record<string, string> }>;
+      const moved = (
+        await request(server())
+          .patch(`${V1}/admin/catalog/taxonomy/interest/${kites.data.id}`)
+          .set(auth(token))
+          .send({ meta: { category: second } })
+          .expect(200)
+      ).body as Envelope<{ meta: Record<string, string> }>;
+      expect(moved.data.meta.category).toBe(second);
+    });
+
+    it('lets colours be renamed, recoloured and moved between groups — never added or retired', async () => {
+      const token = await adminToken();
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/color`)
+        .set(auth(token))
+        .send({ key: `c_${seq}`, label: 'New', meta: { hex: '#123456', group: 'red' } })
+        .expect(400);
+      const colours = (
+        await request(server())
+          .get(`${V1}/admin/catalog/taxonomy/color`)
           .set(auth(token))
           .expect(200)
-      ).body as Envelope<{ terms: (Term & { fixed: boolean })[] }>;
-      const other = occasions.data.terms.find((t) => t.key === 'other')!;
-      expect(other.fixed).toBe(true);
+      ).body as Envelope<{
+        terms: (Term & { meta: Record<string, string> })[];
+        choices: Record<string, { value: string; label: string }[]>;
+        canAdd: boolean;
+        canRetire: boolean;
+      }>;
+      expect(colours.data).toMatchObject({ canAdd: false, canRetire: false });
+      const groups = colours.data.choices.group;
+      expect(groups.length).toBeGreaterThan(1);
+      const colour = colours.data.terms[0];
+      const target = groups.find((g) => g.value !== colour.meta.group)!;
+      const path = `${V1}/admin/catalog/taxonomy/color/${colour.id}`;
       await request(server())
-        .post(`${V1}/admin/catalog/taxonomy/occasion/${other.id}/active`)
+        .patch(path)
+        .set(auth(token))
+        .send({ meta: { hex: 'red' } })
+        .expect(400);
+      await request(server())
+        .patch(path)
+        .set(auth(token))
+        .send({ meta: { group: 'no_such_group' } })
+        .expect(400);
+      const changed = (
+        await request(server())
+          .patch(path)
+          .set(auth(token))
+          .send({ label: 'Deep sea', meta: { hex: '#0A3D62', group: target.value } })
+          .expect(200)
+      ).body as Envelope<{ label: string; meta: Record<string, string> }>;
+      // Moved, and named for its new group.
+      expect(changed.data.meta).toMatchObject({
+        hex: '#0A3D62',
+        group: target.value,
+        groupLabel: target.label,
+      });
+      await request(server())
+        .post(`${path}/active`)
         .set(auth(token))
         .send({ active: false })
+        .expect(400);
+      // Put it back for the rest of the suite.
+      await request(server())
+        .patch(path)
+        .set(auth(token))
+        .send({ label: colour.label, meta: { hex: colour.meta.hex, group: colour.meta.group } })
+        .expect(200);
+    });
+
+    it('gives interests and categories a WebP picture the app is sent, and takes it away', async () => {
+      const token = await adminToken();
+      const categories = (
+        await request(server())
+          .get(`${V1}/admin/catalog/taxonomy/interest_category`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ terms: (Term & { meta: Record<string, string> })[] }>;
+      const category = categories.data.terms.find((t) => t.active)!;
+      const path = `${V1}/admin/catalog/taxonomy/interest_category/${category.id}/picture`;
+      const webp = Buffer.concat([
+        Buffer.from('RIFF'),
+        Buffer.alloc(4),
+        Buffer.from('WEBPVP8 '),
+        Buffer.alloc(32, 1),
+      ]);
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+      await request(server())
+        .post(path)
+        .set(auth(token))
+        .set('Content-Type', 'image/png')
+        .send(png)
+        .expect(415);
+      const set = (
+        await request(server())
+          .post(path)
+          .set(auth(token))
+          .set('Content-Type', 'image/webp')
+          .send(webp)
+          .expect(200)
+      ).body as Envelope<{ meta: Record<string, string> }>;
+      const url = set.data.meta.imageUrl;
+      expect(url).toMatch(/taxonomy\/interest_category\/.+\.webp/);
+      expect(await optionsText()).toContain(url);
+
+      // Relabelling keeps the picture.
+      await request(server())
+        .patch(`${V1}/admin/catalog/taxonomy/interest_category/${category.id}`)
+        .set(auth(token))
+        .send({ label: category.label, meta: {} })
+        .expect(200);
+      expect(await optionsText()).toContain(url);
+
+      await request(server())
+        .post(`${path}/remove`)
+        .set(auth(token))
+        .send({ reason: 'Wrong picture' })
+        .expect(200);
+      expect(await optionsText()).not.toContain(url);
+
+      // Colours have no pictures.
+      const colour = (
+        (
+          await request(server())
+            .get(`${V1}/admin/catalog/taxonomy/color`)
+            .set(auth(token))
+            .expect(200)
+        ).body as Envelope<{ terms: Term[] }>
+      ).data.terms[0];
+      await request(server())
+        .post(`${V1}/admin/catalog/taxonomy/color/${colour.id}/picture`)
+        .set(auth(token))
+        .set('Content-Type', 'image/webp')
+        .send(webp)
         .expect(400);
     });
 
@@ -2633,52 +2752,47 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       const user = await newUser();
       const before = (
         await request(server())
-          .get(`${V1}/admin/catalog/taxonomy/fit_preference`)
+          .get(`${V1}/admin/catalog/taxonomy/interest_category`)
           .set(auth(token))
           .expect(200)
       ).body as Envelope<{ terms: Term[] }>;
-      const fit = before.data.terms[0];
+      const picked = before.data.terms[0];
       await request(server())
         .patch(`${V1}/me/preferences`)
         .set(auth(user.token))
-        .send({ fitPreference: fit.key })
+        .send({ interestCategories: [picked.key] })
         .expect(200);
 
       const reversed = [...before.data.terms].reverse().map((t) => t.id);
       await request(server())
-        .post(`${V1}/admin/catalog/taxonomy/fit_preference/reorder`)
+        .post(`${V1}/admin/catalog/taxonomy/interest_category/reorder`)
         .set(auth(token))
         .send({ ids: reversed })
         .expect(200);
       const after = (
         await request(server())
-          .get(`${V1}/admin/catalog/taxonomy/fit_preference`)
+          .get(`${V1}/admin/catalog/taxonomy/interest_category`)
           .set(auth(token))
           .expect(200)
       ).body as Envelope<{ terms: Term[] }>;
       expect(after.data.terms.map((t) => t.id)).toEqual(reversed);
-      expect(after.data.terms.find((t) => t.id === fit.id)!.uses).toBeGreaterThanOrEqual(1);
-      // Put it back for the rest of the suite.
+      expect(after.data.terms.find((t) => t.id === picked.id)!.uses).toBeGreaterThanOrEqual(1);
       await request(server())
-        .post(`${V1}/admin/catalog/taxonomy/fit_preference/reorder`)
+        .post(`${V1}/admin/catalog/taxonomy/interest_category/reorder`)
         .set(auth(token))
         .send({ ids: before.data.terms.map((t) => t.id) })
         .expect(200);
 
       const support = await roleToken('support');
       await request(server())
-        .get(`${V1}/admin/catalog/taxonomy/fit_preference`)
+        .get(`${V1}/admin/catalog/taxonomy/interest_category`)
         .set(auth(support))
         .expect(200);
       await request(server())
-        .patch(`${V1}/admin/catalog/taxonomy/fit_preference/${fit.id}`)
+        .patch(`${V1}/admin/catalog/taxonomy/interest_category/${picked.id}`)
         .set(auth(support))
         .send({ label: 'Nope' })
         .expect(403);
-      await request(server())
-        .get(`${V1}/admin/catalog/taxonomy/flavours`)
-        .set(auth(token))
-        .expect(404);
     });
 
     it('browses products with their sellers and stores, and refreshes one on the record', async () => {
@@ -2762,13 +2876,15 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         .expect(201);
       return signIn(email, password);
     };
+    // One sign-in for the reads below: a sign-in per read trips the login throttle.
+    let readToken: string | null = null;
     const get = async <T>(path: string, query: Record<string, string> = {}): Promise<T> =>
       (
         (
           await request(server())
             .get(`${V1}/admin/analytics/${path}`)
             .query(query)
-            .set(auth(await adminToken()))
+            .set(auth((readToken ??= await adminToken())))
             .expect(200)
         ).body as Envelope<T>
       ).data;
@@ -2984,6 +3100,44 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       });
       expect(reserved.total).toBeLessThanOrEqual(gifting.reserved);
       expect(reserved.items.map((p) => p.id)).toContain(gifter.userId);
+
+      // Engagement counts the new rows, and each opens on the people behind it.
+      const engagement = await get<Record<string, number>>('engagement', range);
+      for (const key of [
+        'wishlistsPublic',
+        'itemsAdded',
+        'giftsReserved',
+        'invitesSent',
+        'wishlistChatMessages',
+        'groupGiftChatMessages',
+        'giftsPurchased',
+        'giftsBoughtOffline',
+        'itemsDelivered',
+        'reelWishes',
+        'reelsOpenedFromLink',
+      ]) {
+        expect(typeof engagement[key]).toBe('number');
+      }
+      expect(engagement.itemsAdded).toBeGreaterThanOrEqual(1);
+      expect(engagement.giftsReserved).toBeGreaterThanOrEqual(1);
+      for (const [metric, who] of [
+        ['created.itemsAdded', owner.userId],
+        ['created.wishlistsPublic', owner.userId],
+        ['created.giftsReserved', gifter.userId],
+      ] as const) {
+        const page = await get<{ total: number; items: { id: string }[] }>('people', {
+          metric,
+          ...range,
+          limit: '100',
+        });
+        expect(page.items.map((p) => p.id)).toContain(who);
+      }
+      const added = await get<{ total: number }>('people', {
+        metric: 'created.itemsAdded',
+        ...range,
+        limit: '100',
+      });
+      expect(added.total).toBeLessThanOrEqual(engagement.itemsAdded);
 
       const failedPush = await get<{ items: { id: string }[] }>('people', {
         metric: 'deliveries.failed',

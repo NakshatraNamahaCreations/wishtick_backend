@@ -9,9 +9,11 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   StreamableFile,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from 'src/common/decorators/public.decorator';
 import { AppException } from 'src/common/errors/app.exception';
@@ -20,6 +22,7 @@ import { TaxonomyKind } from 'src/modules/taxonomy/taxonomy.types';
 import {
   AdminCatalogService,
   CATALOG_KINDS,
+  PANEL_TAXONOMY_KINDS,
   type CatalogDetail,
   type CatalogKind,
   type TermRow,
@@ -43,8 +46,9 @@ function kindOf(kind: string): CatalogKind {
   return kind as CatalogKind;
 }
 
+/** One of the option lists the panel manages; the rest are set in the app. */
 function taxonomyKindOf(kind: string): TaxonomyKind {
-  if (!(Object.values(TaxonomyKind) as string[]).includes(kind)) {
+  if (!(PANEL_TAXONOMY_KINDS as readonly string[]).includes(kind)) {
     throw new AppException(ErrorCode.NOT_FOUND, 'No such option list', 404);
   }
   return kind as TaxonomyKind;
@@ -115,6 +119,36 @@ export class AdminCatalogController {
     @Ip() ip: string,
   ): Promise<TermRow> {
     return this.catalog.updateTerm(taxonomyKindOf(kind), id, dto, actor, ip ?? null);
+  }
+
+  @Post('taxonomy/:kind/:id/picture')
+  @RequirePermission(AdminPermission.CATALOG_MANAGE)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Set an option’s picture — the raw WebP bytes, up to 1 MB (audited)',
+  })
+  setPicture(
+    @CurrentAdmin() actor: AuthenticatedAdmin,
+    @Param('kind') kind: string,
+    @Param('id') id: string,
+    @Req() req: Request,
+    @Ip() ip: string,
+  ): Promise<TermRow> {
+    return this.catalog.setPicture(taxonomyKindOf(kind), id, req.body as Buffer, actor, ip ?? null);
+  }
+
+  @Post('taxonomy/:kind/:id/picture/remove')
+  @RequirePermission(AdminPermission.CATALOG_MANAGE)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Take an option’s picture away (audited)' })
+  removePicture(
+    @CurrentAdmin() actor: AuthenticatedAdmin,
+    @Param('kind') kind: string,
+    @Param('id') id: string,
+    @Body() dto: AdminReasonDto,
+    @Ip() ip: string,
+  ): Promise<TermRow> {
+    return this.catalog.removePicture(taxonomyKindOf(kind), id, dto, actor, ip ?? null);
   }
 
   @Post('taxonomy/:kind/:id/active')
