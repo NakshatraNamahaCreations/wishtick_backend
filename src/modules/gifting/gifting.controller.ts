@@ -28,7 +28,7 @@ import {
 } from './dto/gift.dto';
 import { GiftListService } from './gift-list.service';
 import { GiftingService } from './gifting.service';
-import type { GiftListItemView, GiftView } from './gift.views';
+import type { GiftListItemView, GiftView, ReservedFromMyWishlistView } from './gift.views';
 
 /** Reserving is a real commitment; a tight bucket blunts scripted claiming. */
 const GIFT_THROTTLE = { default: { limit: 20, ttl: 60_000 } };
@@ -219,5 +219,19 @@ export class GiftingController {
   @ApiOperation({ summary: 'Gifts on hold by you (`324:1210`)' })
   onHold(@CurrentUser('id') userId: string): Promise<GiftListItemView[]> {
     return this.giftLists.listOnHold(userId);
+  }
+
+  @Get('gifts/reserved-from-my-wishlists')
+  @ApiOperation({
+    summary: 'Items on your own wishlists a WishMate has reserved and let you see',
+    description:
+      'Reserved gifts on your lists whose gifter made them visible. A surprise ' +
+      '(hidden_from_owner) is never listed, and self gifts are excluded. `gifterName` is the ' +
+      'gifter’s first name only when they chose to show it; otherwise null. Newest first.',
+  })
+  reservedFromMyWishlists(
+    @CurrentUser('id') userId: string,
+  ): Promise<ReservedFromMyWishlistView[]> {
+    return this.giftLists.listReservedFromMyWishlists(userId);
   }
 }

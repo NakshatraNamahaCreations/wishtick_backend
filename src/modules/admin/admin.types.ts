@@ -49,6 +49,10 @@ export enum AdminPermission {
   BLOG_VIEW = 'blog:view',
   /** …and write, publish, schedule and take down. */
   BLOG_MANAGE = 'blog:manage',
+  /** Home's ad banners ("Exclusive Offers", "Special Offers for You") — read. */
+  BANNERS_VIEW = 'banners:view',
+  /** …and add, edit, schedule and remove. */
+  BANNERS_MANAGE = 'banners:manage',
 }
 
 /**
@@ -82,7 +86,12 @@ export const ROLE_PERMISSIONS: Record<AdminRole, AdminPermission[]> = {
     AdminPermission.USERS_VIEW,
     AdminPermission.EXPORT_DATA,
   ],
-  [AdminRole.CONTENT_EDITOR]: [AdminPermission.BLOG_VIEW, AdminPermission.BLOG_MANAGE],
+  [AdminRole.CONTENT_EDITOR]: [
+    AdminPermission.BLOG_VIEW,
+    AdminPermission.BLOG_MANAGE,
+    AdminPermission.BANNERS_VIEW,
+    AdminPermission.BANNERS_MANAGE,
+  ],
   [AdminRole.ANALYST]: [
     AdminPermission.ANALYTICS_VIEW,
     AdminPermission.USERS_VIEW,

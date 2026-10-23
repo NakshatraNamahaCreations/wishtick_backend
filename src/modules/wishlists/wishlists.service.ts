@@ -17,8 +17,9 @@ import type { AccessContext, AccessDecision } from './access/access.types';
 import type { CreateWishlistDto, ShareWishlistDto, UpdateWishlistDto } from './dto/wishlist.dto';
 import { WishlistItem, type WishlistItemDocument } from './schemas/wishlist-item.schema';
 import { Wishlist, type WishlistDocument } from './schemas/wishlist.schema';
-import { WishlistItemStatus, WishlistVisibility } from './wishlist.types';
+import { WishlistVisibility } from './wishlist.types';
 import { toWishlistView, type WishlistView } from './wishlist.views';
+import { wishlistCountsPipeline, wishlistCountsSet, type WishlistCounts } from './wishlist-stats';
 
 /**
  * Unambiguous alphabet (no 0/O, 1/l/I) at 16 chars ≈ 2^80 of entropy.
@@ -405,49 +406,16 @@ export class WishlistsService {
   /**
    * Recomputes the denormalized counters from the items collection, which is
    * the source of truth. Called after every write that changes them.
+   *
+   * Writes both `stats` and the owner-safe `ownerStats` — see
+   * [wishlistCountsPipeline] for what the second leaves out.
    */
   async recount(wishlistId: Types.ObjectId): Promise<void> {
     const [counts] = await this.items
-      .aggregate<{ itemCount: number; fulfilledCount: number }>([
-        { $match: { wishlistId, archivedAt: null } },
-        {
-          $group: {
-            _id: null,
-            itemCount: { $sum: 1 },
-            fulfilledCount: {
-              $sum: {
-                $cond: [
-                  {
-                    $in: [
-                      '$status',
-                      [
-                        WishlistItemStatus.FULFILLED,
-                        WishlistItemStatus.COMPLETED,
-                        WishlistItemStatus.GIFTED_OFFLINE,
-                      ],
-                    ],
-                  },
-                  1,
-                  0,
-                ],
-              },
-            },
-          },
-        },
-      ])
+      .aggregate<WishlistCounts>(wishlistCountsPipeline(wishlistId))
       .exec();
 
-    await this.model
-      .updateOne(
-        { _id: wishlistId },
-        {
-          $set: {
-            'stats.itemCount': counts?.itemCount ?? 0,
-            'stats.fulfilledCount': counts?.fulfilledCount ?? 0,
-          },
-        },
-      )
-      .exec();
+    await this.model.updateOne({ _id: wishlistId }, { $set: wishlistCountsSet(counts) }).exec();
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

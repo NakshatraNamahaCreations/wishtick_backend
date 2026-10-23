@@ -19,6 +19,7 @@ import {
   WishlistItem,
   WishlistItemSchema,
 } from 'src/modules/wishlists/schemas/wishlist-item.schema';
+import { Wishlist, WishlistSchema } from 'src/modules/wishlists/schemas/wishlist.schema';
 import { ConversionReconcileService } from './conversion-reconcile.service';
 import { GiftStatusService } from './gift-status.service';
 import { GiftingController } from './gifting.controller';
@@ -46,6 +47,8 @@ import { WebhookService } from './webhook.service';
       // Read-only: a group gift you chipped in on is one you gave.
       { name: Contribution.name, schema: ContributionSchema },
       { name: ThankYouNote.name, schema: ThankYouNoteSchema },
+      // Read-only: the list name on a "Reserved from My Wishlist" row.
+      { name: Wishlist.name, schema: WishlistSchema },
       // Read (and marked reconciled) by ConversionReconcileService. A schema
       // rather than the products module: gifting asks what the network
       // reported, and must not acquire a catalogue to do it.

@@ -1008,6 +1008,40 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
           .expect(200)
       ).body as Envelope<ListPage>;
       expect(listed.data.items.map((c) => c.id)).toEqual([chatId.toString()]);
+      // The list says how much is in each chat (and, for a list or a group
+      // gift, its title — a direct chat has none).
+      expect(listed.data.items[0]).toMatchObject({ messages: 1, refTitle: null });
+
+      // Searching chats looks in the titles of what they belong to.
+      const listId = new Types.ObjectId();
+      const listChatId = new Types.ObjectId();
+      await db()
+        .collection('wishlists')
+        .insertOne({
+          _id: listId,
+          title: 'Zorblat turns 30',
+          ownerId: new Types.ObjectId(a.userId),
+        });
+      await db()
+        .collection('chats')
+        .insertOne({
+          _id: listChatId,
+          type: 'wishlist',
+          refId: listId,
+          participantIds: [new Types.ObjectId(a.userId)],
+          lastMessageAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      const found = (
+        await request(server())
+          .get(`${V1}/admin/content/chats`)
+          .query({ q: 'zorblat' })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<ListPage>;
+      expect(found.data.items.map((c) => c.id)).toEqual([listChatId.toString()]);
+      expect(found.data.items[0]).toMatchObject({ refTitle: 'Zorblat turns 30', messages: 0 });
 
       const sealed = (
         await request(server())

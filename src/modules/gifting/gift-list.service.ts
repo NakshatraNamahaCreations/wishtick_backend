@@ -21,8 +21,9 @@ import {
   WishlistItem,
   type WishlistItemDocument,
 } from 'src/modules/wishlists/schemas/wishlist-item.schema';
+import { Wishlist, type WishlistDocument } from 'src/modules/wishlists/schemas/wishlist.schema';
 import { GiftStatus, GiftType, GiftVisibility } from './gift.types';
-import type { GiftListItemView } from './gift.views';
+import type { GiftListItemView, ReservedFromMyWishlistView } from './gift.views';
 import { Gift, type GiftDocument } from './schemas/gift.schema';
 
 /** Nobody scrolls past this, and each row costs four lookups to assemble. */
@@ -53,6 +54,8 @@ export class GiftListService {
     @InjectModel(Gift.name) private readonly giftModel: Model<GiftDocument>,
     @InjectModel(WishlistItem.name)
     private readonly itemModel: Model<WishlistItemDocument>,
+    @InjectModel(Wishlist.name)
+    private readonly wishlistModel: Model<WishlistDocument>,
     @InjectModel(Order.name) private readonly orderModel: Model<OrderDocument>,
     @InjectModel(GroupGift.name)
     private readonly groupGiftModel: Model<GroupGiftDocument>,
@@ -99,15 +102,20 @@ export class GiftListService {
         status: { $in: [ContributionStatus.CONFIRMED, ContributionStatus.PLEDGED] },
       })
       .exec();
+    // Every holder of the group, not just the primary: a multi-gift group
+    // claims each extra item through a holder of its own (`lines[].giftId`),
+    // and matching on the primary alone showed those to the host only. Each
+    // holder is a separate gift, so `_id: {$in}` lists each one once even when
+    // the host is also a contributor.
     const chippedIn =
       groupIds.length === 0
         ? []
         : (
             await this.groupGiftModel
               .find({ _id: { $in: groupIds } })
-              .select({ giftId: 1 })
+              .select({ giftId: 1, 'lines.giftId': 1 })
               .exec()
-          ).map((g) => g.giftId);
+          ).flatMap((g) => [g.giftId, ...(g.lines ?? []).map((line) => line.giftId)]);
 
     return {
       type: { $ne: GiftType.SELF },
@@ -181,6 +189,66 @@ export class GiftListService {
   }
 
   /**
+   * "Reserved from My Wishlist" — claims on the caller's own items that the
+   * gifter chose to show them.
+   *
+   * A surprise (`hidden_from_owner`) is never here, not even anonymised: the
+   * row's existence would be the spoiler. Self gifts ("I got this myself") are
+   * the owner's own and not a reservation by anyone. The gifter's first name
+   * appears only when they turned "show my name" on.
+   */
+  async listReservedFromMyWishlists(userId: string): Promise<ReservedFromMyWishlistView[]> {
+    const gifts = await this.giftModel
+      .find({
+        recipientId: new Types.ObjectId(userId),
+        type: { $ne: GiftType.SELF },
+        status: GiftStatus.RESERVED,
+        visibility: GiftVisibility.VISIBLE,
+      })
+      .sort({ reservedAt: -1, createdAt: -1 })
+      .limit(MAX_ROWS)
+      .exec();
+    if (gifts.length === 0) return [];
+
+    const itemIds = [...new Set(gifts.map((g) => g.itemId.toString()))];
+    const wishlistIds = [...new Set(gifts.map((g) => g.wishlistId.toString()))];
+    const named = gifts.filter((g) => g.showBuyerName).map((g) => g.gifterId.toString());
+
+    const [items, wishlists, names] = await Promise.all([
+      this.itemModel
+        .find({ _id: { $in: itemIds.map((id) => new Types.ObjectId(id)) } })
+        .select({ title: 1, imageUrls: 1 })
+        .exec(),
+      this.wishlistModel
+        .find({ _id: { $in: wishlistIds.map((id) => new Types.ObjectId(id)) } })
+        .select({ title: 1 })
+        .exec(),
+      named.length === 0
+        ? Promise.resolve(new Map<string, string>())
+        : this.resolveNames([...new Set(named)]),
+    ]);
+    const itemById = new Map(items.map((i) => [i._id.toString(), i]));
+    const listById = new Map(wishlists.map((w) => [w._id.toString(), w]));
+
+    return gifts.map((gift) => {
+      const item = itemById.get(gift.itemId.toString());
+      return {
+        id: gift._id.toString(),
+        itemId: gift.itemId.toString(),
+        wishlistId: gift.wishlistId.toString(),
+        isGroup: gift.type === GiftType.GROUP,
+        item: {
+          title: item?.title ?? 'This item is no longer listed',
+          imageUrl: item?.imageUrls?.[0] ?? null,
+        },
+        wishlist: { title: listById.get(gift.wishlistId.toString())?.title ?? '' },
+        reservedAt: gift.reservedAt ?? gift.createdAt,
+        gifterName: gift.showBuyerName ? (names.get(gift.gifterId.toString()) ?? null) : null,
+      };
+    });
+  }
+
+  /**
    * Joins the four collections a row needs, in four queries rather than four
    * per row.
    */
@@ -199,13 +267,21 @@ export class GiftListService {
     const [items, orders, groupGifts, notes] = await Promise.all([
       this.itemModel.find({ _id: { $in: itemIds.map((id) => new Types.ObjectId(id)) } }).exec(),
       this.orderModel.find({ giftId: { $in: giftIds } }).exec(),
-      this.groupGiftModel.find({ giftId: { $in: giftIds } }).exec(),
+      this.groupGiftModel
+        .find({ $or: [{ giftId: { $in: giftIds } }, { 'lines.giftId': { $in: giftIds } }] })
+        .select({ giftId: 1, 'lines.giftId': 1 })
+        .exec(),
       this.thankYouModel.find({ giftId: { $in: giftIds }, status: ThankYouStatus.SENT }).exec(),
     ]);
 
     const itemById = new Map(items.map((i) => [i._id.toString(), i]));
     const orderByGift = new Map(orders.map((o) => [o.giftId.toString(), o]));
-    const groupByGift = new Set(groupGifts.map((g) => g.giftId?.toString()));
+    const groupByGift = new Set(
+      groupGifts.flatMap((g) => [
+        g.giftId?.toString(),
+        ...(g.lines ?? []).map((line) => line.giftId.toString()),
+      ]),
+    );
     const thankedGifts = new Set(notes.map((n) => n.giftId.toString()));
     const names = await this.resolveNames(counterpartyIds);
 

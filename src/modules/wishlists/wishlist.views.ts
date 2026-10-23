@@ -1,7 +1,7 @@
 import type { AddressView } from 'src/modules/profile/addresses.service';
 import type { WishlistItemDocument } from './schemas/wishlist-item.schema';
 import type { WishlistDocument } from './schemas/wishlist.schema';
-import type { AccessDecision } from './access/access.types';
+import { Relationship, type AccessDecision } from './access/access.types';
 import { BOUGHT_ITEM_STATUSES, WishlistItemStatus } from './wishlist.types';
 import type { ItemImportance, WishlistVisibility } from './wishlist.types';
 
@@ -103,6 +103,12 @@ export interface WishlistView {
   /** Who it is for by name, when that is not a WishMate. See Wishlist.forName. */
   forName: string | null;
   stats: { itemCount: number; fulfilledCount: number };
+  /**
+   * Owner-only. The counts with every surprise left out — what the owner's
+   * own screens show progress from. Absent for everyone else, who reads
+   * `stats`. See [Wishlist.ownerStats].
+   */
+  ownerStats?: { itemCount: number; fulfilledCount: number };
   archivedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -315,6 +321,14 @@ export const toWishlistView = (
       url: `${shareBaseUrl}/w/${wishlist.share.slug}`,
       hasPasscode: wishlist.share.passcodeHash !== null,
       expiresAt: wishlist.share.expiresAt,
+    };
+  }
+  // Owner, not canManage: the counts are for the person whose surprises they
+  // keep, and nobody else has a use for a smaller number.
+  if (access.relationship === Relationship.OWNER) {
+    view.ownerStats = {
+      itemCount: wishlist.ownerStats?.itemCount ?? 0,
+      fulfilledCount: wishlist.ownerStats?.fulfilledCount ?? 0,
     };
   }
   if (delivery) {

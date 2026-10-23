@@ -250,6 +250,10 @@ export class EventsController {
       myRsvp: invite.rsvp,
       // Their own token, so the app can deep-link them into the invite.
       inviteToken: invite.token,
+      // So the card can say "Cancelled" and stop offering an RSVP the server
+      // would refuse with EVENT_CANCELLED.
+      status: event.status,
+      cancelledAt: event.cancelledAt ?? null,
     }));
   }
 

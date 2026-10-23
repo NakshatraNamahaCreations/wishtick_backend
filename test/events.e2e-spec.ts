@@ -732,6 +732,46 @@ describe('Events & invites (e2e)', () => {
       expect(list.data[0].hostName).toBe('Aarav Sharma');
     });
 
+    it("tells the guest's list when the host has cancelled", async () => {
+      // A cancelled event stays on the guest's list — they hold a link to it —
+      // so the card has to say so, and not offer an RSVP the server refuses.
+      const host = await newUser();
+      const guest = await newUser();
+      const event = await createEvent(host);
+      await publish(host, event.id);
+      await request(app.getHttpServer())
+        .post(`${V1}/events/${event.id}/invites`)
+        .set(auth(host.token))
+        .send({ recipients: [{ userId: guest.userId }] })
+        .expect(200);
+
+      type Row = { id: string; status: string; cancelledAt: string | null };
+      const listed = async (): Promise<Row[]> =>
+        (
+          (
+            await request(app.getHttpServer())
+              .get(`${V1}/events/invited`)
+              .set(auth(guest.token))
+              .expect(200)
+          ).body as Envelope<Row[]>
+        ).data;
+
+      const before = await listed();
+      expect(before).toHaveLength(1);
+      expect(before[0].status).toBe('published');
+      expect(before[0].cancelledAt).toBeNull();
+
+      await request(app.getHttpServer())
+        .delete(`${V1}/events/${event.id}`)
+        .set(auth(host.token))
+        .expect(200);
+
+      const after = await listed();
+      expect(after).toHaveLength(1);
+      expect(after[0].status).toBe('cancelled');
+      expect(new Date(after[0].cancelledAt as string).getTime()).not.toBeNaN();
+    });
+
     it('refuses a cover image passed off as an invitation', async () => {
       // event_invite is the only purpose that admits GIF, MP4 and PDF, so
       // accepting any ready media here would smuggle those types in.

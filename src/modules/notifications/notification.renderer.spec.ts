@@ -112,8 +112,8 @@ describe('NotificationRenderer', () => {
       expect(rsvp({ response: 'yes', plusOnes: 0 })).toBe('Priya is coming to Diwali Night');
     });
 
-    it('says maybe as maybe, and no as no', () => {
-      expect(rsvp({ response: 'maybe' })).toBe('Priya might come to Diwali Night');
+    it('says maybe as not sure, and no as no', () => {
+      expect(rsvp({ response: 'maybe' })).toBe("Priya isn't sure about coming to Diwali Night");
       expect(rsvp({ response: 'no', plusOnes: 3 })).toBe("Priya can't make it to Diwali Night");
     });
   });

@@ -34,7 +34,7 @@ const COLUMNS = [
 /** The words the guest list itself uses (`4099:1256`), not the wire values. */
 const RSVP_LABEL: Record<RsvpResponse, string> = {
   [RsvpResponse.YES]: 'Confirmed',
-  [RsvpResponse.MAYBE]: 'Maybe',
+  [RsvpResponse.MAYBE]: 'Not Sure',
   [RsvpResponse.NO]: 'Declined',
   [RsvpResponse.PENDING]: 'No reply',
 };
@@ -155,7 +155,7 @@ export class GuestListExportService {
       doc
         .fontSize(11)
         .text(
-          `Confirmed ${totals.yes}   Maybe ${totals.maybe}   ` +
+          `Confirmed ${totals.yes}   Not Sure ${totals.maybe}   ` +
             `Declined ${totals.no}   No reply ${totals.pending}   ` +
             `Attending ${totals.attending}`,
         );

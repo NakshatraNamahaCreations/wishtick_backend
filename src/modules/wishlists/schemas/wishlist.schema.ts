@@ -131,6 +131,15 @@ export class Wishlist {
   stats!: WishlistStats;
 
   /**
+   * The same counters as [stats], safe to show the person the list belongs to:
+   * no item a group host hid from them, and no offline purchase whose gift is
+   * kept a surprise. `stats.fulfilledCount` would give either away. Maintained
+   * by the same recount(); returned only in the owner's own view.
+   */
+  @Prop({ type: WishlistStatsSchema, default: () => ({}) })
+  ownerStats!: WishlistStats;
+
+  /**
    * Archive, not delete. A wishlist is referenced by gifts and chats, so
    * removing the row would strand a gifter's history.
    */

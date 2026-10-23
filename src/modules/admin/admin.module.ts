@@ -40,6 +40,8 @@ import { Wishlist, WishlistSchema } from 'src/modules/wishlists/schemas/wishlist
 import { EventsModule } from 'src/modules/events/events.module';
 import { BlogModule } from 'src/modules/blog/blog.module';
 import { AdminBlogController } from './admin-blog.controller';
+import { PromotionsModule } from 'src/modules/promotions/promotions.module';
+import { AdminBannersController } from './admin-banners.controller';
 import { MediaModule } from 'src/modules/media/media.module';
 import { MemoriesModule } from 'src/modules/memories/memories.module';
 import { WishlistsModule } from 'src/modules/wishlists/wishlists.module';
@@ -148,6 +150,8 @@ import { AdminJwtStrategy } from './strategies/admin-jwt.strategy';
     TaxonomyModule,
     // The blog desk writes the website's blog.
     BlogModule,
+    // Home's ad banners.
+    PromotionsModule,
   ],
   controllers: [
     AdminAuthController,
@@ -158,6 +162,7 @@ import { AdminJwtStrategy } from './strategies/admin-jwt.strategy';
     AdminOpsController,
     AdminCatalogController,
     AdminBlogController,
+    AdminBannersController,
     AdminInsightsController,
     AdminGovernanceController,
     ReportsController,
@@ -209,8 +214,12 @@ export class AdminModule implements NestModule {
         },
       );
     // Blog pictures (covers and pictures inside posts) are larger: up to 2 MB.
+    // Home banner pictures likewise.
     consumer
       .apply(raw({ type: ['image/*', 'application/octet-stream'], limit: '2100kb' }))
-      .forRoutes({ path: 'admin/blog/images', method: RequestMethod.POST, version: '1' });
+      .forRoutes(
+        { path: 'admin/blog/images', method: RequestMethod.POST, version: '1' },
+        { path: 'admin/banners/images', method: RequestMethod.POST, version: '1' },
+      );
   }
 }

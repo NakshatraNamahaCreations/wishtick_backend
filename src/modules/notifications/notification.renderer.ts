@@ -467,7 +467,7 @@ const CONTENT: Record<NotificationType, (p: Payload) => Content> = {
       p.response === 'yes'
         ? `${guest} is coming to ${event}${plus}`
         : p.response === 'maybe'
-          ? `${guest} might come to ${event}${plus}`
+          ? `${guest} isn't sure about coming to ${event}${plus}`
           : p.response === 'no'
             ? `${guest} can't make it to ${event}`
             : `${guest} replied to ${event}`;

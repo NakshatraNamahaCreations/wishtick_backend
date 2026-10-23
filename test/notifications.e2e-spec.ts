@@ -531,7 +531,7 @@ describe('Notifications (e2e)', () => {
     });
   });
   // A guest who changes their mind used to leave the host a row per answer —
-  // "coming", "might come", "can't make it", "might come" — of which only the
+  // "coming", "isn't sure", "can't make it", "isn't sure" — of which only the
   // newest was true.
   describe('RSVP news', () => {
     type Row = { id: string; type: string; title: string };
@@ -588,7 +588,7 @@ describe('Notifications (e2e)', () => {
       const titles = (await rsvpRows(host)).map((n) => n.title).sort();
       expect(titles).toEqual([
         "A guest can't make it to Siya turns 24",
-        'A guest might come to Siya turns 24',
+        "A guest isn't sure about coming to Siya turns 24",
       ]);
     });
   });

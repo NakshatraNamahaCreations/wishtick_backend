@@ -42,6 +42,8 @@ import { migration040 } from './scripts/040-block-held-link';
 import { migration041 } from './scripts/041-notification-wordings';
 import { migration042 } from './scripts/042-search-logs';
 import { migration043 } from './scripts/043-blog-posts';
+import { migration044 } from './scripts/044-home-banners';
+import { migration045 } from './scripts/045-wishlist-owner-stats';
 
 /** Every migration must be registered here to run. Order comes from the id. */
 export const MIGRATIONS: Migration[] = [
@@ -88,6 +90,8 @@ export const MIGRATIONS: Migration[] = [
   migration041,
   migration042,
   migration043,
+  migration044,
+  migration045,
 ];
 
 export { MigrationRunner } from './migration.runner';

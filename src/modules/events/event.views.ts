@@ -81,6 +81,14 @@ export interface InvitedEventView {
   hostName: string | null;
   myRsvp: RsvpResponse;
   inviteToken: string;
+  /**
+   * Whether the party is still on. A cancelled event stays on the guest's list
+   * — they hold a link to it — so the card has to say so and stop offering an
+   * RSVP the server would refuse.
+   */
+  status: EventStatus;
+  /** When the host called it off; null while it is still on. */
+  cancelledAt: Date | null;
 }
 
 export interface InviteView {

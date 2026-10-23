@@ -23,6 +23,7 @@ import { StorageModule } from './infra/storage/storage.module';
 import { VideoModule } from './infra/video/video.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { BlogModule } from './modules/blog/blog.module';
+import { PromotionsModule } from './modules/promotions/promotions.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ChatModule } from './modules/chat/chat.module';
@@ -134,6 +135,7 @@ import { WishmatesModule } from './modules/wishmates/wishmates.module';
     OrdersModule,
     GroupGiftModule,
     BlogModule,
+    PromotionsModule,
     ChatModule,
     NotificationsModule,
     ReelsModule,

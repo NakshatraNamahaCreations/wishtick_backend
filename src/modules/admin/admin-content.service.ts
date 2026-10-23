@@ -12,7 +12,7 @@ import { MemoriesService } from 'src/modules/memories/memories.service';
 import { ModerationStatus, ReelStatus } from 'src/modules/reels/reel.types';
 import { WishlistItemStatus, WishlistVisibility } from 'src/modules/wishlists/wishlist.types';
 import { WishlistsService } from 'src/modules/wishlists/wishlists.service';
-import type { AdminPage } from './admin-query.util';
+import { escapeRegex, type AdminPage } from './admin-query.util';
 import {
   at,
   id,
@@ -751,10 +751,75 @@ export class AdminContentService {
 
   async list(kind: ContentKind, q: ContentQuery): Promise<ContentListPage> {
     const spec = SPECS[kind];
-    const page = await listPage(this.db, spec, q);
+    const page = await listPage(this.db, ...(await this.searched(kind, q)));
     let items = page.items;
     if (kind === 'items') items = await this.maskPrivateItems(items);
+    if (kind === 'chats') items = await this.describeChats(items);
     return { ...page, items, names: await this.namesOf(items, spec.userRefs) };
+  }
+
+  /**
+   * The list and query a search runs with. Chats hold no words of their own,
+   * so searching them looks in the titles of the wishlists and group gifts
+   * they belong to — an admin types "Asha", not a chat id.
+   */
+  private async searched(
+    kind: ContentKind,
+    q: ContentQuery,
+  ): Promise<[ListSpec<ContentQuery>, ContentQuery]> {
+    const spec = SPECS[kind];
+    const term = q.q?.trim();
+    if (kind !== 'chats' || !term || Types.ObjectId.isValid(term)) return [spec, q];
+    const title = { title: { $regex: escapeRegex(term), $options: 'i' } };
+    const [lists, gifts] = await Promise.all(
+      ['wishlists', 'group_gifts'].map((c) =>
+        this.db.collection(c).find(title).project({ _id: 1 }).limit(500).toArray(),
+      ),
+    );
+    const refIds = [...lists, ...gifts].map((d) => d._id as Types.ObjectId);
+    return [
+      { ...spec, filter: (qq) => ({ ...spec.filter(qq), refId: { $in: refIds } }) },
+      { ...q, q: undefined },
+    ];
+  }
+
+  /**
+   * What each chat is about, in words: the wishlist or group gift it belongs
+   * to (by title), and how many messages it holds — so the list says "the
+   * chat on “Asha turns 30”, 23 messages" rather than "Wishlist chat".
+   */
+  private async describeChats(rows: ContentRow[]): Promise<ContentRow[]> {
+    if (rows.length === 0) return rows;
+    const refs = (type: string) =>
+      rows
+        .filter((r) => r.type === type && typeof r.refId === 'string' && oid(r.refId))
+        .map((r) => new Types.ObjectId(String(r.refId)));
+    const [lists, gifts, counts] = await Promise.all([
+      this.db
+        .collection('wishlists')
+        .find({ _id: { $in: refs('wishlist') } })
+        .project({ title: 1 })
+        .toArray(),
+      this.db
+        .collection('group_gifts')
+        .find({ _id: { $in: refs('group_gift') } })
+        .project({ title: 1 })
+        .toArray(),
+      this.db
+        .collection('messages')
+        .aggregate<{ _id: Types.ObjectId; n: number }>([
+          { $match: { chatId: { $in: rows.map((r) => new Types.ObjectId(r.id)) } } },
+          { $group: { _id: '$chatId', n: { $sum: 1 } } },
+        ])
+        .toArray(),
+    ]);
+    const titles = new Map([...lists, ...gifts].map((d) => [String(d._id), str(d.title)]));
+    const messages = new Map(counts.map((c) => [String(c._id), c.n]));
+    return rows.map((r) => ({
+      ...r,
+      refTitle: typeof r.refId === 'string' ? (titles.get(r.refId) ?? null) : null,
+      messages: messages.get(r.id) ?? 0,
+    }));
   }
 
   /** Titles of items on private lists are withheld from the list. */
@@ -785,7 +850,7 @@ export class AdminContentService {
     actor: AuthenticatedAdmin,
     ip: string | null,
   ): Promise<string> {
-    let rows = await listAll(this.db, SPECS[kind], q);
+    let rows = await listAll(this.db, ...(await this.searched(kind, q)));
     if (kind === 'items') rows = await this.maskPrivateItems(rows);
     await this.audit.record({
       actor,

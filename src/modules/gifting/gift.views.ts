@@ -108,3 +108,24 @@ export interface GiftListItemView {
   thankYouSent: boolean;
   createdAt: Date;
 }
+
+/**
+ * One row of "Reserved from My Wishlist" — something on the caller's own list
+ * that a WishMate has claimed and chose to let them see.
+ *
+ * Owner-side, so it carries no gifter id. [gifterName] is the gifter's first
+ * name only when they turned "show my name" on; otherwise null, and the row
+ * reads as reserved by somebody.
+ */
+export interface ReservedFromMyWishlistView {
+  id: string;
+  itemId: string;
+  wishlistId: string;
+  /** True for a group gift's holder — the claim belongs to a group. */
+  isGroup: boolean;
+  item: { title: string; imageUrl: string | null };
+  wishlist: { title: string };
+  /** When it was claimed; the row's "Reserved on …". */
+  reservedAt: Date;
+  gifterName: string | null;
+}
