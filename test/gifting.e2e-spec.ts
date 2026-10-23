@@ -1773,6 +1773,115 @@ describe('Gifting (e2e)', () => {
 
   // ── Dashboard ──────────────────────────────────────────────────────────────
 
+  describe('reserved from my wishlists', () => {
+    interface ReservedRow {
+      id: string;
+      itemId: string;
+      wishlistId: string;
+      isGroup: boolean;
+      item: { title: string; imageUrl: string | null };
+      wishlist: { title: string };
+      reservedAt: string;
+      gifterName: string | null;
+    }
+
+    const reservedFor = async (actor: Actor): Promise<ReservedRow[]> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/gifts/reserved-from-my-wishlists`)
+            .set(auth(actor.token))
+            .expect(200)
+        ).body as Envelope<ReservedRow[]>
+      ).data;
+
+    it('lists a reservation the gifter made visible, with item and list, and no name', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const { itemId, wishlistId } = await wishlistWithItem(owner);
+      const gift = (await reserve(gifter, itemId, { hiddenFromOwner: false }).expect(201))
+        .body as Envelope<GiftView>;
+
+      const rows = await reservedFor(owner);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        id: gift.data.id,
+        itemId,
+        wishlistId,
+        isGroup: false,
+        item: { title: 'Headphones', imageUrl: null },
+        wishlist: { title: 'Gift me' },
+        gifterName: null,
+      });
+      expect(new Date(rows[0].reservedAt).getTime()).not.toBeNaN();
+      // Owner-side: the gifter is never identified by id.
+      expect(JSON.stringify(rows)).not.toContain(gifter.userId);
+      // Nor is it anybody else's list.
+      expect(await reservedFor(gifter)).toHaveLength(0);
+    });
+
+    it('names the gifter only when they chose to show their name', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const { itemId } = await wishlistWithItem(owner);
+      const gift = (await reserve(gifter, itemId, { hiddenFromOwner: false }).expect(201))
+        .body as Envelope<GiftView>;
+      await request(app.getHttpServer())
+        .patch(`${V1}/gifts/${gift.data.id}/show-name`)
+        .set(auth(gifter.token))
+        .send({ showName: true })
+        .expect(200);
+
+      expect((await reservedFor(owner))[0].gifterName).toBe('Aarav');
+    });
+
+    it('never lists a hidden reservation, nor one that is bought or released', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const hidden = await wishlistWithItem(owner);
+      const bought = await wishlistWithItem(owner);
+      const released = await wishlistWithItem(owner);
+      const surprise = (await reserve(gifter, hidden.itemId, { hiddenFromOwner: true }).expect(201))
+        .body as Envelope<GiftView>;
+      // Even with a name to show, a surprise stays out of sight.
+      await request(app.getHttpServer())
+        .patch(`${V1}/gifts/${surprise.data.id}/show-name`)
+        .set(auth(gifter.token))
+        .send({ showName: true })
+        .expect(200);
+      const buy = (await reserve(gifter, bought.itemId, { hiddenFromOwner: false }).expect(201))
+        .body as Envelope<GiftView>;
+      await request(app.getHttpServer())
+        .post(`${V1}/gifts/${buy.data.id}/purchase`)
+        .set(auth(gifter.token))
+        .send({})
+        .expect(200);
+      await reserve(gifter, released.itemId, { hiddenFromOwner: false }).expect(201);
+      await request(app.getHttpServer())
+        .delete(`${V1}/items/${released.itemId}/reserve`)
+        .set(auth(gifter.token))
+        .expect(204);
+
+      expect(await reservedFor(owner)).toEqual([]);
+    });
+
+    it('lists the newest reservation first', async () => {
+      const owner = await newUser();
+      const gifter = await newUser();
+      const first = await wishlistWithItem(owner);
+      const second = await wishlistWithItem(owner);
+      const older = (await reserve(gifter, first.itemId, { hiddenFromOwner: false }).expect(201))
+        .body as Envelope<GiftView>;
+      const newer = (await reserve(gifter, second.itemId, { hiddenFromOwner: false }).expect(201))
+        .body as Envelope<GiftView>;
+      await giftModel
+        .updateOne({ _id: older.data.id }, { $set: { reservedAt: new Date(Date.now() - 60_000) } })
+        .exec();
+
+      expect((await reservedFor(owner)).map((r) => r.id)).toEqual([newer.data.id, older.data.id]);
+    });
+  });
+
   describe('dashboard sections', () => {
     it('counts given and on-hold for the gifter and received for the recipient', async () => {
       const owner = await newUser();

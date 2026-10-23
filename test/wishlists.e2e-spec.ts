@@ -2,8 +2,11 @@ import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { WishlistItemStatus, WishlistVisibility } from 'src/modules/wishlists/wishlist.types';
-import { getModelToken } from '@nestjs/mongoose';
-import { Types, type Model } from 'mongoose';
+import { getConnectionToken, getModelToken } from '@nestjs/mongoose';
+import { Types, type Connection, type Model } from 'mongoose';
+import { randomUUID } from 'node:crypto';
+import { migration045 } from 'src/infra/migrations/scripts/045-wishlist-owner-stats';
+import { WishlistsService } from 'src/modules/wishlists/wishlists.service';
 import {
   WishlistItem,
   type WishlistItemDocument,
@@ -24,6 +27,7 @@ interface WishlistView {
   occasionLabel: string | null;
   visibility: WishlistVisibility;
   stats: { itemCount: number; fulfilledCount: number };
+  ownerStats?: { itemCount: number; fulfilledCount: number };
   access: { canView: boolean; canGift: boolean; canManage: boolean; relationship: string };
   share?: { slug: string; url: string; hasPasscode: boolean };
 }
@@ -1285,6 +1289,122 @@ describe('Wishlists (e2e)', () => {
       const owner = await newUser();
       const wishlist = await createWishlist(owner);
       await attach(owner, wishlist.id, 'not-an-object-id').expect(400);
+    });
+  });
+
+  // -- Owner-safe counts ----------------------------------------------------
+
+  /**
+   * `stats.fulfilledCount` is the true count, which a hidden offline gift and
+   * a group host's hidden item both raise. Shown to the owner, either number
+   * would give the surprise away; `ownerStats` is the one they get.
+   */
+  describe('ownerStats', () => {
+    const giftOffline = (gifter: Actor, itemId: string, body: Record<string, unknown> = {}) =>
+      request(app.getHttpServer())
+        .post(`${V1}/items/${itemId}/gift-offline`)
+        .set(auth(gifter.token))
+        .set({ 'Idempotency-Key': randomUUID() })
+        .send(body)
+        .expect(201);
+
+    /**
+     * A public list of five:
+     *  - hidden: bought offline, kept a surprise (the default);
+     *  - shown: bought offline, made visible to the owner;
+     *  - delivered: bought offline and hidden, then fulfilled;
+     *  - open: nobody has bought it;
+     *  - hostItem: a group host's addition, hidden from the owner, fulfilled.
+     */
+    const seedList = async () => {
+      const owner = await newUser('Owner');
+      const gifter = await newUser('Gifter');
+      const wishlist = await createWishlist(owner, { visibility: WishlistVisibility.PUBLIC });
+      const hidden = await addItem(owner, wishlist.id, 'Hidden offline');
+      const shown = await addItem(owner, wishlist.id, 'Visible offline');
+      const delivered = await addItem(owner, wishlist.id, 'Delivered');
+      await addItem(owner, wishlist.id, 'Open');
+      const hostItem = await addItem(owner, wishlist.id, 'Host added');
+
+      await giftOffline(gifter, hidden.id);
+      await giftOffline(gifter, shown.id, { hiddenFromOwner: false });
+      const gift = (await giftOffline(gifter, delivered.id)).body as Envelope<{ id: string }>;
+      await request(app.getHttpServer())
+        .post(`${V1}/gifts/${gift.data.id}/fulfill`)
+        .set(auth(gifter.token))
+        .send({})
+        .expect(200);
+
+      // The group-gift "Add Another Gift" flow, reduced to what it leaves behind.
+      await itemModel.updateOne(
+        { _id: new Types.ObjectId(hostItem.id) },
+        { $set: { hiddenFromOwner: true, status: WishlistItemStatus.FULFILLED } },
+      );
+      await app.get(WishlistsService).recount(new Types.ObjectId(wishlist.id));
+
+      return { owner, gifter, wishlist };
+    };
+
+    const ownList = async (owner: Actor, wishlistId: string): Promise<WishlistView> => {
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/wishlists`)
+        .set(auth(owner.token))
+        .expect(200);
+      return (res.body as Envelope<WishlistView[]>).data.find((w) => w.id === wishlistId)!;
+    };
+
+    it('leaves hidden offline gifts and hidden items out of the owner counts', async () => {
+      const { owner, wishlist } = await seedList();
+      const mine = await ownList(owner, wishlist.id);
+
+      // The true picture: every item, every purchase.
+      expect(mine.stats).toEqual({ itemCount: 5, fulfilledCount: 4 });
+      // The owner's: no host item, and of the offline gifts only the visible
+      // one — the delivered one counts because it has arrived.
+      expect(mine.ownerStats).toEqual({ itemCount: 4, fulfilledCount: 2 });
+
+      const detail = (
+        await request(app.getHttpServer())
+          .get(`${V1}/wishlists/${wishlist.id}`)
+          .set(auth(owner.token))
+          .expect(200)
+      ).body as Envelope<WishlistView>;
+      expect(detail.data.ownerStats).toEqual({ itemCount: 4, fulfilledCount: 2 });
+    });
+
+    it('is never sent to anybody else', async () => {
+      const { gifter, wishlist } = await seedList();
+      const stranger = await newUser('Stranger');
+
+      for (const viewer of [gifter, stranger]) {
+        const res = await request(app.getHttpServer())
+          .get(`${V1}/wishlists/${wishlist.id}`)
+          .set(auth(viewer.token))
+          .expect(200);
+        const view = (res.body as Envelope<WishlistView>).data;
+        expect(view.ownerStats).toBeUndefined();
+        expect(view.stats).toEqual({ itemCount: 5, fulfilledCount: 4 });
+      }
+    });
+
+    it('is backfilled by migration 045, idempotently', async () => {
+      const { owner, wishlist } = await seedList();
+      const db = app.get<Connection>(getConnectionToken()).db!;
+      // A list as it stood before recount() wrote ownerStats.
+      await db
+        .collection('wishlists')
+        .updateOne({ _id: new Types.ObjectId(wishlist.id) }, { $unset: { ownerStats: '' } });
+      expect((await ownList(owner, wishlist.id)).ownerStats).toEqual({
+        itemCount: 0,
+        fulfilledCount: 0,
+      });
+
+      await migration045.up(db);
+      await migration045.up(db);
+
+      const mine = await ownList(owner, wishlist.id);
+      expect(mine.ownerStats).toEqual({ itemCount: 4, fulfilledCount: 2 });
+      expect(mine.stats).toEqual({ itemCount: 5, fulfilledCount: 4 });
     });
   });
 });

@@ -1309,6 +1309,54 @@ describe('Group gifting (e2e)', () => {
       expect(theirs[0].isGifter).toBe(false);
     });
 
+    it('shows a contributor every item of a multi-gift group, each once', async () => {
+      const owner = await newUser();
+      const initiator = await newUser();
+      const giver = await newUser();
+      const { itemId, wishlistId } = await wishlistWithItem(owner);
+      const extra = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists/${wishlistId}/items`)
+          .set(auth(owner.token))
+          .send({ title: 'Grinder', price: { amountMinor: 500000 } })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+      const gg = (await createGroupGift(initiator, itemId, { targetAmountMinor: 2000 }).expect(201))
+        .body as Envelope<GroupGiftView>;
+      await request(app.getHttpServer())
+        .post(`${V1}/group-gifts/${gg.data.id}/gifts`)
+        .set(auth(initiator.token))
+        .send({ itemId: extra.data.id })
+        .expect(201);
+      await paid(giver, gg.data.id, { amountMinor: 2000 });
+
+      // Both holders bought. The extra line's holder is set directly: the
+      // group's purchase drives only the primary holder today, and this case
+      // is about who the list reaches, not about that transition.
+      const group = await groupGiftModel.findById(gg.data.id).exec();
+      const lineHolder = group!.lines[0].giftId;
+      await giftModel
+        .updateMany(
+          { _id: { $in: [group!.giftId, lineHolder] } },
+          { $set: { status: GiftStatus.PURCHASED, purchasedAt: new Date() } },
+        )
+        .exec();
+
+      const hosts = await given(initiator);
+      const theirs = await given(giver);
+      expect(hosts.map((r) => r.id).sort()).toEqual(
+        [group!.giftId.toString(), lineHolder.toString()].sort(),
+      );
+      // Before: only the primary reached the contributor.
+      expect(theirs.map((r) => r.id).sort()).toEqual(hosts.map((r) => r.id).sort());
+      expect(theirs.every((r) => r.isGroup)).toBe(true);
+      expect(theirs.every((r) => !r.isGifter)).toBe(true);
+
+      // The host chipping in as well is still one row per item.
+      await paid(initiator, gg.data.id, { amountMinor: 500 });
+      expect(await given(initiator)).toHaveLength(2);
+    });
+
     it('keeps the delivery date the host gave and delivers the group on the day', async () => {
       const { initiator, giver, ggId } = await funded();
       const soon = new Date(Date.now() - 60 * 60 * 1000).toISOString();

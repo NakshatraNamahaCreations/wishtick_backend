@@ -497,6 +497,7 @@ export class GiftingService {
         await this.status.transition(gift, GiftStatus.FULFILLED, 'system:delivery-date', {
           note: 'Delivery date reached',
         });
+        await this.wishlists.recount(gift.wishlistId);
         // Same news as the gifter marking it themselves: it has arrived, and
         // the recipient's thank-you can begin.
         this.emitter.emit(GIFT_FULFILLED, GiftingService.lifecyclePayload(gift));
@@ -512,6 +513,9 @@ export class GiftingService {
     const gift = await this.loadOwnGift(giftId, userId);
     if (dto.deliveryNotes) gift.deliveryNotes = dto.deliveryNotes;
     await this.status.transition(gift, GiftStatus.FULFILLED, userId, { note: dto.note });
+    // The item is now fulfilled: the list's counters (and the owner's
+    // Fulfilled view, which reads them) move with it.
+    await this.wishlists.recount(gift.wishlistId);
     // Fulfilled reaches the recipient and kicks off the thank-you note.
     this.emitter.emit(GIFT_FULFILLED, GiftingService.lifecyclePayload(gift));
     return toGifterView(gift);
