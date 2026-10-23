@@ -23,6 +23,9 @@ async function bootstrap(): Promise<void> {
   });
 
   app.useLogger(app.get(Logger));
+  // A blog post (its editor document and its HTML) can pass Express's 100 KB
+  // default; a megabyte holds the longest post comfortably.
+  app.useBodyParser('json', { limit: '1mb' });
   const config = app.get(ConfigService<AppConfig, true>);
   const appCfg = config.get('app', { infer: true });
 

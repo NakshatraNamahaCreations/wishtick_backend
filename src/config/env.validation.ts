@@ -14,6 +14,7 @@ export const envValidationSchema = Joi.object({
   CORS_ORIGINS: Joi.string().default('*'),
   APP_URL: Joi.string().uri().default('http://localhost:3000'),
   WEB_APP_URL: Joi.string().uri().default('http://localhost:5173'),
+  WEB_REVALIDATE_SECRET: Joi.string().allow('').default(''),
   LOG_LEVEL: Joi.string()
     .valid('fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent')
     .default('info'),

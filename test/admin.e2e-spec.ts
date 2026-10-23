@@ -21,6 +21,7 @@ import {
   NotificationType,
 } from 'src/modules/notifications/notification.types';
 import { SchedulerRegistry } from 'src/infra/queue/scheduler-registry';
+import { BlogService } from 'src/modules/blog/blog.service';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
 const PASSWORD = 'correct-horse-battery-staple';
@@ -2433,6 +2434,12 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       expect(today.hits).toBeGreaterThanOrEqual(1);
       expect(today.misses).toBeGreaterThanOrEqual(1);
       expect(stats.data.requests.thisMonth).toBeGreaterThanOrEqual(1);
+      // Refresh: the same answer, with SerpApi asked again rather than remembered.
+      await request(server())
+        .get(`${V1}/admin/ops/product-search`)
+        .query({ fresh: '1' })
+        .set(auth(token))
+        .expect(200);
       expect(stats.data.breaker).toBe('closed');
 
       const budget = (
@@ -2860,6 +2867,234 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         .expect(200);
       expect(csv.headers['content-type']).toContain('text/csv');
       expect(csv.text).toContain(product.id);
+    });
+  });
+
+  describe('blog desk', () => {
+    const roleToken = async (role: string): Promise<string> => {
+      const email = `${role}-b${++seq}-${Date.now()}@wishtick.test`;
+      const password = 'a-long-enough-password';
+      await request(server())
+        .post(`${V1}/admin/admins`)
+        .set(auth(await adminToken()))
+        .send({ email, password, name: role, roles: [role] })
+        .expect(201);
+      return signIn(email, password);
+    };
+    type Post = {
+      id: string;
+      slug: string;
+      status: string;
+      excerpt: string;
+      contentHtml: string;
+      previousSlugs: string[];
+      coverUrl: string | null;
+    };
+    const webp = Buffer.concat([
+      Buffer.from('RIFF'),
+      Buffer.alloc(4),
+      Buffer.from('WEBP'),
+      Buffer.alloc(32),
+    ]);
+
+    // The website's /api/revalidate, as the blog calls it.
+    let revalidations: { url: string; secret: string | null; tags: string[] }[] = [];
+    beforeEach(() => {
+      revalidations = [];
+      jest.spyOn(global, 'fetch').mockImplementation((input, init) => {
+        const headers = new Headers(init?.headers);
+        revalidations.push({
+          url: input instanceof Request ? input.url : input.toString(),
+          secret: headers.get('x-revalidate-secret'),
+          tags: (
+            JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { tags: string[] }
+          ).tags,
+        });
+        return Promise.resolve(new Response('{}', { status: 200 }));
+      });
+    });
+    afterEach(() => jest.restoreAllMocks());
+
+    const create = async (token: string, body: Record<string, unknown>) =>
+      (
+        (
+          await request(server())
+            .post(`${V1}/admin/blog/posts`)
+            .set(auth(token))
+            .send(body)
+            .expect(201)
+        ).body as Envelope<Post>
+      ).data;
+    const publicPost = (slug: string) => request(server()).get(`${V1}/public/blog/posts/${slug}`);
+    const publicSlugs = async (): Promise<string[]> =>
+      (
+        (await request(server()).get(`${V1}/public/blog/posts`).expect(200)).body as Envelope<{
+          items: { slug: string }[];
+        }>
+      ).data.items.map((p) => p.slug);
+
+    it('writes a draft, publishes it, serves it, and keeps scripts out of the body', async () => {
+      const token = await adminToken();
+      const title = `Gift ideas ${seq} for Diwali`;
+      const post = await create(token, {
+        title,
+        contentHtml:
+          '<h1>Big lights</h1><p>Hello <strong>world</strong><script>alert(1)</script></p>' +
+          '<img src="https://evil.example/x.png" onerror="alert(1)">' +
+          '<p><a href="https://example.com" onclick="steal()">a shop</a></p>',
+      });
+      expect(post.status).toBe('draft');
+      expect(post.slug).toBe(`gift-ideas-${seq}-for-diwali`);
+      expect(post.contentHtml).not.toMatch(/script|onerror|onclick|evil\.example|<h1/);
+      expect(post.contentHtml).toContain('<h2>Big lights</h2>');
+      expect(post.contentHtml).toContain('rel="noopener noreferrer nofollow"');
+
+      // A draft is nobody's business but the panel's.
+      expect(await publicSlugs()).not.toContain(post.slug);
+      await publicPost(post.slug).expect(404);
+      expect(revalidations).toHaveLength(0);
+
+      const live = (
+        (
+          await request(server())
+            .post(`${V1}/admin/blog/posts/${post.id}/publish`)
+            .set(auth(token))
+            .send({})
+            .expect(200)
+        ).body as Envelope<Post>
+      ).data;
+      expect(live.status).toBe('published');
+      // Published without a summary: introduced by its first words.
+      expect(live.excerpt).toContain('Big lights');
+      expect(await publicSlugs()).toContain(post.slug);
+      const served = (await publicPost(post.slug).expect(200)).body as Envelope<{
+        post: { title: string; contentHtml: string };
+      }>;
+      expect(served.data.post.title).toBe(title);
+      expect(served.data.post.contentHtml).toContain('<strong>world</strong>');
+      // …and the website was told, with the shared secret.
+      expect(revalidations.at(-1)).toEqual({
+        url: 'http://web.test/api/revalidate',
+        secret: 'test-revalidate-secret',
+        tags: ['blog', `blog-post:${post.slug}`],
+      });
+
+      // A new address keeps the old one working.
+      const renamed = `diwali-gifts-${seq}`;
+      await request(server())
+        .patch(`${V1}/admin/blog/posts/${post.id}`)
+        .set(auth(token))
+        .send({ slug: renamed })
+        .expect(200);
+      const moved = (await publicPost(post.slug).expect(200)).body as Envelope<{
+        redirectTo: string;
+      }>;
+      expect(moved.data.redirectTo).toBe(renamed);
+      expect(revalidations.at(-1)?.tags).toEqual(
+        expect.arrayContaining([`blog-post:${renamed}`, `blog-post:${post.slug}`]),
+      );
+
+      await request(server())
+        .post(`${V1}/admin/blog/posts/${post.id}/unpublish`)
+        .set(auth(token))
+        .expect(200);
+      await publicPost(renamed).expect(404);
+
+      const audit = (
+        await request(server())
+          .get(`${V1}/admin/audit`)
+          .query({ targetId: post.id })
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{ items: { action: string }[] }>;
+      expect(audit.data.items.map((a) => a.action)).toEqual(
+        expect.arrayContaining(['blog.create', 'blog.publish', 'blog.edit', 'blog.unpublish']),
+      );
+    });
+
+    it('schedules a post, and the sweep publishes it when its time comes', async () => {
+      const token = await adminToken();
+      const post = await create(token, {
+        title: `Coming soon ${seq}`,
+        contentHtml: '<p>Soon.</p>',
+      });
+      const scheduled = (
+        (
+          await request(server())
+            .post(`${V1}/admin/blog/posts/${post.id}/publish`)
+            .set(auth(token))
+            .send({ publishAt: new Date(Date.now() + 3_600_000).toISOString() })
+            .expect(200)
+        ).body as Envelope<Post>
+      ).data;
+      expect(scheduled.status).toBe('scheduled');
+      expect(await publicSlugs()).not.toContain(post.slug);
+
+      await app
+        .get<Connection>(getConnectionToken())
+        .db!.collection('blog_posts')
+        .updateOne(
+          { _id: new Types.ObjectId(post.id) },
+          { $set: { publishAt: new Date(Date.now() - 1_000) } },
+        );
+      expect(await app.get(BlogService).publishDue()).toBeGreaterThanOrEqual(1);
+      expect(await publicSlugs()).toContain(post.slug);
+    });
+
+    it('takes WebP pictures only, and a cover must be one of ours', async () => {
+      const token = await adminToken();
+      await request(server())
+        .post(`${V1}/admin/blog/images`)
+        .set(auth(token))
+        .set('Content-Type', 'image/png')
+        .send(Buffer.from('\x89PNG\r\n\x1a\nnot really'))
+        .expect(415);
+      const { url } = (
+        (
+          await request(server())
+            .post(`${V1}/admin/blog/images`)
+            .set(auth(token))
+            .set('Content-Type', 'image/webp')
+            .send(webp)
+            .expect(200)
+        ).body as Envelope<{ url: string }>
+      ).data;
+      expect(url).toMatch(/\/blog\/[0-9a-f-]+\.webp$/);
+
+      await request(server())
+        .post(`${V1}/admin/blog/posts`)
+        .set(auth(token))
+        .send({ title: 'Borrowed cover', coverUrl: 'https://evil.example/x.webp' })
+        .expect(400);
+      const post = await create(token, {
+        title: `Our cover ${seq}`,
+        coverUrl: url,
+        contentHtml: `<p>Look:</p><img src="${url}" alt="a gift">`,
+      });
+      expect(post.coverUrl).toBe(url);
+      expect(post.contentHtml).toContain(`<img src="${url}" alt="a gift" />`);
+    });
+
+    it('keeps addresses unique: a chosen one must be free, a made one gets a number', async () => {
+      const token = await adminToken();
+      const first = await create(token, { title: `Same name ${seq}` });
+      const second = await create(token, { title: `Same name ${seq}` });
+      expect(second.slug).toBe(`${first.slug}-2`);
+      await request(server())
+        .post(`${V1}/admin/blog/posts`)
+        .set(auth(token))
+        .send({ title: 'Clash', slug: first.slug })
+        .expect(409);
+    });
+
+    it('a content editor manages the blog and nothing else; support cannot touch it', async () => {
+      const editor = await roleToken('content_editor');
+      await request(server()).get(`${V1}/admin/blog/posts`).set(auth(editor)).expect(200);
+      await create(editor, { title: `Written by an editor ${seq}` });
+      await request(server()).get(`${V1}/admin/users`).set(auth(editor)).expect(403);
+
+      const support = await roleToken('support');
+      await request(server()).get(`${V1}/admin/blog/posts`).set(auth(support)).expect(403);
     });
   });
 

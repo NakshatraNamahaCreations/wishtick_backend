@@ -10,6 +10,10 @@ process.env.LOG_LEVEL = 'silent';
 process.env.SWAGGER_ENABLED = 'false';
 process.env.PORT = '0';
 
+// The blog tells the website to refresh; tests intercept the call with a fetch spy.
+process.env.WEB_APP_URL = 'http://web.test';
+process.env.WEB_REVALIDATE_SECRET = 'test-revalidate-secret';
+
 // Overwritten per-suite by the in-memory server; ConfigModule only needs these
 // to satisfy Joi at import time.
 process.env.MONGO_URI ??= 'mongodb://127.0.0.1:27017';

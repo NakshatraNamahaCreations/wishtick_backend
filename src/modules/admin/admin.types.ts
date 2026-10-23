@@ -5,6 +5,8 @@ export enum AdminRole {
   ANALYST = 'analyst',
   /** Gifts, orders, group gifts and affiliate money — and nothing else. */
   FINANCE = 'finance',
+  /** Writes and publishes the website's blog — and nothing else. */
+  CONTENT_EDITOR = 'content_editor',
 }
 
 /**
@@ -43,6 +45,10 @@ export enum AdminPermission {
   DEBUG_VIEW = 'debug:view',
   /** Server-side CSV exports. */
   EXPORT_DATA = 'export:data',
+  /** The website's blog posts, drafts included — read. */
+  BLOG_VIEW = 'blog:view',
+  /** …and write, publish, schedule and take down. */
+  BLOG_MANAGE = 'blog:manage',
 }
 
 /**
@@ -76,6 +82,7 @@ export const ROLE_PERMISSIONS: Record<AdminRole, AdminPermission[]> = {
     AdminPermission.USERS_VIEW,
     AdminPermission.EXPORT_DATA,
   ],
+  [AdminRole.CONTENT_EDITOR]: [AdminPermission.BLOG_VIEW, AdminPermission.BLOG_MANAGE],
   [AdminRole.ANALYST]: [
     AdminPermission.ANALYTICS_VIEW,
     AdminPermission.USERS_VIEW,

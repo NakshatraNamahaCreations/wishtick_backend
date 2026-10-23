@@ -29,6 +29,9 @@ export type JobState = (typeof JOB_STATES)[number];
  * Caches an admin may clear, by name. Only caches: never the counters,
  * budgets, rate limits or session denylist that share the same Redis.
  */
+/** Where SerpApi's account numbers are kept between looks (five minutes). */
+const SERPAPI_ACCOUNT_KEY = 'admin:ops:serpapi-account:v2';
+
 export const CACHE_PRESETS: Record<string, { pattern: string; label: string; warning?: string }> = {
   analytics: { pattern: 'analytics:*', label: 'Analytics charts' },
   dashboard: { pattern: 'admin:dashboard:*', label: 'Admin dashboard numbers' },
@@ -253,9 +256,13 @@ export class AdminOpsService {
    * How product search is spending: requests sent this month and last, what
    * SerpApi says is left on the plan, the breaker, and how often the cache
    * answers instead of the vendor.
+   *
+   * SerpApi's numbers are kept for five minutes; [fresh] asks it again now
+   * (its account lookup is free — it uses none of the plan's searches).
    */
-  async productSearch() {
+  async productSearch(fresh = false) {
     const cfg = this.config.get('products', { infer: true });
+    if (fresh) await this.cache.del(SERPAPI_ACCOUNT_KEY);
     const now = new Date();
     const month = now.toISOString().slice(0, 7);
     const last = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1))
@@ -294,10 +301,12 @@ export class AdminOpsService {
     searchesPerMonth: number | null;
     thisMonthUsage: number | null;
     plan: string | null;
+    /** When SerpApi was asked — the panel says how old the numbers are. */
+    checkedAt: string;
   } | null> {
     const cfg = this.config.get('products', { infer: true });
     if (cfg.provider !== 'serpapi' || !cfg.serpApiKey) return null;
-    return this.cache.wrap('admin:ops:serpapi-account:v1', 300, async () => {
+    return this.cache.wrap(SERPAPI_ACCOUNT_KEY, 300, async () => {
       try {
         const res = await fetch(
           `https://serpapi.com/account.json?api_key=${encodeURIComponent(cfg.serpApiKey)}`,
@@ -311,6 +320,7 @@ export class AdminOpsService {
           searchesPerMonth: n(a.searches_per_month),
           thisMonthUsage: n(a.this_month_usage),
           plan: typeof a.plan_name === 'string' ? a.plan_name : null,
+          checkedAt: new Date().toISOString(),
         };
       } catch (e) {
         this.logger.warn(`SerpApi account lookup failed: ${errText(e)}`);

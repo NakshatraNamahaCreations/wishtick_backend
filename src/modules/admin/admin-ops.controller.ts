@@ -113,9 +113,11 @@ export class AdminOpsController {
 
   @Get('product-search')
   @RequirePermission(AdminPermission.OPS_VIEW)
-  @ApiOperation({ summary: 'Vendor requests, plan left, breaker, cache hit rate' })
-  productSearch(): Promise<unknown> {
-    return this.ops.productSearch();
+  @ApiOperation({
+    summary: 'Vendor requests, plan left, breaker, cache hit rate (`fresh=1` re-asks SerpApi now)',
+  })
+  productSearch(@Query('fresh') fresh?: string): Promise<unknown> {
+    return this.ops.productSearch(fresh === '1' || fresh === 'true');
   }
 
   @Post('product-search/reset-breaker')

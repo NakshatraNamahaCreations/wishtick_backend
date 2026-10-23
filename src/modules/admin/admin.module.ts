@@ -38,6 +38,8 @@ import { Wish, WishSchema } from 'src/modules/reels/schemas/wish.schema';
 import { User, UserSchema } from 'src/modules/users/schemas/user.schema';
 import { Wishlist, WishlistSchema } from 'src/modules/wishlists/schemas/wishlist.schema';
 import { EventsModule } from 'src/modules/events/events.module';
+import { BlogModule } from 'src/modules/blog/blog.module';
+import { AdminBlogController } from './admin-blog.controller';
 import { MediaModule } from 'src/modules/media/media.module';
 import { MemoriesModule } from 'src/modules/memories/memories.module';
 import { WishlistsModule } from 'src/modules/wishlists/wishlists.module';
@@ -144,6 +146,8 @@ import { AdminJwtStrategy } from './strategies/admin-jwt.strategy';
     SuggestionsModule,
     // The catalogue desk edits the taxonomy and clears its cache.
     TaxonomyModule,
+    // The blog desk writes the website's blog.
+    BlogModule,
   ],
   controllers: [
     AdminAuthController,
@@ -153,6 +157,7 @@ import { AdminJwtStrategy } from './strategies/admin-jwt.strategy';
     AdminNotificationsController,
     AdminOpsController,
     AdminCatalogController,
+    AdminBlogController,
     AdminInsightsController,
     AdminGovernanceController,
     ReportsController,
@@ -203,5 +208,9 @@ export class AdminModule implements NestModule {
           version: '1',
         },
       );
+    // Blog pictures (covers and pictures inside posts) are larger: up to 2 MB.
+    consumer
+      .apply(raw({ type: ['image/*', 'application/octet-stream'], limit: '2100kb' }))
+      .forRoutes({ path: 'admin/blog/images', method: RequestMethod.POST, version: '1' });
   }
 }

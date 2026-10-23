@@ -4,6 +4,7 @@ import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { getQueueToken } from '@nestjs/bullmq';
 import { MongooseModule } from '@nestjs/mongoose';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { ThrottlerGuard, ThrottlerModule, ThrottlerStorage } from '@nestjs/throttler';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
@@ -27,6 +28,7 @@ import { QUEUE } from 'src/infra/queue/queue.constants';
 import { StorageModule } from 'src/infra/storage/storage.module';
 import { VideoModule } from 'src/infra/video/video.module';
 import { AdminModule } from 'src/modules/admin/admin.module';
+import { BlogModule } from 'src/modules/blog/blog.module';
 import { AnalyticsModule } from 'src/modules/analytics/analytics.module';
 import { AnalyticsRollupProcessor } from 'src/modules/analytics/analytics.processor';
 import { AuthModule } from 'src/modules/auth/auth.module';
@@ -173,6 +175,7 @@ export async function createTestApp(
       GiftingModule,
       OrdersModule,
       GroupGiftModule,
+      BlogModule,
       ChatModule,
       NotificationsModule,
       ReelsModule,
@@ -231,7 +234,9 @@ export async function createTestApp(
   // rawBody: true matches main.ts — the affiliate webhook needs req.rawBody to
   // verify its HMAC over the exact received bytes (the global JSON parser runs
   // before module middleware, so a raw-body middleware cannot capture them).
-  const app = moduleRef.createNestApplication({ rawBody: true });
+  const app = moduleRef.createNestApplication<NestExpressApplication>({ rawBody: true });
+  // Match main.ts: a long blog post passes the 100 KB default.
+  app.useBodyParser('json', { limit: '1mb' });
 
   // Match main.ts: trust the first proxy hop so req.ip reflects X-Forwarded-For.
   // The per-IP throttler keys on req.ip, so a test that needs to look like N

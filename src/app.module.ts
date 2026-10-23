@@ -22,6 +22,7 @@ import { buildRedisOptions, RedisModule } from './infra/redis/redis.module';
 import { StorageModule } from './infra/storage/storage.module';
 import { VideoModule } from './infra/video/video.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { BlogModule } from './modules/blog/blog.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ChatModule } from './modules/chat/chat.module';
@@ -132,6 +133,7 @@ import { WishmatesModule } from './modules/wishmates/wishmates.module';
     GiftingModule,
     OrdersModule,
     GroupGiftModule,
+    BlogModule,
     ChatModule,
     NotificationsModule,
     ReelsModule,

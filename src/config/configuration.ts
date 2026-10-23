@@ -10,6 +10,12 @@ export interface AppConfig {
     corsOrigins: string[];
     appUrl: string;
     webAppUrl: string;
+    /**
+     * Shared with the website's `/api/revalidate`, so a blog change refreshes
+     * its cached pages at once. Empty: no call is made (the pages still refresh
+     * within five minutes on their own).
+     */
+    webRevalidateSecret: string;
     logLevel: string;
     swaggerEnabled: boolean;
     isProduction: boolean;
@@ -288,6 +294,7 @@ export const configuration = (): AppConfig => {
         .filter(Boolean),
       appUrl: process.env.APP_URL ?? 'http://localhost:3000',
       webAppUrl: process.env.WEB_APP_URL ?? 'http://localhost:5173',
+      webRevalidateSecret: process.env.WEB_REVALIDATE_SECRET ?? '',
       logLevel: process.env.LOG_LEVEL ?? 'info',
       swaggerEnabled: toBool(process.env.SWAGGER_ENABLED, true),
       isProduction: env === 'production',
