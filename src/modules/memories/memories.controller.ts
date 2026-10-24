@@ -99,10 +99,11 @@ export class MemoriesController {
   /** Declared before `:id`, for the same reason as `reply-audience` below. */
   @Get('incoming')
   @ApiOperation({
-    summary: 'Sealed memories made for the caller: occasion and unlock time only',
+    summary: 'Sealed memories made for the caller: occasion, unlock time and who from',
     description:
-      'For the Home countdown. Never carries who made it, who contributed, a title or ' +
-      'content — only that something is coming, and when.',
+      'For the Home countdown. Carries the occasion, when it opens, and who it is from ' +
+      '(name and photo of the host and each contributor) — never a title or anything ' +
+      'they wrote.',
   })
   listIncoming(@CurrentUser('id') userId: string): Promise<IncomingMemoryView[]> {
     return this.memories.listIncoming(userId);

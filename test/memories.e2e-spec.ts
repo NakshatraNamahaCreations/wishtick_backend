@@ -1241,18 +1241,42 @@ describe('Memories (e2e)', () => {
         ).body as Envelope<Record<string, unknown>[]>
       ).data;
 
-    it('tells the recipient one is coming and when — and nothing else', async () => {
+    it('tells the recipient one is coming, when, and who from — and nothing else', async () => {
       const { host, recipient } = await hostAndRecipient();
       const memory = await createMemory(host, {}, recipient);
 
       const rows = await incoming(recipient);
 
       expect(rows).toHaveLength(1);
-      expect(Object.keys(rows[0]).sort()).toEqual(['id', 'occasion', 'unlockAt']);
+      expect(Object.keys(rows[0]).sort()).toEqual(['id', 'occasion', 'senders', 'unlockAt']);
       expect(rows[0]).toMatchObject({ id: memory.id, occasion: 'birthday' });
-      // Who made it is the surprise, and it is nowhere in the payload.
-      expect(JSON.stringify(rows)).not.toContain(host.userId);
+      // Who it is from, by face and name — the host who made it.
+      const senders = rows[0].senders as { userId: string | null; name: string }[];
+      expect(senders.map((p) => p.userId)).toEqual([host.userId]);
+      // But never its title or what anybody wrote.
       expect(JSON.stringify(rows)).not.toContain("Ananya's Birthday");
+    });
+
+    it('names everyone who has added a wish, once each, the host first', async () => {
+      const { host, recipient } = await hostAndRecipient();
+      const friend = await newUser();
+      const memory = await createMemory(host, {}, recipient);
+      for (const [actor, text] of [
+        [host, 'From me, with love'],
+        [friend, 'Many happy returns'],
+        [friend, 'And one more'],
+      ] as const) {
+        await request(app.getHttpServer())
+          .post(`${V1}/memories/${memory.id}/wishes`)
+          .set(auth(actor.token))
+          .send({ kind: 'text', text })
+          .expect(201);
+      }
+
+      const [row] = await incoming(recipient);
+      const senders = row.senders as { userId: string | null }[];
+      expect(senders.map((p) => p.userId)).toEqual([host.userId, friend.userId]);
+      expect(JSON.stringify(row)).not.toContain('Many happy returns');
     });
 
     it('lists the soonest first', async () => {

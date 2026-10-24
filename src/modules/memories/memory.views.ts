@@ -13,17 +13,35 @@ import type { MemoryWishDocument } from './schemas/memory-wish.schema';
  * and none of that is in this shape. The capsule id is here only so a client
  * can tell two apart; it opens nothing while the capsule is sealed.
  */
+/** Somebody behind a sealed memory: their face, never what they wrote. */
+export interface MemorySenderView {
+  /** Null for someone who added a wish through the link without an account. */
+  userId: string | null;
+  name: string;
+  photoUrl: string | null;
+  avatarKey: string | null;
+}
+
 export interface IncomingMemoryView {
   id: string;
   /** An `occasion` taxonomy key, or the words the host typed. */
   occasion: string;
   unlockAt: Date;
+  /**
+   * Who it is from: whoever made it first, then everyone who has added a
+   * wish. Faces and names only — what they said stays sealed until it opens.
+   */
+  senders: MemorySenderView[];
 }
 
-export const toIncomingMemoryView = (capsule: MemoryCapsuleDocument): IncomingMemoryView => ({
+export const toIncomingMemoryView = (
+  capsule: MemoryCapsuleDocument,
+  senders: MemorySenderView[] = [],
+): IncomingMemoryView => ({
   id: capsule._id.toString(),
   occasion: capsule.occasion,
   unlockAt: capsule.unlockAt,
+  senders,
 });
 
 /** A wish, projected — ONLY ever built for an unlocked capsule. */

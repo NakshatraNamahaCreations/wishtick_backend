@@ -34,6 +34,7 @@ import {
   toMemoryCapsuleView,
   toPublicMemoryView,
   type IncomingMemoryView,
+  type MemorySenderView,
   type MemoryCapsuleView,
   type PublicMemoryView,
 } from './memory.views';
@@ -245,7 +246,63 @@ export class MemoriesService {
       .sort({ unlockAt: 1 })
       .limit(MAX_OPEN_CAPSULES)
       .exec();
-    return capsules.map(toIncomingMemoryView);
+    if (capsules.length === 0) return [];
+
+    // Who each is from: the host, then everyone who has added a wish, oldest
+    // first — faces and names only, never what they wrote.
+    const wishes = await this.wishModel
+      .find({ capsuleId: { $in: capsules.map((c) => c._id) } })
+      .select('capsuleId contributorId contributorName contributorAvatarUrl createdAt')
+      .sort({ createdAt: 1 })
+      .lean()
+      .exec();
+    const accountIds = [
+      ...new Set([
+        ...capsules.map((c) => c.hostId.toString()),
+        ...wishes.flatMap((w) => (w.contributorId ? [w.contributorId.toString()] : [])),
+      ]),
+    ].filter((id) => id !== userId);
+    const people = new Map(
+      (await this.identitiesWithFallback(accountIds)).map((p) => [p.userId, p]),
+    );
+    const person = (id: string): MemorySenderView | null => {
+      const p = people.get(id);
+      return p
+        ? {
+            userId: id,
+            name: p.displayName ?? 'A WishMate',
+            photoUrl: p.photoUrl,
+            avatarKey: p.avatarKey,
+          }
+        : null;
+    };
+
+    return capsules.map((capsule) => {
+      const seen = new Set<string>();
+      const senders: MemorySenderView[] = [];
+      const add = (key: string, sender: MemorySenderView | null) => {
+        if (!sender || seen.has(key)) return;
+        seen.add(key);
+        senders.push(sender);
+      };
+      add(capsule.hostId.toString(), person(capsule.hostId.toString()));
+      for (const wish of wishes) {
+        if (!wish.capsuleId.equals(capsule._id)) continue;
+        const id = wish.contributorId?.toString();
+        if (id === userId) continue;
+        if (id) {
+          add(id, person(id));
+        } else {
+          add(`name:${wish.contributorName}`, {
+            userId: null,
+            name: wish.contributorName,
+            photoUrl: wish.contributorAvatarUrl ?? null,
+            avatarKey: null,
+          });
+        }
+      }
+      return toIncomingMemoryView(capsule, senders);
+    });
   }
 
   /**
