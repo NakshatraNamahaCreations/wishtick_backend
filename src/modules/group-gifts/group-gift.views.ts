@@ -146,6 +146,13 @@ export interface GroupGiftView {
    * group elsewhere. Null when the item cannot be resolved.
    */
   recipientName: string | null;
+  /**
+   * Whether the caller is who the gift is for — the only way a client can
+   * tell, since [recipientName] is a display name and two people can share
+   * one. False for the owner of a list kept for someone off Wishtick: they
+   * are the recipient on record only as the one holding it for that person.
+   */
+  isForMe: boolean;
   /** The recipient's thank-you note (`2219:603`), once they have written it. */
   thankYouNote: string | null;
   thankYouAt: Date | null;
@@ -376,10 +383,19 @@ export function toGroupGiftView(input: {
   recentContributions: ContributionDocument[];
   myContributionMinor: number;
   canManage: boolean;
+  isForMe: boolean;
   shareBaseUrl: string;
 }): GroupGiftView {
-  const { gift, names, items, recentContributions, myContributionMinor, canManage, shareBaseUrl } =
-    input;
+  const {
+    gift,
+    names,
+    items,
+    recentContributions,
+    myContributionMinor,
+    canManage,
+    isForMe,
+    shareBaseUrl,
+  } = input;
   const view: GroupGiftView = {
     id: gift._id.toString(),
     itemId: gift.itemId.toString(),
@@ -433,6 +449,7 @@ export function toGroupGiftView(input: {
       (items.has(gift.itemId.toString())
         ? displayNameOf(names, gift.recipientId.toString())
         : null),
+    isForMe,
     thankYouNote: gift.thankYouNote,
     thankYouAt: gift.thankYouAt,
     cancelReason: gift.cancelReason ?? null,

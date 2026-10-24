@@ -1387,24 +1387,138 @@ describe('Wishlists (e2e)', () => {
       }
     });
 
-    it('is backfilled by migration 045, idempotently', async () => {
-      const { owner, wishlist } = await seedList();
+    /** The list's stored `ownerStats`, read past every view and default. */
+    const storedOwnerStats = async (wishlistId: string): Promise<unknown> => {
       const db = app.get<Connection>(getConnectionToken()).db!;
-      // A list as it stood before recount() wrote ownerStats.
+      const doc = await db
+        .collection('wishlists')
+        .findOne({ _id: new Types.ObjectId(wishlistId) }, { projection: { ownerStats: 1 } });
+      return doc?.ownerStats;
+    };
+
+    /** A list as it stood before recount() wrote ownerStats. */
+    const forgetOwnerStats = async (wishlistId: string): Promise<void> => {
+      const db = app.get<Connection>(getConnectionToken()).db!;
       await db
         .collection('wishlists')
-        .updateOne({ _id: new Types.ObjectId(wishlist.id) }, { $unset: { ownerStats: '' } });
-      expect((await ownList(owner, wishlist.id)).ownerStats).toEqual({
-        itemCount: 0,
-        fulfilledCount: 0,
-      });
+        .updateOne({ _id: new Types.ObjectId(wishlistId) }, { $unset: { ownerStats: '' } });
+    };
+
+    it('is backfilled by migration 045, idempotently', async () => {
+      const { wishlist } = await seedList();
+      const db = app.get<Connection>(getConnectionToken()).db!;
+      await forgetOwnerStats(wishlist.id);
+      expect(await storedOwnerStats(wishlist.id)).toBeUndefined();
 
       await migration045.up(db);
       await migration045.up(db);
 
+      expect(await storedOwnerStats(wishlist.id)).toEqual({ itemCount: 4, fulfilledCount: 2 });
+    });
+
+    /**
+     * The "every list reads 0 items" bug: a list never counted for its owner
+     * was sent as zeros. The owner's reads now count it there and then.
+     */
+    it("counts a list that was never counted for its owner, on the owner's read", async () => {
+      const { owner, wishlist } = await seedList();
+
+      await forgetOwnerStats(wishlist.id);
       const mine = await ownList(owner, wishlist.id);
       expect(mine.ownerStats).toEqual({ itemCount: 4, fulfilledCount: 2 });
       expect(mine.stats).toEqual({ itemCount: 5, fulfilledCount: 4 });
+      // Stored, so the next read does not count it again.
+      expect(await storedOwnerStats(wishlist.id)).toEqual({ itemCount: 4, fulfilledCount: 2 });
+
+      await forgetOwnerStats(wishlist.id);
+      const detail = (
+        await request(app.getHttpServer())
+          .get(`${V1}/wishlists/${wishlist.id}`)
+          .set(auth(owner.token))
+          .expect(200)
+      ).body as Envelope<WishlistView>;
+      expect(detail.data.ownerStats).toEqual({ itemCount: 4, fulfilledCount: 2 });
+    });
+
+    it('stores a new list as counted, at zero', async () => {
+      const owner = await newUser();
+      const wishlist = await createWishlist(owner);
+      expect(wishlist.ownerStats).toEqual({ itemCount: 0, fulfilledCount: 0 });
+      expect(await storedOwnerStats(wishlist.id)).toEqual({ itemCount: 0, fulfilledCount: 0 });
+    });
+
+    // -- GET /wishlists/fulfilled-items -------------------------------------
+
+    interface FulfilledItemView {
+      itemId: string;
+      wishlistId: string;
+      title: string;
+      imageUrl: string | null;
+      fulfilledAt: string;
+    }
+
+    const fulfilledItems = async (actor: Actor): Promise<FulfilledItemView[]> => {
+      const res = await request(app.getHttpServer())
+        .get(`${V1}/wishlists/fulfilled-items`)
+        .set(auth(actor.token))
+        .expect(200);
+      return (res.body as Envelope<FulfilledItemView[]>).data;
+    };
+
+    it('lists exactly the wishes ownerStats counts, each with when it was fulfilled', async () => {
+      const { owner, wishlist } = await seedList();
+      const rows = await fulfilledItems(owner);
+
+      // Delivered (fulfilled) and the offline gift shown to the owner; never
+      // the hidden offline gift, never the host's hidden item.
+      expect(rows.map((r) => r.title).sort()).toEqual(['Delivered', 'Visible offline']);
+      expect(rows).toHaveLength((await ownList(owner, wishlist.id)).ownerStats!.fulfilledCount);
+
+      const db = app.get<Connection>(getConnectionToken()).db!;
+      const delivered = rows.find((r) => r.title === 'Delivered')!;
+      const gift = await db
+        .collection('gifts')
+        .findOne({ itemId: new Types.ObjectId(delivered.itemId) });
+      expect(gift?.fulfilledAt).toBeInstanceOf(Date);
+      expect(delivered).toEqual({
+        itemId: expect.any(String),
+        wishlistId: wishlist.id,
+        title: 'Delivered',
+        imageUrl: null,
+        fulfilledAt: (gift!.fulfilledAt as Date).toISOString(),
+      });
+
+      // Newest first.
+      const times = rows.map((r) => Date.parse(r.fulfilledAt));
+      expect([...times].sort((a, b) => b - a)).toEqual(times);
+    });
+
+    it("never includes another user's lists, nor an archived list", async () => {
+      const { owner, gifter } = await seedList();
+
+      // The gifter's own list, with a wish marked fulfilled by hand.
+      const theirs = await createWishlist(gifter, { title: 'Gifter list' });
+      const theirItem = await addItem(gifter, theirs.id, 'Gifter wish');
+      await itemModel.updateOne(
+        { _id: new Types.ObjectId(theirItem.id) },
+        { $set: { status: WishlistItemStatus.FULFILLED } },
+      );
+
+      expect((await fulfilledItems(owner)).map((r) => r.title)).not.toContain('Gifter wish');
+      const gifterRows = await fulfilledItems(gifter);
+      expect(gifterRows.map((r) => r.title)).toEqual(['Gifter wish']);
+      // No gift to ask, so the item's own last change dates it.
+      expect(Date.parse(gifterRows[0].fulfilledAt)).not.toBeNaN();
+
+      await request(app.getHttpServer())
+        .delete(`${V1}/wishlists/${theirs.id}`)
+        .set(auth(gifter.token))
+        .expect(200);
+      expect(await fulfilledItems(gifter)).toEqual([]);
+    });
+
+    it('needs a signed-in caller', async () => {
+      await request(app.getHttpServer()).get(`${V1}/wishlists/fulfilled-items`).expect(401);
     });
   });
 });

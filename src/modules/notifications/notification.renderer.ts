@@ -493,6 +493,23 @@ const CONTENT: Record<NotificationType, (p: Payload) => Content> = {
     };
   },
   /**
+   * No link: the invitation was deleted with the event, so there is nothing
+   * left to open, and a button to a dead page is worse than none.
+   */
+  [NotificationType.EVENT_DELETED]: (p) => {
+    const event = s(p, 'eventTitle', 'The event');
+    const when = s(p, 'whenText');
+    return {
+      subject: `${event} has been deleted`,
+      title: `${event} has been deleted`,
+      lines: [
+        when
+          ? `${who(p, 'hostName')} deleted ${event}, planned for ${when}.`
+          : `${who(p, 'hostName')} deleted ${event}.`,
+      ],
+    };
+  },
+  /**
    * What moved, with its new value — "It's now on Sat, 19 Sep · 7:00 PM" —
    * so the notice is enough on its own and nobody has to open the invitation
    * to find out what "changed" meant.

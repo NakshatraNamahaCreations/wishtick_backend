@@ -276,11 +276,14 @@ export class GiftListService {
 
     const itemById = new Map(items.map((i) => [i._id.toString(), i]));
     const orderByGift = new Map(orders.map((o) => [o.giftId.toString(), o]));
-    const groupByGift = new Set(
-      groupGifts.flatMap((g) => [
-        g.giftId?.toString(),
-        ...(g.lines ?? []).map((line) => line.giftId.toString()),
-      ]),
+    // Each holder gift — the group's first item, and every extra line's —
+    // to the group gift it belongs to, so a row can open that group.
+    const groupByGift = new Map<string, string>(
+      groupGifts.flatMap((g) =>
+        [g.giftId?.toString(), ...(g.lines ?? []).map((line) => line.giftId.toString())]
+          .filter((id): id is string => id != null)
+          .map((id) => [id, g._id.toString()] as const),
+      ),
     );
     const thankedGifts = new Set(notes.map((n) => n.giftId.toString()));
     const names = await this.resolveNames(counterpartyIds);
@@ -298,6 +301,7 @@ export class GiftListService {
         mode: gift.mode,
         status: gift.status,
         isGroup: gift.type === GiftType.GROUP || groupByGift.has(gift._id.toString()),
+        groupGiftId: groupByGift.get(gift._id.toString()) ?? null,
         item: {
           // A deleted item still has a gift pointing at it; the row says so
           // rather than rendering a blank card.

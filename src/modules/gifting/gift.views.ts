@@ -76,6 +76,11 @@ export interface GiftListItemView {
   status: GiftStatus;
   /** True for a group gift — the "Group Gift" chip, and the Group tab. */
   isGroup: boolean;
+  /**
+   * The group gift this is part of, so its row can open the group — where
+   * the money, the members and "Chip in" are. Null for a gift of one's own.
+   */
+  groupGiftId: string | null;
   item: {
     title: string;
     imageUrl: string | null;

@@ -2158,18 +2158,29 @@ export class GroupGiftService {
 
   async get(groupGiftId: string, userId: string): Promise<GroupGiftView> {
     const gift = await this.loadOrFail(groupGiftId);
+    const isRecipient = gift.recipientId.toString() === userId;
     // The recipient must not discover a surprise through the group-gift
     // endpoint — until the event is over, when there is no surprise left and
     // they may chip in themselves.
     if (
-      gift.recipientId.toString() === userId &&
+      isRecipient &&
       gift.visibility === GroupGiftVisibility.HIDDEN_FROM_OWNER &&
       !(await this.surpriseIsOver(gift))
     ) {
       throw new AppException(ErrorCode.GROUP_GIFT_NOT_FOUND, 'Group gift not found', 404);
     }
+    // The host, the person it is for (past the check above, so no longer a
+    // secret) and anyone already in the group see it by right — the same
+    // people [listMine] lists it to. Holding them to the wishlist too sent a
+    // recipient whose gift sits on someone else's private list from their
+    // own card to "not found": a list made *for* a WishMate is the host's,
+    // and the WishMate it is for need not be able to open it.
+    const inByRight =
+      gift.initiatorId.toString() === userId ||
+      isRecipient ||
+      gift.participantIds.some((id) => id.toString() === userId);
     // Anyone else needs at least view access to the wishlist.
-    if (gift.initiatorId.toString() !== userId) {
+    if (!inByRight) {
       const wishlist = await this.wishlists.findOrFail(gift.wishlistId.toString());
       const decision = await this.access.resolve(wishlist, { userId });
       if (!decision.canView) {
@@ -2410,14 +2421,18 @@ export class GroupGiftService {
         403,
       );
     }
+    // The host and, past the event, the recipient are in by right: neither
+    // needs canGift, which an owner never has on their own list — nor a view
+    // of the list at all, which the person a WishMate's list is for need not
+    // have. Asked first, so a recipient past their party is not turned away
+    // at the list's door.
+    if (isHost || isRecipient) return { ignoresDeadline: true };
+
     const wishlist = await this.wishlists.findOrFail(gift.wishlistId.toString());
     const decision = await this.access.resolve(wishlist, { userId });
     if (!decision.canView) {
       throw new AppException(ErrorCode.GROUP_GIFT_NOT_FOUND, 'Group gift not found', 404);
     }
-    // The host and, past the event, the recipient are in by right: neither
-    // needs canGift, which an owner never has on their own list.
-    if (isHost || isRecipient) return { ignoresDeadline: true };
 
     // An owner never has canGift on their own list, because ordinarily that
     // would be paying for their own present. On a list made for a WishMate the
@@ -2624,6 +2639,7 @@ export class GroupGiftService {
       recentContributions,
       myContributionMinor: mine[0]?.total ?? 0,
       canManage: gift.initiatorId.toString() === userId,
+      isForMe: gift.recipientId.toString() === userId && !gift.forName,
       shareBaseUrl: this.shareBaseUrl,
     });
     // What each price change would do to the money, for the host's card —

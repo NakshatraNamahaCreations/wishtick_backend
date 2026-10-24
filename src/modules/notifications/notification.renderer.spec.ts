@@ -167,6 +167,30 @@ describe('NotificationRenderer', () => {
     expect(c.text).toContain('Rohan cancelled Diwali Night, planned for Sat, 24 Oct · 7:00 PM.');
   });
 
+  /** The invitation went with the event, so there is nothing to link to. */
+  describe('a deleted event', () => {
+    it('names the party that is gone, and offers no link to it', () => {
+      const c = renderer.content(NotificationType.EVENT_DELETED, {
+        eventTitle: 'Diwali Night',
+        hostName: 'Rohan',
+        whenText: 'Sat, 24 Oct · 7:00 PM',
+        url: 'https://app.wishtick.test/i/t',
+      });
+      expect(c.subject).toBe('Diwali Night has been deleted');
+      expect(c.title).toBe('Diwali Night has been deleted');
+      expect(c.text).toBe('Rohan deleted Diwali Night, planned for Sat, 24 Oct · 7:00 PM.');
+      expect(c.sms).toBe('Diwali Night has been deleted');
+    });
+
+    it('still reads without a date', () => {
+      const c = renderer.content(NotificationType.EVENT_DELETED, {
+        eventTitle: 'Diwali Night',
+        hostName: 'Rohan',
+      });
+      expect(c.text).toBe('Rohan deleted Diwali Night.');
+    });
+  });
+
   /**
    * The age is the thing worth knowing — it is what a card would say — but a
    * saved date need not carry a real year, and "turns NaN" is not a sentence.

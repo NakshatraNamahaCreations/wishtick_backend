@@ -34,7 +34,7 @@ import {
 import { ItemsService } from './items.service';
 import { ParticipantsService, type ParticipantView } from './participants.service';
 import { WishlistsService } from './wishlists.service';
-import type { ItemView, WishlistView } from './wishlist.views';
+import type { FulfilledItemView, ItemView, WishlistView } from './wishlist.views';
 
 @ApiTags('wishlists')
 @Controller('wishlists')
@@ -69,6 +69,18 @@ export class WishlistsController {
   @ApiOperation({ summary: 'Wishlists others have shared with you' })
   listShared(@CurrentUser('id') userId: string): Promise<WishlistView[]> {
     return this.wishlists.listSharedWithMe(userId);
+  }
+
+  /** Declared before ':id', which would otherwise take 'fulfilled-items' for an id. */
+  @Get('fulfilled-items')
+  @ApiOperation({
+    summary: 'Your fulfilled wishes, across your active wishlists',
+    description:
+      'Newest first, at most 500. Exactly the items your ownerStats.fulfilledCount counts: an ' +
+      'offline gift kept a surprise, and anything a group host hid from you, never appear.',
+  })
+  listFulfilledItems(@CurrentUser('id') userId: string): Promise<FulfilledItemView[]> {
+    return this.wishlists.listFulfilledItems(userId);
   }
 
   @Get(':id')

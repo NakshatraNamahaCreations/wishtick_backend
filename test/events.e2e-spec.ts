@@ -3066,6 +3066,121 @@ describe('Events & invites (e2e)', () => {
 
       expect(await rowsFor(host, 'event_updated')).toHaveLength(0);
     });
+
+    /** Deleting goes through the multi-select endpoint, one id or many. */
+    describe('deleting an event', () => {
+      const bulkDelete = (actor: Actor, ids: string[]) =>
+        request(app.getHttpServer())
+          .post(`${V1}/events/bulk-delete`)
+          .set(auth(actor.token))
+          .send({ ids });
+
+      /** A guest's own token, from their own list of invitations. */
+      const ownToken = async (guest: Actor, eventId: string): Promise<string> => {
+        const res = await request(app.getHttpServer())
+          .get(`${V1}/events/invited`)
+          .set(auth(guest.token))
+          .expect(200);
+        const mine = (res.body as Envelope<{ id: string; inviteToken: string }[]>).data;
+        return mine.find((e) => e.id === eventId)!.inviteToken;
+      };
+
+      /** A published party with a guest per answer, and one who never replied. */
+      const partyWithReplies = async (host: Actor) => {
+        const yes = await newUser('Priya Nair');
+        const maybe = await newUser('Kabir Rao');
+        const no = await newUser('Meera Iyer');
+        const pending = await newUser('Arjun Das');
+        const { event } = await partyWith(host, yes);
+        for (const guest of [maybe, no, pending]) await invite(host, event.id, guest);
+        for (const [guest, response] of [
+          [yes, 'yes'],
+          [maybe, 'maybe'],
+          [no, 'no'],
+        ] as const) {
+          await rsvp(await ownToken(guest, event.id), response);
+        }
+        await settle(); // the invites and RSVP notices, out of the way
+        return { event, yes, maybe, no, pending };
+      };
+
+      it('tells every guest who replied — yes, maybe or no — and nobody else', async () => {
+        const host = await newUser('Rohan Mehta');
+        const { event, yes, maybe, no, pending } = await partyWithReplies(host);
+
+        await bulkDelete(host, [event.id]).expect(200);
+        await settle();
+
+        for (const guest of [yes, maybe, no]) {
+          const told = await rowsFor(guest, 'event_deleted');
+          expect(told).toHaveLength(1);
+          expect(told[0].title).toBe('Diwali Night has been deleted');
+          expect(told[0].body).toContain('Rohan Mehta deleted Diwali Night, planned for');
+          // Keyed by the event: its invitations went with it.
+          expect(told[0].refId).toBe(`${event.id}:deleted`);
+        }
+
+        // A guest who never answered is not told, and nor is the host.
+        expect(await rowsFor(pending, 'event_deleted')).toHaveLength(0);
+        expect(await rowsFor(host, 'event_deleted')).toHaveLength(0);
+      });
+
+      it('says nothing about a draft', async () => {
+        const host = await newUser('Rohan Mehta');
+        const guest = await newUser('Priya Nair');
+        const { event, token } = await partyWith(host, guest);
+        await rsvp(token, 'yes');
+        await settle();
+        // Back to a draft behind the API's back — a draft cannot be invited
+        // to, so this is the only way to put guests on one and prove the rule
+        // is the status, not an empty guest list.
+        await eventModel.updateOne({ _id: event.id }, { $set: { status: 'draft' } }).exec();
+
+        await bulkDelete(host, [event.id]).expect(200);
+        await settle();
+
+        expect(await rowsFor(guest, 'event_deleted')).toHaveLength(0);
+      });
+
+      it('says nothing more about an event that was already cancelled', async () => {
+        const host = await newUser('Rohan Mehta');
+        const guest = await newUser('Priya Nair');
+        const { event, token } = await partyWith(host, guest);
+        await rsvp(token, 'yes');
+        await request(app.getHttpServer())
+          .delete(`${V1}/events/${event.id}`)
+          .set(auth(host.token))
+          .expect(200);
+        await settle();
+        expect(await rowsFor(guest, 'event_cancelled')).toHaveLength(1);
+
+        await bulkDelete(host, [event.id]).expect(200);
+        await settle();
+
+        // They already know it is off; that it is also gone is not news.
+        expect(await rowsFor(guest, 'event_deleted')).toHaveLength(0);
+      });
+
+      it('lets nobody but the host delete it, and tells nobody when they try', async () => {
+        const host = await newUser('Rohan Mehta');
+        const stranger = await newUser('Vikram Shah');
+        // One guest, not a full party: signing up is throttled to five an hour.
+        const guest = await newUser('Priya Nair');
+        const { event, token } = await partyWith(host, guest);
+        await rsvp(token, 'yes');
+        await settle();
+
+        const res = await bulkDelete(stranger, [event.id]).expect(200);
+        expect((res.body as Envelope<{ deleted: number }>).data.deleted).toBe(0);
+        await settle();
+
+        await request(app.getHttpServer())
+          .get(`${V1}/events/${event.id}`)
+          .set(auth(host.token))
+          .expect(200);
+        expect(await rowsFor(guest, 'event_deleted')).toHaveLength(0);
+      });
+    });
   });
 });
 

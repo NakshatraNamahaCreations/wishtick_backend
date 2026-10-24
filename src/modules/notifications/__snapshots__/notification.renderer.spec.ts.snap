@@ -62,6 +62,15 @@ View the invitation: https://app.wishtick.test/x",
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_deleted 1`] = `
+{
+  "sms": "Aarav's Birthday has been deleted",
+  "subject": "Aarav's Birthday has been deleted",
+  "text": "Someone deleted Aarav's Birthday, planned for in 2 days.",
+  "title": "Aarav's Birthday has been deleted",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_invite 1`] = `
 {
   "sms": "You're invited to Aarav's Birthday — https://app.wishtick.test/x",

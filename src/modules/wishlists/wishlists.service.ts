@@ -13,13 +13,18 @@ import { MediaPurpose } from 'src/modules/media/schemas/media.schema';
 import { AddressesService, type AddressView } from 'src/modules/profile/addresses.service';
 import { AccessPolicyService } from './access/access-policy.service';
 import { ReservationWindowService } from './reservation-window.service';
-import type { AccessContext, AccessDecision } from './access/access.types';
+import { Relationship, type AccessContext, type AccessDecision } from './access/access.types';
 import type { CreateWishlistDto, ShareWishlistDto, UpdateWishlistDto } from './dto/wishlist.dto';
 import { WishlistItem, type WishlistItemDocument } from './schemas/wishlist-item.schema';
 import { Wishlist, type WishlistDocument } from './schemas/wishlist.schema';
 import { WishlistVisibility } from './wishlist.types';
-import { toWishlistView, type WishlistView } from './wishlist.views';
-import { wishlistCountsPipeline, wishlistCountsSet, type WishlistCounts } from './wishlist-stats';
+import { toWishlistView, type FulfilledItemView, type WishlistView } from './wishlist.views';
+import {
+  ownerFulfilledItemsPipeline,
+  wishlistCountsPipeline,
+  wishlistCountsSet,
+  type WishlistCounts,
+} from './wishlist-stats';
 
 /**
  * Unambiguous alphabet (no 0/O, 1/l/I) at 16 chars ≈ 2^80 of entropy.
@@ -33,6 +38,9 @@ const generateSlug = customAlphabet('23456789abcdefghijkmnpqrstuvwxyz', 16);
 
 /** One person's lists. Generous, but not "someone is scripting us". */
 const MAX_ACTIVE_WISHLISTS = 100;
+
+/** Rows on the owner's Fulfilled tab — far more than any one person gets. */
+const MAX_FULFILLED_ITEMS = 500;
 
 @Injectable()
 export class WishlistsService {
@@ -105,6 +113,9 @@ export class WishlistsService {
       coverUrl,
       coverMediaId: dto.coverMediaId ? new Types.ObjectId(dto.coverMediaId) : null,
       chatEnabled: dto.chatEnabled ?? true,
+      // Computed, and zero: a new list is empty. Left unset, the owner's
+      // reads would take it for one never counted and recount it every time.
+      ownerStats: { itemCount: 0, fulfilledCount: 0 },
       // Minted now, not on first share: the owner may flip to public at any
       // time, and a lazily-created slug would change the link under them.
       share: { slug: generateSlug(), passcodeHash: null, expiresAt: null, rotatedAt: new Date() },
@@ -124,6 +135,7 @@ export class WishlistsService {
       .sort({ createdAt: -1 })
       .limit(MAX_ACTIVE_WISHLISTS)
       .exec();
+    await this.healOwnerStats(wishlists);
 
     // The owner's rights are identical for every row, so this resolves once
     // rather than issuing a policy lookup per wishlist.
@@ -184,6 +196,7 @@ export class WishlistsService {
   async getOne(wishlistId: string, ctx: AccessContext): Promise<WishlistView> {
     const wishlist = await this.findOrFail(wishlistId);
     const access = await this.access.assertCanView(wishlist, ctx);
+    if (access.relationship === Relationship.OWNER) await this.healOwnerStats([wishlist]);
     return toWishlistView(
       wishlist,
       access,
@@ -408,14 +421,50 @@ export class WishlistsService {
    * the source of truth. Called after every write that changes them.
    *
    * Writes both `stats` and the owner-safe `ownerStats` — see
-   * [wishlistCountsPipeline] for what the second leaves out.
+   * [wishlistCountsPipeline] for what the second leaves out. Returns the
+   * `$set` it wrote, for a caller holding the document to apply in place.
    */
-  async recount(wishlistId: Types.ObjectId): Promise<void> {
+  async recount(wishlistId: Types.ObjectId): Promise<Record<string, number>> {
     const [counts] = await this.items
       .aggregate<WishlistCounts>(wishlistCountsPipeline(wishlistId))
       .exec();
 
-    await this.model.updateOne({ _id: wishlistId }, { $set: wishlistCountsSet(counts) }).exec();
+    const set = wishlistCountsSet(counts);
+    await this.model.updateOne({ _id: wishlistId }, { $set: set }).exec();
+    return set;
+  }
+
+  /**
+   * Recounts, in place, any of [wishlists] whose `ownerStats` was never
+   * computed — a list nobody has touched since before migration 045.
+   *
+   * Without it such a list has no owner counts to send, and its owner sees
+   * whatever the client falls back to until something on the list changes.
+   * Only the lists missing it pay, and only once: recount() stores the result.
+   */
+  private async healOwnerStats(wishlists: WishlistDocument[]): Promise<void> {
+    await Promise.all(
+      wishlists
+        .filter((w) => !w.ownerStats)
+        .map(async (w) => {
+          w.set(await this.recount(w._id));
+        }),
+    );
+  }
+
+  /**
+   * The caller's fulfilled wishes across their own active lists, newest first:
+   * the rows behind each list's `ownerStats.fulfilledCount`, by the same rule.
+   */
+  async listFulfilledItems(userId: string): Promise<FulfilledItemView[]> {
+    const wishlistIds = await this.model
+      .distinct('_id', { ownerId: new Types.ObjectId(userId), archivedAt: null })
+      .exec();
+    if (wishlistIds.length === 0) return [];
+
+    return this.items
+      .aggregate<FulfilledItemView>(ownerFulfilledItemsPipeline(wishlistIds, MAX_FULFILLED_ITEMS))
+      .exec();
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

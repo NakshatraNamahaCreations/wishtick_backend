@@ -135,9 +135,14 @@ export class Wishlist {
    * no item a group host hid from them, and no offline purchase whose gift is
    * kept a surprise. `stats.fulfilledCount` would give either away. Maintained
    * by the same recount(); returned only in the owner's own view.
+   *
+   * No default, unlike [stats]: absent means "never computed" (a list from
+   * before migration 045), and a default would hydrate that as a confident
+   * zero — every list reading "0 items" to its owner. The owner's reads
+   * recount a list missing it; see [WishlistsService.healOwnerStats].
    */
-  @Prop({ type: WishlistStatsSchema, default: () => ({}) })
-  ownerStats!: WishlistStats;
+  @Prop({ type: WishlistStatsSchema })
+  ownerStats?: WishlistStats;
 
   /**
    * Archive, not delete. A wishlist is referenced by gifts and chats, so

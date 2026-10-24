@@ -148,6 +148,20 @@ export interface WishlistView {
   canSetAddress?: boolean;
 }
 
+/**
+ * One of the owner's fulfilled wishes, for their Fulfilled tab. Exactly the
+ * items `ownerStats.fulfilledCount` counts — see [ownerFulfilledItemsPipeline].
+ */
+export interface FulfilledItemView {
+  itemId: string;
+  wishlistId: string;
+  title: string;
+  /** The item's first photo, if it has one. */
+  imageUrl: string | null;
+  /** When its gift arrived (else was bought), or the item's last change. */
+  fulfilledAt: Date;
+}
+
 /** The unauthenticated share-link view. Deliberately a different, smaller shape. */
 export interface PublicWishlistView {
   /** Lets a signed-in viewer open an item to reserve/gift it (web /w/:slug). Safe: the list is already shared by link. */
@@ -324,11 +338,13 @@ export const toWishlistView = (
     };
   }
   // Owner, not canManage: the counts are for the person whose surprises they
-  // keep, and nobody else has a use for a smaller number.
-  if (access.relationship === Relationship.OWNER) {
+  // keep, and nobody else has a use for a smaller number. Only once computed:
+  // zeros standing in for "not yet" read as an empty list, where an absent
+  // field lets the client fall back to `stats`.
+  if (access.relationship === Relationship.OWNER && wishlist.ownerStats) {
     view.ownerStats = {
-      itemCount: wishlist.ownerStats?.itemCount ?? 0,
-      fulfilledCount: wishlist.ownerStats?.fulfilledCount ?? 0,
+      itemCount: wishlist.ownerStats.itemCount ?? 0,
+      fulfilledCount: wishlist.ownerStats.fulfilledCount ?? 0,
     };
   }
   if (delivery) {

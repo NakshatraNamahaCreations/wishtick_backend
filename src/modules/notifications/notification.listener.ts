@@ -6,6 +6,7 @@ import { Model } from 'mongoose';
 import {
   CHAT_MESSAGE_POSTED,
   EVENT_CALLED_OFF,
+  EVENT_DELETED,
   EVENT_DETAILS_CHANGED,
   EVENT_INVITED,
   EVENT_RSVP_CHANGED,
@@ -42,6 +43,7 @@ import {
   WISHMATE_REQUESTED,
   type ChatMessagePostedEvent,
   type EventCalledOffEvent,
+  type EventDeletedEvent,
   type EventDetailsChangedEvent,
   type EventInvitedEvent,
   type EventJoinAcceptedEvent,
@@ -729,6 +731,34 @@ export class NotificationListener {
             eventTitle: e.eventTitle,
             whenText,
             url: `${this.web}/i/${r.inviteToken}`,
+          },
+        });
+      }
+    });
+  }
+
+  /**
+   * The event is gone, to every guest who replied to it.
+   *
+   * Keyed by the event rather than an invitation token: the invitations were
+   * deleted with it, so there is no token to open, and an event is deleted
+   * only once. No url either — the app takes the guest to their invitations,
+   * which is where the event used to be.
+   */
+  @OnEvent(EVENT_DELETED)
+  async onEventDeleted(e: EventDeletedEvent): Promise<void> {
+    await this.guard('event-deleted', async () => {
+      const hostName = await this.userName(e.hostId);
+      const whenText = formatEventMoment(e.startsAt, e.timezone);
+      for (const r of e.recipients) {
+        await this.notifications.enqueue({
+          userId: r.userId,
+          type: NotificationType.EVENT_DELETED,
+          refId: `${e.eventId}:deleted`,
+          payload: {
+            hostName,
+            eventTitle: e.eventTitle,
+            whenText,
           },
         });
       }

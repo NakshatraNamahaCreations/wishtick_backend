@@ -47,6 +47,7 @@ interface GiftListItemView {
   wishlistId: string;
   status: string;
   isGroup: boolean;
+  groupGiftId: string | null;
   item: { title: string; imageUrl: string | null; amountMinor: number | null; currency: string };
   counterpartyName: string | null;
   deliveredAt: string | null;
@@ -394,6 +395,8 @@ describe('Gifting (e2e)', () => {
       expect(row.item.amountMinor).toBe(249900);
       expect(row.item.currency).toBe('INR');
       expect(row.isGroup).toBe(false);
+      // A gift of one's own has no group to open.
+      expect(row.groupGiftId).toBeNull();
       expect(row.thankYouSent).toBe(false);
       expect(row.deliveredAt).toBeNull();
       expect(row.isGifter).toBe(true);

@@ -6,8 +6,10 @@ import { customAlphabet } from 'nanoid';
 import { Model, Types } from 'mongoose';
 import {
   EVENT_CALLED_OFF,
+  EVENT_DELETED,
   EVENT_DETAILS_CHANGED,
   type EventCalledOffEvent,
+  type EventDeletedEvent,
   type EventDetailChange,
   type EventDetailsChangedEvent,
   type EventGuestRecipient,
@@ -425,6 +427,10 @@ export class EventsService {
    * skipped rather than failing the batch. A multi-select that refuses
    * wholesale because one row went stale is worse than one that deletes what
    * it can and says how many.
+   *
+   * Guests who replied to a published event are told it has been deleted —
+   * once the delete has gone through, so nobody hears of a deletion that then
+   * failed.
    */
   async deleteMany(ids: string[], userId: string): Promise<{ deleted: number }> {
     const valid = ids.filter((id) => Types.ObjectId.isValid(id));
@@ -435,11 +441,31 @@ export class EventsService {
         _id: { $in: valid.map((id) => new Types.ObjectId(id)) },
         hostId: new Types.ObjectId(userId),
       })
-      .select('_id')
+      .select('_id hostId status title startsAt timezone')
       .exec();
     if (owned.length === 0) return { deleted: 0 };
 
     const eventIds = owned.map((e) => e._id);
+
+    // Who to tell has to be read now: the invitations that say who replied
+    // are about to be deleted with the events.
+    const notices: EventDeletedEvent[] = [];
+    for (const event of owned) {
+      // Only a published event. A draft was never sent to anybody, and a
+      // cancelled one has already told its guests it is off — a second notice
+      // that it is now also gone would be news to nobody.
+      if (event.status !== EventStatus.PUBLISHED) continue;
+      const recipients = await this.guestsWhoReplied(event);
+      if (recipients.length === 0) continue;
+      notices.push({
+        eventId: event._id.toString(),
+        hostId: event.hostId.toString(),
+        eventTitle: event.title,
+        startsAt: event.startsAt,
+        timezone: event.timezone,
+        recipients,
+      });
+    }
 
     // Order matters. Reminders first: a job that fires against a deleted event
     // would log an error for a party nobody is having.
@@ -458,8 +484,33 @@ export class EventsService {
     await this.invites.deleteMany({ eventId: { $in: eventIds } }).exec();
     await this.model.deleteMany({ _id: { $in: eventIds } }).exec();
 
+    for (const notice of notices) {
+      this.emitter.emit(EVENT_DELETED, notice);
+    }
+
     this.logger.log(`Deleted ${eventIds.length} event(s) for ${userId}`);
     return { deleted: eventIds.length };
+  }
+
+  /**
+   * Guests who answered the invitation, whatever they said.
+   *
+   * Wider than [guestsToTell], which leaves out the guests who declined: a
+   * change to a party touches only the plans of those who might come, but a
+   * party disappearing from somebody's list is news to anyone who replied to
+   * it. A guest who never answered is not told — they never took it up.
+   */
+  private async guestsWhoReplied(event: EventDocument): Promise<{ userId: string }[]> {
+    const invites = await this.invites
+      .find({
+        eventId: event._id,
+        revokedAt: null,
+        invitedUserId: { $ne: null },
+        rsvp: { $in: [RsvpResponse.YES, RsvpResponse.MAYBE, RsvpResponse.NO] },
+      })
+      .select('invitedUserId')
+      .exec();
+    return invites.map((i) => ({ userId: i.invitedUserId!.toString() }));
   }
 
   // ── RSVP counts ───────────────────────────────────────────────────────────

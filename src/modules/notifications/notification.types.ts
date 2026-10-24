@@ -71,6 +71,8 @@ export enum NotificationType {
   EVENT_WISHLIST_ANSWERED = 'event_wishlist_answered',
   EVENT_RSVP = 'event_rsvp',
   EVENT_CANCELLED = 'event_cancelled',
+  /** The host deleted an event the guest had replied to. */
+  EVENT_DELETED = 'event_deleted',
   EVENT_UPDATED = 'event_updated',
   ITEM_PRICE_DROP = 'item_price_drop',
   ITEM_OUT_OF_STOCK = 'item_out_of_stock',
@@ -361,6 +363,15 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.EVENTS,
     template: 'event-cancelled',
+  },
+  [NotificationType.EVENT_DELETED]: {
+    // To the guests who replied, for the reason EVENT_CANCELLED goes to its
+    // guests — and more so: the invitation is gone too, so this notice is the
+    // only explanation they will get.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.EVENTS,
+    template: 'event-deleted',
   },
   [NotificationType.EVENT_UPDATED]: {
     // To the guests, when the date, time or venue moves. The first a guest

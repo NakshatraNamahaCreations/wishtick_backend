@@ -47,6 +47,7 @@ interface GroupGiftView {
   collectedAmountMinor: number;
   percentFunded: number;
   recipientName: string | null;
+  isForMe: boolean;
   contributorCount: number;
   participantCount: number;
   participants: { userId: string; name: string }[];
@@ -458,7 +459,8 @@ describe('Group gifting (e2e)', () => {
         const owner = await newUser();
         const friend = await newUser();
         const { itemId } = await listForPuttu(owner);
-        await createGroupGift(friend, itemId, {}).expect(201);
+        const gg = (await createGroupGift(friend, itemId, {}).expect(201))
+          .body as Envelope<GroupGiftView>;
 
         // Still collecting, so it is held rather than given.
         const held = (
@@ -466,8 +468,10 @@ describe('Group gifting (e2e)', () => {
             .get(`${V1}/gifts/on-hold`)
             .set(auth(friend.token))
             .expect(200)
-        ).body as Envelope<{ counterpartyName: string | null }[]>;
+        ).body as Envelope<{ counterpartyName: string | null; groupGiftId: string | null }[]>;
         expect(held.data.map((g) => g.counterpartyName)).toEqual(['Puttu']);
+        // The row knows its group, so it can open it.
+        expect(held.data[0].groupGiftId).toBe(gg.data.id);
 
         const received = (
           await request(app.getHttpServer())
@@ -555,6 +559,45 @@ describe('Group gifting (e2e)', () => {
         const doc = await groupGiftModel.findById(gg.data.id).exec();
         expect(doc!.recipientId.toString()).toBe(siya.userId);
         expect(doc!.initiatorId.toString()).toBe(owner.userId);
+      });
+
+      it('the WishMate it is for can open a visible one on a private list', async () => {
+        const { owner, siya, wishlistId, itemId } = await listForSiya();
+        // The owner's list, closed to everyone — Siya included.
+        await request(app.getHttpServer())
+          .patch(`${V1}/wishlists/${wishlistId}`)
+          .set(auth(owner.token))
+          .send({ visibility: 'private' })
+          .expect(200);
+        const gg = (await createGroupGift(owner, itemId, { visibility: 'visible' }).expect(201))
+          .body as Envelope<GroupGiftView>;
+
+        // Listed to her as one she is part of…
+        const mine = (
+          await request(app.getHttpServer())
+            .get(`${V1}/group-gifts/mine`)
+            .set(auth(siya.token))
+            .expect(200)
+        ).body as Envelope<GroupGiftView[]>;
+        expect(mine.data.map((g) => g.id)).toContain(gg.data.id);
+        // Told it is for her — her name alone could be anyone's.
+        expect(mine.data.find((g) => g.id === gg.data.id)!.isForMe).toBe(true);
+        // …so it opens, rather than answering "not found" from her own card.
+        const opened = (
+          await request(app.getHttpServer())
+            .get(`${V1}/group-gifts/${gg.data.id}`)
+            .set(auth(siya.token))
+            .expect(200)
+        ).body as Envelope<GroupGiftView>;
+        expect(opened.data.isForMe).toBe(true);
+        // Not for the host who organised it.
+        expect(gg.data.isForMe).toBe(false);
+        // A stranger still needs the list.
+        const stranger = await newUser();
+        await request(app.getHttpServer())
+          .get(`${V1}/group-gifts/${gg.data.id}`)
+          .set(auth(stranger.token))
+          .expect(404);
       });
 
       it('still refuses the owner on a list that is for themselves', async () => {
@@ -1304,6 +1347,7 @@ describe('Group gifting (e2e)', () => {
       expect(theirs).toHaveLength(1);
       expect(theirs[0].id).toBe(hosts[0].id);
       expect(theirs[0].isGroup).toBe(true);
+      expect(theirs[0].groupGiftId).toBe(ggId);
       // Only the host bought it, so only the host may say when it arrives.
       expect(hosts[0].isGifter).toBe(true);
       expect(theirs[0].isGifter).toBe(false);

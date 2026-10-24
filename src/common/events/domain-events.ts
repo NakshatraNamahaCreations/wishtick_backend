@@ -737,6 +737,31 @@ export interface EventCalledOffEvent {
 }
 
 /**
+ * The host deleted a published event outright.
+ *
+ * Unlike calling it off, nothing is left behind: the invitation goes with the
+ * event, so a guest who replied would otherwise find it simply missing from
+ * their list with no word of why. Recipients are everyone who answered — yes,
+ * maybe or no, since even a guest who declined was told about the party and
+ * would be left wondering where it went. A guest who never replied hears
+ * nothing; they never engaged with it to begin with.
+ *
+ * Carried as user ids alone: the invitations are deleted by the time this is
+ * heard, so there is no token left for a notification to open.
+ */
+export const EVENT_DELETED = 'event.deleted';
+
+export interface EventDeletedEvent {
+  eventId: string;
+  hostId: string;
+  eventTitle: string;
+  /** When it would have been, so the message names which party is gone. */
+  startsAt: Date;
+  timezone: string;
+  recipients: { userId: string }[];
+}
+
+/**
  * The host moved a published event, or changed where it is.
  *
  * Moving it used to reschedule the reminders and nothing else: the first a
