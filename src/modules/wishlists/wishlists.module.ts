@@ -10,6 +10,8 @@ import { AccessPolicyService } from './access/access-policy.service';
 import { ReservationWindowService } from './reservation-window.service';
 import { ItemsService } from './items.service';
 import { ParticipantsService } from './participants.service';
+import { PersonWishlistsController } from './person-wishlists.controller';
+import { PersonWishlistsService } from './person-wishlists.service';
 import { PublicWishlistsController } from './public-wishlists.controller';
 import { PublicWishlistsService } from './public-wishlists.service';
 import { WishlistItem, WishlistItemSchema } from './schemas/wishlist-item.schema';
@@ -43,9 +45,10 @@ import { WishlistsService } from './wishlists.service';
     // never wishlists, so this stays one-way.
     WishmatesModule,
   ],
-  controllers: [WishlistsController, PublicWishlistsController],
+  controllers: [WishlistsController, PublicWishlistsController, PersonWishlistsController],
   providers: [
     WishlistsService,
+    PersonWishlistsService,
     ItemsService,
     ParticipantsService,
     PublicWishlistsService,
