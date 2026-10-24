@@ -25,6 +25,7 @@ interface SharedDate {
   occasionLabel: string;
   daysAway: number;
   reminding: boolean;
+  wishToUserId: string | null;
 }
 interface NotificationRow {
   type: string;
@@ -203,6 +204,45 @@ describe('Shared important dates (e2e)', () => {
 
       const res = await sharedOf(stranger, suma).expect(403);
       expect((res.body as Envelope<never>).error?.code).toBe('NOT_WISHMATES');
+    });
+  });
+
+  // "Send a wish": to the person the date is for when they are on Wishtick
+  // and the viewer's WishMate, otherwise to the person who shared it.
+  describe('who a wish goes to', () => {
+    it('nobody named for a date that is not linked: the sharer, then', async () => {
+      const { suma, ravi } = await sumaAndRavi();
+      const res = (await sharedOf(ravi, suma).expect(200)).body as Envelope<SharedDate[]>;
+      expect(res.data[0].wishToUserId).toBeNull();
+    });
+
+    it('the linked person, when they are the viewer’s WishMate too', async () => {
+      const { suma, ravi, dateId } = await sumaAndRavi();
+      const ananya = await newUser('Ananya');
+      await makeWishmates(suma, ananya);
+      await makeWishmates(ravi, ananya);
+      await request(app.getHttpServer())
+        .put(`${V1}/me/important-dates/${dateId}/link`)
+        .set(auth(suma.token))
+        .send({ userId: ananya.userId })
+        .expect(200);
+
+      const res = (await sharedOf(ravi, suma).expect(200)).body as Envelope<SharedDate[]>;
+      expect(res.data[0].wishToUserId).toBe(ananya.userId);
+    });
+
+    it('not a linked person the viewer does not know', async () => {
+      const { suma, ravi, dateId } = await sumaAndRavi();
+      const ananya = await newUser('Ananya');
+      await makeWishmates(suma, ananya);
+      await request(app.getHttpServer())
+        .put(`${V1}/me/important-dates/${dateId}/link`)
+        .set(auth(suma.token))
+        .send({ userId: ananya.userId })
+        .expect(200);
+
+      const res = (await sharedOf(ravi, suma).expect(200)).body as Envelope<SharedDate[]>;
+      expect(res.data[0].wishToUserId).toBeNull();
     });
   });
 

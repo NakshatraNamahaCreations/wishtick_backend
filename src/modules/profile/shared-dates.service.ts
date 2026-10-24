@@ -27,6 +27,12 @@ export interface SharedDateView {
   daysAway: number;
   /** Whether the viewer asked to be reminded of it. */
   reminding: boolean;
+  /**
+   * Who a wish for this date goes to, when it is not the person who shared
+   * it: the account the date is for, if the owner linked one and it is the
+   * viewer's WishMate too. Null otherwise — the wish then goes to the owner.
+   */
+  wishToUserId: string | null;
 }
 
 /**
@@ -72,6 +78,20 @@ export class SharedDatesService {
     const labels = await this.occasionLabels();
     const today = ImportantDatesService.utcToday();
 
+    // The people these dates are for who are on Wishtick and are the
+    // viewer's WishMates too — the only ones a wish can be sent to directly.
+    // Never the viewer: a wish to yourself for your own day is not one.
+    const linked = [
+      ...new Set(
+        docs
+          .map((d) => d.linkedUserId?.toString())
+          .filter((id): id is string => !!id && id !== viewerId),
+      ),
+    ];
+    const reachable = linked.length
+      ? await this.links.acceptedAmong(new Types.ObjectId(viewerId), linked)
+      : new Set<string>();
+
     return docs
       .map((doc) => {
         const upcoming = ImportantDatesService.toUpcoming(ImportantDatesService.toView(doc), today);
@@ -87,6 +107,9 @@ export class SharedDatesService {
           nextOccurrence: upcoming.nextOccurrence,
           daysAway: upcoming.daysAway,
           reminding: followed.has(upcoming.id),
+          wishToUserId: ((id) => (id && reachable.has(id) ? id : null))(
+            doc.linkedUserId?.toString(),
+          ),
         } satisfies SharedDateView;
       })
       .sort((a, b) => a.daysAway - b.daysAway || a.personName.localeCompare(b.personName));
