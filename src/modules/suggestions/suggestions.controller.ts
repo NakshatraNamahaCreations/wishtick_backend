@@ -11,6 +11,7 @@ import { GiftSuggestionsQueryDto } from './dto/suggestions.dto';
 import { SuggestionsService } from './suggestions.service';
 import { SearchProductsQueryDto } from '../products/dto/product.dto';
 import { ProductsService } from '../products/products.service';
+import { SearchOrigin, withSearchContext } from '../products/search-context';
 import type { GiftSuggestionsView, RecipientSearchView } from './suggestions.views';
 
 /**
@@ -50,7 +51,10 @@ export class SuggestionsController {
     @Param('userId') userId: string,
     @Query() query: GiftSuggestionsQueryDto,
   ): Promise<GiftSuggestionsView> {
-    return this.suggestions.forPerson(viewerId, userId, query);
+    return withSearchContext(
+      { userId: viewerId, origin: SearchOrigin.GIFT_IDEAS, forUserId: userId },
+      () => this.suggestions.forPerson(viewerId, userId, query),
+    );
   }
 
   @Get('people/:userId/gift-search')
@@ -79,7 +83,15 @@ export class SuggestionsController {
       pageSize: query.pageSize ?? 20,
       platform: query.platform,
     };
-    const result = await this.suggestions.searchFor(viewerId, userId, q);
+    const result = await withSearchContext(
+      {
+        userId: viewerId,
+        origin: SearchOrigin.WISHMATE_SEARCH,
+        forUserId: userId,
+        platform: q.platform ?? null,
+      },
+      () => this.suggestions.searchFor(viewerId, userId, q),
+    );
     // A search the viewer typed, the same as one on the search screen.
     this.products.logSearch(viewerId, q, result);
     return result;

@@ -10,6 +10,7 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { ResolveUrlDto, SearchProductsQueryDto } from './dto/product.dto';
 import type { NormalizedProduct, ProviderCategory, ResultFreshness } from './product.types';
 import { ProductsService, type SearchResponse } from './products.service';
+import { SearchOrigin, withSearchContext } from './search-context';
 import { UrlResolverService, type ResolvedUrlProduct } from './url-resolver.service';
 
 /** Every search may cost a vendor API call, and the quota is per-account. */
@@ -52,7 +53,10 @@ export class ProductsController {
       pageSize: query.pageSize ?? 20,
       platform: query.platform,
     };
-    const result = await this.products.search(q);
+    const result = await withSearchContext(
+      { userId, origin: SearchOrigin.SEARCH, platform: q.platform ?? null },
+      () => this.products.search(q),
+    );
     this.products.logSearch(userId, q, result);
     return result;
   }

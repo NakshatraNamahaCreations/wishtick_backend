@@ -9,6 +9,7 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { OccasionShelfQueryDto } from './dto/occasion-shelf.dto';
 import { DiscoverService } from './discover.service';
 import type { DiscoverFeed, DiscoverSection } from './discover.types';
+import { SearchOrigin, withSearchContext } from '../products/search-context';
 
 /**
  * The Discover tab (Figma `280:131`) — a personalised shelf per approaching
@@ -31,7 +32,9 @@ export class DiscoverController {
       'search failed are omitted rather than returned empty.',
   })
   feed(@CurrentUser('id') userId: string): Promise<DiscoverFeed> {
-    return this.discover.feed(userId);
+    return withSearchContext({ userId, origin: SearchOrigin.DISCOVER }, () =>
+      this.discover.feed(userId),
+    );
   }
 
   @Get('occasions/:occasionKey')
@@ -44,9 +47,12 @@ export class DiscoverController {
   })
   @ApiResponseDoc({ status: 400, description: 'TAXONOMY_VALUE_INVALID — unknown occasion' })
   occasionShelf(
+    @CurrentUser('id') userId: string,
     @Param('occasionKey') occasionKey: string,
     @Query() query: OccasionShelfQueryDto,
   ): Promise<DiscoverSection> {
-    return this.discover.occasionShelf(occasionKey, query.relation);
+    return withSearchContext({ userId, origin: SearchOrigin.DISCOVER }, () =>
+      this.discover.occasionShelf(occasionKey, query.relation),
+    );
   }
 }

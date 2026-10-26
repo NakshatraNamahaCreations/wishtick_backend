@@ -5,6 +5,7 @@ import { Public } from 'src/common/decorators/public.decorator';
 import { OptionalJwtAuthGuard } from 'src/common/guards/optional-jwt-auth.guard';
 import { SuggestionsService } from './suggestions.service';
 import type { InviteSuggestionsView } from './suggestions.views';
+import { SearchOrigin, withSearchContext } from '../products/search-context';
 
 /**
  * The token is unguessable, but this is unauthenticated, so the bucket bounds
@@ -45,6 +46,8 @@ export class PublicInviteSuggestionsController {
   })
   @ApiResponseDoc({ status: 404, description: 'INVITE_TOKEN_INVALID' })
   forInvite(@Param('token') token: string): Promise<InviteSuggestionsView> {
-    return this.suggestions.forInvite(token);
+    return withSearchContext({ userId: null, origin: SearchOrigin.INVITE }, () =>
+      this.suggestions.forInvite(token),
+    );
   }
 }

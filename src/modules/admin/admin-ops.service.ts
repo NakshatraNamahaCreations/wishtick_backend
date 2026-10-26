@@ -18,6 +18,7 @@ import {
   DAILY_SEARCH_HARD_CAP,
   VendorBudgetService,
 } from 'src/modules/suggestions/vendor-budget.service';
+import { AdminUser360Service } from './admin-user360.service';
 import type { AuthenticatedAdmin } from './admin.types';
 import { AuditService } from './audit.service';
 
@@ -71,6 +72,7 @@ export class AdminOpsService {
     private readonly products: ProductsService,
     private readonly budget: VendorBudgetService,
     private readonly audit: AuditService,
+    private readonly user360: AdminUser360Service,
   ) {}
 
   private get db(): mongo.Db {
@@ -349,6 +351,312 @@ export class AdminOpsService {
       budget: DAILY_SEARCH_BUDGET,
       hardCap: DAILY_SEARCH_HARD_CAP,
       allowance: await this.budget.allowanceFor(userId),
+    };
+  }
+
+  // ── One day of product search ──────────────────────────────────────────────
+  //
+  // The chart's days are UTC, because its counters are; these read the same
+  // days so a bar and its breakdown always agree.
+
+  private dayBounds(day: string): { start: Date; end: Date } {
+    const start = new Date(`${day}T00:00:00.000Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || Number.isNaN(start.getTime())) {
+      throw new AppException(ErrorCode.VALIDATION_FAILED, 'A day is YYYY-MM-DD', 400);
+    }
+    return { start, end: new Date(start.getTime() + 86_400_000) };
+  }
+
+  /** When lookups were first recorded with names on them — null if never. */
+  private async lookupsSince(): Promise<Date | null> {
+    const first = await this.db
+      .collection('search_lookups')
+      .find()
+      .sort({ createdAt: 1 })
+      .limit(1)
+      .project({ createdAt: 1 })
+      .next();
+    return first?.createdAt instanceof Date ? first.createdAt : null;
+  }
+
+  /**
+   * One day of product search: the chart's numbers for it, what the store
+   * was paid for, why the lookups happened, who they were for and what was
+   * typed. Lookups carry names from the day they were first recorded; before
+   * that only typed searches are known by person.
+   */
+  async searchDay(day: string) {
+    const { start, end } = this.dayBounds(day);
+    const range = { createdAt: { $gte: start, $lt: end } };
+    const provider = this.config.get('products', { infer: true }).provider;
+    const lookups = this.db.collection('search_lookups');
+    const logs = this.db.collection('search_logs');
+    const empty = { $sum: { $cond: [{ $eq: ['$results', 0] }, 1, 0] } };
+
+    const [stats, requests, lookupRows, typedRows, topRows, nothingRows, since] = await Promise.all(
+      [
+        this.products.searchStatsOn([day]),
+        this.guard.requestsOnDays(provider, [day]),
+        lookups
+          .aggregate<{
+            _id: { userId: Types.ObjectId | null; origin: string; answer: string };
+            n: number;
+            lastAt: Date;
+          }>([
+            { $match: range },
+            {
+              $group: {
+                _id: { userId: '$userId', origin: '$origin', answer: '$answer' },
+                n: { $sum: 1 },
+                lastAt: { $max: '$createdAt' },
+              },
+            },
+          ])
+          .toArray(),
+        logs
+          .aggregate<{
+            _id: { userId: Types.ObjectId; freshness: string };
+            n: number;
+            empty: number;
+            lastAt: Date;
+          }>([
+            { $match: range },
+            {
+              $group: {
+                _id: { userId: '$userId', freshness: '$freshness' },
+                n: { $sum: 1 },
+                empty,
+                lastAt: { $max: '$createdAt' },
+              },
+            },
+          ])
+          .toArray(),
+        logs
+          .aggregate<{ _id: string; query: string; n: number; people: unknown[]; empty: number }>([
+            { $match: { ...range, normalized: { $ne: '' } } },
+            {
+              $group: {
+                _id: '$normalized',
+                query: { $last: '$query' },
+                n: { $sum: 1 },
+                people: { $addToSet: '$userId' },
+                empty,
+              },
+            },
+            { $sort: { n: -1, _id: 1 } },
+            { $limit: 10 },
+          ])
+          .toArray(),
+        logs
+          .aggregate<{ _id: string; query: string; n: number }>([
+            { $match: { ...range, normalized: { $ne: '' }, results: 0 } },
+            { $group: { _id: '$normalized', query: { $last: '$query' }, n: { $sum: 1 } } },
+            { $sort: { n: -1, _id: 1 } },
+            { $limit: 10 },
+          ])
+          .toArray(),
+        this.lookupsSince(),
+      ],
+    );
+
+    type Answers = Record<'cache' | 'store' | 'shared' | 'unavailable' | 'failed', number>;
+    const none = (): Answers => ({ cache: 0, store: 0, shared: 0, unavailable: 0, failed: 0 });
+    const add = (a: Answers, answer: string, n: number) => {
+      if (answer in a) a[answer as keyof Answers] += n;
+    };
+    const total = (a: Answers) => Object.values(a).reduce((s, n) => s + n, 0);
+
+    const answers = none();
+    const origins = new Map<string, Answers>();
+    const guests = none();
+    type Person = {
+      typed: number;
+      typedAnswers: Answers;
+      foundNothing: number;
+      lookups: Answers;
+      why: Record<string, number>;
+      lastAt: Date | null;
+    };
+    const people = new Map<string, Person>();
+    const personOf = (uid: string): Person => {
+      let p = people.get(uid);
+      if (!p) {
+        p = {
+          typed: 0,
+          typedAnswers: none(),
+          foundNothing: 0,
+          lookups: none(),
+          why: {},
+          lastAt: null,
+        };
+        people.set(uid, p);
+      }
+      return p;
+    };
+    const later = (a: Date | null, b: Date | null) => (!a ? b : !b ? a : a > b ? a : b);
+
+    for (const r of lookupRows) {
+      add(answers, r._id.answer, r.n);
+      const o = origins.get(r._id.origin) ?? none();
+      add(o, r._id.answer, r.n);
+      origins.set(r._id.origin, o);
+      if (!r._id.userId) {
+        add(guests, r._id.answer, r.n);
+        continue;
+      }
+      const p = personOf(String(r._id.userId));
+      add(p.lookups, r._id.answer, r.n);
+      p.why[r._id.origin] = (p.why[r._id.origin] ?? 0) + r.n;
+      p.lastAt = later(p.lastAt, r.lastAt);
+    }
+    // The search log's own words for how a typed search was answered.
+    const FROM_FRESHNESS: Record<string, keyof Answers> = {
+      cached: 'cache',
+      live: 'store',
+      stale: 'unavailable',
+    };
+    for (const r of typedRows) {
+      const p = personOf(String(r._id.userId));
+      p.typed += r.n;
+      p.foundNothing += r.empty;
+      add(p.typedAnswers, FROM_FRESHNESS[r._id.freshness] ?? 'store', r.n);
+      p.lastAt = later(p.lastAt, r.lastAt);
+    }
+
+    const names = await this.user360.namesFor([...people.keys()]);
+    const counters = stats[0];
+    return {
+      day,
+      counters: {
+        fromCache: counters.hits,
+        sentToStore: counters.misses,
+        foundNothing: counters.empty,
+        platforms: counters.platforms,
+      },
+      /** Requests SerpApi was sent that day — retries, details and links included. */
+      storeRequests: requests[0] ?? 0,
+      /** Null: no lookup that day was recorded with a name. */
+      recordedSince: since && since < end ? since : null,
+      lookups: { total: total(answers), ...answers },
+      byReason: [...origins]
+        .map(([origin, a]) => ({ origin, total: total(a), ...a }))
+        .sort((x, y) => y.total - x.total),
+      guests: { total: total(guests), ...guests },
+      people: [...people]
+        .map(([userId, p]) => ({
+          userId,
+          name: names[userId] ?? null,
+          typed: p.typed,
+          typedAnswers: p.typedAnswers,
+          foundNothing: p.foundNothing,
+          lookups: { total: total(p.lookups), ...p.lookups },
+          why: p.why,
+          lastAt: p.lastAt,
+        }))
+        .sort(
+          (a, b) =>
+            b.lookups.store - a.lookups.store ||
+            b.lookups.total - a.lookups.total ||
+            b.typed - a.typed,
+        ),
+      topSearches: topRows.map((t) => ({
+        query: t.query || t._id,
+        searches: t.n,
+        people: t.people.length,
+        foundNothing: t.empty,
+      })),
+      foundNothing: nothingRows.map((t) => ({ query: t.query || t._id, searches: t.n })),
+    };
+  }
+
+  /**
+   * One person's product search on one day: every lookup made for them, in
+   * order, with how it was answered; what they typed; and what they then
+   * saved from search to their wishlists.
+   */
+  async searchPersonDay(day: string, userId: string) {
+    const { start, end } = this.dayBounds(day);
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new AppException(ErrorCode.NOT_FOUND, 'No such person', 404);
+    }
+    const uid = new Types.ObjectId(userId);
+    const range = { createdAt: { $gte: start, $lt: end } };
+    const today = new Date().toISOString().slice(0, 10) === day;
+    const [lookupDocs, typedDocs, addedDocs, since, spent, allowance] = await Promise.all([
+      this.db
+        .collection('search_lookups')
+        .find({ userId: uid, ...range })
+        .sort({ createdAt: 1 })
+        .limit(1000)
+        .toArray(),
+      this.db
+        .collection('search_logs')
+        .find({ userId: uid, ...range })
+        .sort({ createdAt: 1 })
+        .limit(500)
+        .toArray(),
+      this.db
+        .collection('wishlist_items')
+        .find({ ownerId: uid, sourceProductId: { $ne: null }, ...range })
+        .sort({ createdAt: 1 })
+        .limit(100)
+        .project({ title: 1, wishlistId: 1, createdAt: 1 })
+        .toArray(),
+      this.lookupsSince(),
+      today ? this.budget.spentToday(userId) : Promise.resolve(null),
+      today ? this.budget.allowanceFor(userId) : Promise.resolve(null),
+    ]);
+    const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
+    const num = (v: unknown) => (typeof v === 'number' ? v : null);
+    const idOf = (v: unknown) => (v instanceof Types.ObjectId ? String(v) : null);
+    const forIds = lookupDocs.map((d) => idOf(d.forUserId)).filter((x): x is string => !!x);
+    const names = await this.user360.namesFor([userId, ...new Set(forIds)]);
+    return {
+      day,
+      userId,
+      name: names[userId] ?? null,
+      recordedSince: since && since < end ? since : null,
+      lookups: lookupDocs.map((d) => ({
+        id: String(d._id),
+        at: d.createdAt instanceof Date ? d.createdAt : null,
+        origin: str(d.origin) ?? 'other',
+        forUserId: idOf(d.forUserId),
+        query: str(d.query) ?? '',
+        category: str(d.category),
+        minPriceMinor: num(d.minPriceMinor),
+        maxPriceMinor: num(d.maxPriceMinor),
+        platform: str(d.platform),
+        answer: str(d.answer) ?? 'failed',
+        reason: str(d.reason),
+        fallback: str(d.fallback),
+        results: num(d.results) ?? 0,
+      })),
+      typed: typedDocs.map((d) => ({
+        id: String(d._id),
+        at: d.createdAt instanceof Date ? d.createdAt : null,
+        query: str(d.query) ?? '',
+        category: str(d.category),
+        platform: str(d.platform),
+        freshness: str(d.freshness) ?? 'live',
+        results: num(d.results) ?? 0,
+      })),
+      added: addedDocs.map((d) => ({
+        id: String(d._id),
+        title: str(d.title),
+        wishlistId: idOf(d.wishlistId),
+        at: d.createdAt instanceof Date ? d.createdAt : null,
+      })),
+      /** Only today's is known: the allowance resets each UTC day. */
+      allowance:
+        spent === null
+          ? null
+          : {
+              spent,
+              budget: DAILY_SEARCH_BUDGET,
+              hardCap: DAILY_SEARCH_HARD_CAP,
+              level: allowance,
+            },
+      names,
     };
   }
 

@@ -2374,6 +2374,15 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
   });
 
   describe('operations desk', () => {
+    const db = () => app.get<Connection>(getConnectionToken()).db!;
+    /** Lookups are recorded after the response; give them a moment. */
+    const eventually = async (check: () => Promise<boolean>) => {
+      for (let i = 0; i < 40; i++) {
+        if (await check()) return;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      throw new Error('never happened');
+    };
     const roleToken = async (role: string): Promise<string> => {
       const email = `${role}-o${++seq}-${Date.now()}@wishtick.test`;
       const password = 'a-long-enough-password';
@@ -2489,6 +2498,77 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         .set(auth(token))
         .send({ reason: 'Vendor is back' })
         .expect(200);
+    });
+
+    it('breaks a day down by person, and one person by lookup', async () => {
+      const token = await adminToken();
+      const user = await newUser();
+      const words = `day view ${seq}`;
+      // Sent to the store, then answered from the cache.
+      for (let i = 0; i < 2; i++) {
+        await request(server())
+          .get(`${V1}/products/search`)
+          .query({ q: words })
+          .set(auth(user.token))
+          .expect(200);
+      }
+      const uid = new Types.ObjectId(user.userId);
+      await eventually(
+        async () => (await db().collection('search_lookups').countDocuments({ userId: uid })) === 2,
+      );
+      await eventually(
+        async () => (await db().collection('search_logs').countDocuments({ userId: uid })) === 2,
+      );
+      const day = new Date().toISOString().slice(0, 10);
+
+      const summary = (
+        await request(server())
+          .get(`${V1}/admin/ops/product-search/days/${day}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{
+        recordedSince: string | null;
+        lookups: { total: number; cache: number; store: number };
+        byReason: { origin: string; total: number }[];
+        people: {
+          userId: string;
+          typed: number;
+          lookups: { total: number; cache: number; store: number };
+          why: Record<string, number>;
+        }[];
+        topSearches: { query: string; searches: number }[];
+      }>;
+      expect(summary.data.recordedSince).not.toBeNull();
+      expect(summary.data.byReason.map((r) => r.origin)).toContain('search');
+      expect(summary.data.people.find((p) => p.userId === user.userId)).toMatchObject({
+        typed: 2,
+        lookups: { total: 2, cache: 1, store: 1 },
+        why: { search: 2 },
+      });
+      expect(summary.data.topSearches.find((t) => t.query === words)?.searches).toBe(2);
+
+      const person = (
+        await request(server())
+          .get(`${V1}/admin/ops/product-search/days/${day}/people/${user.userId}`)
+          .set(auth(token))
+          .expect(200)
+      ).body as Envelope<{
+        lookups: { origin: string; query: string; answer: string }[];
+        typed: { query: string; freshness: string }[];
+        allowance: { budget: number } | null;
+      }>;
+      expect(person.data.lookups.map((l) => [l.origin, l.query, l.answer])).toEqual([
+        ['search', words, 'store'],
+        ['search', words, 'cache'],
+      ]);
+      expect(person.data.typed.map((t) => t.freshness)).toEqual(['live', 'cached']);
+      // Today's allowance is known; an earlier day's is not.
+      expect(person.data.allowance?.budget).toBe(60);
+
+      await request(server())
+        .get(`${V1}/admin/ops/product-search/days/yesterday`)
+        .set(auth(token))
+        .expect(400);
     });
 
     it('clears a named cache, and only the named ones', async () => {

@@ -20,6 +20,13 @@ import { PRODUCT_PROVIDER, type IProductProvider } from './providers/product-pro
 import { ProviderGuard, ProviderUnavailableError } from './providers/provider-guard.service';
 import { Product, type ProductDocument } from './schemas/product.schema';
 import { SearchLog, type SearchLogDocument } from './schemas/search-log.schema';
+import {
+  LookupAnswer,
+  LookupFallback,
+  SearchLookup,
+  type SearchLookupDocument,
+} from './schemas/search-lookup.schema';
+import { currentSearchContext, SearchOrigin } from './search-context';
 
 interface CacheEnvelope<T> {
   data: T;
@@ -54,6 +61,9 @@ export class ProductsService {
     @Optional()
     @InjectModel(SearchLog.name)
     private readonly searchLogs?: Model<SearchLogDocument>,
+    @Optional()
+    @InjectModel(SearchLookup.name)
+    private readonly lookups?: Model<SearchLookupDocument>,
   ) {}
 
   /**
@@ -82,6 +92,42 @@ export class ProductsService {
       .catch((err: unknown) =>
         this.logger.warn(
           `Could not log a search: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+  }
+
+  /**
+   * Notes one lookup — who it was for, why, and how it was answered — for the
+   * admin panel's day and person views. Never awaited, never able to fail it.
+   */
+  private noteLookup(
+    query: ProductSearchQuery,
+    answer: LookupAnswer,
+    results: number,
+    extra: { reason?: string; fallback?: LookupFallback } = {},
+  ): void {
+    if (!this.lookups) return;
+    const ctx = currentSearchContext();
+    const oid = (v: string | null | undefined) =>
+      v && Types.ObjectId.isValid(v) ? new Types.ObjectId(v) : null;
+    this.lookups
+      .create({
+        userId: oid(ctx?.userId),
+        origin: ctx?.origin ?? SearchOrigin.OTHER,
+        forUserId: oid(ctx?.forUserId),
+        query: (query.q ?? '').trim().slice(0, 200),
+        category: query.category ?? null,
+        minPriceMinor: query.minPriceMinor ?? null,
+        maxPriceMinor: query.maxPriceMinor ?? null,
+        platform: ctx?.platform ?? query.platform ?? null,
+        answer,
+        reason: extra.reason ?? null,
+        fallback: extra.fallback ?? null,
+        results,
+      })
+      .catch((err: unknown) =>
+        this.logger.warn(
+          `Could not note a lookup: ${err instanceof Error ? err.message : String(err)}`,
         ),
       );
   }
@@ -222,7 +268,15 @@ export class ProductsService {
       !opts.refresh && cached && Date.now() - cached.cachedAt < this.cfg.cacheTtlSeconds * 1_000;
     // A prewarm refresh is not a person's search; it would skew the hit rate.
     if (!opts.refresh) await this.countLookup(fresh ? 'hit' : 'miss');
+    const note = (
+      answer: LookupAnswer,
+      results: number,
+      extra?: { reason?: string; fallback?: LookupFallback },
+    ) => {
+      if (!opts.refresh) this.noteLookup(query, answer, results, extra);
+    };
     if (fresh && cached) {
+      note(LookupAnswer.CACHE, cached.data.items.length);
       return {
         ...cached.data,
         items: trustedFirst(cached.data.items),
@@ -231,9 +285,12 @@ export class ProductsService {
     }
 
     try {
+      // A search already on its way to the store is shared, not sent again.
+      const sharing = this.inFlight.has(key);
       const result = await this.once(key, () =>
         this.guard.run(this.provider.name, 'search', () => this.provider.search(query)),
       );
+      note(sharing ? LookupAnswer.SHARED : LookupAnswer.STORE, result.items.length);
 
       // Cached with the STALE ttl, not the fresh one: the envelope's timestamp
       // decides freshness, so one key serves both roles and there is always a
@@ -251,9 +308,16 @@ export class ProductsService {
       // Trusted stores first on every page — see merchant-trust.ts.
       return { ...result, items: trustedFirst(result.items), freshness: ResultFreshness.LIVE };
     } catch (err) {
-      if (!(err instanceof ProviderUnavailableError)) throw err;
+      if (!(err instanceof ProviderUnavailableError)) {
+        note(LookupAnswer.FAILED, 0);
+        throw err;
+      }
 
       if (cached) {
+        note(LookupAnswer.UNAVAILABLE, cached.data.items.length, {
+          reason: err.reason,
+          fallback: LookupFallback.OLD_COPY,
+        });
         this.logger.warn(
           `${this.provider.name} unavailable (${err.reason}); serving stale search results`,
         );
@@ -269,6 +333,10 @@ export class ProductsService {
       // dead end. This is what keeps search working when the vendor's monthly
       // quota runs out, which is not an outage that ends in minutes.
       const saved = await this.catalogueSearch(query);
+      note(LookupAnswer.UNAVAILABLE, saved?.items.length ?? 0, {
+        reason: err.reason,
+        fallback: saved ? LookupFallback.SAVED_PRODUCTS : LookupFallback.NOTHING,
+      });
       if (saved) {
         this.logger.warn(
           `${this.provider.name} unavailable (${err.reason}); serving ${saved.items.length} saved products`,

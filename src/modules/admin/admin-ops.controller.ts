@@ -132,6 +132,20 @@ export class AdminOpsController {
     return this.ops.resetBreaker(actor, ip ?? null, dto.reason);
   }
 
+  @Get('product-search/days/:day')
+  @RequirePermission(AdminPermission.OPS_VIEW)
+  @ApiOperation({ summary: 'One day of product search: who, why, and cache or store' })
+  searchDay(@Param('day') day: string): Promise<unknown> {
+    return this.ops.searchDay(day);
+  }
+
+  @Get('product-search/days/:day/people/:userId')
+  @RequirePermission(AdminPermission.OPS_VIEW)
+  @ApiOperation({ summary: 'One person on one day of product search, lookup by lookup' })
+  searchPersonDay(@Param('day') day: string, @Param('userId') userId: string): Promise<unknown> {
+    return this.ops.searchPersonDay(day, userId);
+  }
+
   @Get('product-search/budget/:userId')
   @RequirePermission(AdminPermission.OPS_VIEW)
   @ApiOperation({ summary: "One person's product searches today against their budget" })
