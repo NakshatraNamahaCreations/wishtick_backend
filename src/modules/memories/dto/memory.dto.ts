@@ -14,7 +14,12 @@ import {
   MaxLength,
 } from 'class-validator';
 import { IsTimezone } from 'src/common/validators/is-timezone.validator';
-import { MEMORY_REPLY_MAX_RECIPIENTS, MemoryWishKind, MEMORY_WISH_TEXT_MAX } from '../memory.types';
+import {
+  MEMORY_INVITE_MAX_PEOPLE,
+  MEMORY_REPLY_MAX_RECIPIENTS,
+  MemoryWishKind,
+  MEMORY_WISH_TEXT_MAX,
+} from '../memory.types';
 
 const trim = ({ value }: { value: unknown }): unknown =>
   typeof value === 'string' ? value.trim() : value;
@@ -230,6 +235,25 @@ export class ShareMemoriesDto {
   @IsArray()
   @ArrayNotEmpty()
   @ArrayMaxSize(MEMORY_SHARE_MAX_PEOPLE)
+  @IsMongoId({ each: true })
+  userIds!: string[];
+}
+
+/**
+ * The host asking some of their WishMates to add a wish.
+ *
+ * Ids that cannot be asked — the recipient, someone already asked, someone
+ * who is not a WishMate — are skipped and reported rather than refusing the
+ * batch, as a group gift's invite does.
+ */
+export class InviteToMemoryDto {
+  @ApiProperty({
+    type: [String],
+    description: `Up to ${MEMORY_INVITE_MAX_PEOPLE} user ids of your WishMates`,
+  })
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(MEMORY_INVITE_MAX_PEOPLE)
   @IsMongoId({ each: true })
   userIds!: string[];
 }

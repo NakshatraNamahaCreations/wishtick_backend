@@ -73,3 +73,21 @@ export const MEMORY_MAX_UNLOCK_YEARS = 5;
  * bound the notification fan-out, not to second-guess the sender.
  */
 export const MEMORY_REPLY_MAX_RECIPIENTS = 100;
+
+/**
+ * How many WishMates one "invite to add a wish" may name. Bounds the
+ * notification fan-out of a single tap; a host with more simply sends twice.
+ */
+export const MEMORY_INVITE_MAX_PEOPLE = 50;
+
+/**
+ * Why somebody named in an invite was not asked.
+ *
+ *  - `self`            — the host, who needs no invitation to their own capsule.
+ *  - `recipient`       — the person it is for. Asking them would give it away.
+ *  - `already_invited` — asked before; they are not told twice.
+ *  - `not_wishmate`    — not an accepted WishMate of the host. The picker only
+ *                        offers WishMates, but the server does not take the
+ *                        client's word for it.
+ */
+export type MemoryInviteSkipReason = 'self' | 'recipient' | 'already_invited' | 'not_wishmate';

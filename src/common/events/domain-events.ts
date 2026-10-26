@@ -522,6 +522,23 @@ export interface MemoryWishLovedEvent {
 }
 
 /**
+ * A memory's host asked some of their WishMates to add a wish to it.
+ *
+ * Carries only the people newly asked — the service has already dropped the
+ * recipient, the host, anyone asked before and anyone who is not a WishMate —
+ * so the listener notifies every id in it and decides nothing.
+ */
+export const MEMORY_WISH_INVITED = 'memory.wish_invited';
+
+export interface MemoryWishInvitedEvent {
+  capsuleId: string;
+  hostId: string;
+  /** The capsule's title, for the notification's words. Never its content. */
+  title: string;
+  invitedUserIds: string[];
+}
+
+/**
  * A user was suspended or force-logged-out by an admin. Their access is already
  * revoked at the guard layer (status + tokensInvalidBefore); the chat gateway
  * additionally drops their live sockets so a websocket cannot outlive the ban.

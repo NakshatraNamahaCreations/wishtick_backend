@@ -157,6 +157,29 @@ describe('NotificationRenderer', () => {
     });
   });
 
+  /** To a WishMate the host asked to add a wish to a sealed memory. */
+  describe('an invitation to add a wish', () => {
+    const invited = (over: Record<string, unknown> = {}) =>
+      renderer.content(NotificationType.MEMORY_WISH_INVITED, {
+        hostName: 'Priya',
+        title: "Ananya's Birthday",
+        url: 'https://app.wishtick.test/memories/m1/wishes/kind',
+        ...over,
+      });
+
+    it('names who asked, and what to add a wish to', () => {
+      const out = invited();
+      expect(out.title).toBe('Priya invited you to add a wish');
+      expect(out.text).toContain("Add your wish to Ananya's Birthday — it opens on the day.");
+    });
+
+    it('still reads without a name or a title', () => {
+      const out = invited({ hostName: undefined, title: undefined });
+      expect(out.title).toBe('Someone invited you to add a wish');
+      expect(out.text).toContain('Add your wish to their wishes');
+    });
+  });
+
   it('a cancellation names the party that is off', () => {
     const c = renderer.content(NotificationType.EVENT_CANCELLED, {
       eventTitle: 'Diwali Night',

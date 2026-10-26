@@ -36,6 +36,7 @@ import {
   MEMORY_REPLY_SENT,
   MEMORY_SHARED,
   MEMORY_UNLOCKED,
+  MEMORY_WISH_INVITED,
   MEMORY_WISH_LOVED,
   REEL_RELEASED,
   USER_REGISTERED,
@@ -71,6 +72,7 @@ import {
   type MemoryReplySentEvent,
   type MemorySharedEvent,
   type MemoryUnlockedEvent,
+  type MemoryWishInvitedEvent,
   type MemoryWishLovedEvent,
   type ReelReleasedEvent,
   type UserRegisteredEvent,
@@ -1012,6 +1014,32 @@ export class NotificationListener {
           url: `${this.web}/memories/${e.capsuleId}`,
         },
       });
+    });
+  }
+
+  /**
+   * A host asked some WishMates to add a wish. Each is told once: the refId is
+   * the memory then the person — memory first, as every memory refId, so the
+   * app opens its add-a-wish screen — and the service never names anybody
+   * twice, so the ledger's dedupe is only the backstop.
+   */
+  @OnEvent(MEMORY_WISH_INVITED)
+  async onMemoryWishInvited(e: MemoryWishInvitedEvent): Promise<void> {
+    await this.guard('memory-wish-invited', async () => {
+      const hostName = await this.userName(e.hostId);
+      for (const userId of new Set(e.invitedUserIds)) {
+        await this.notifications.enqueue({
+          userId,
+          type: NotificationType.MEMORY_WISH_INVITED,
+          refId: `${e.capsuleId}:invite:${userId}`,
+          payload: {
+            hostName,
+            title: e.title,
+            capsuleId: e.capsuleId,
+            url: `${this.web}/memories/${e.capsuleId}/wishes/kind`,
+          },
+        });
+      }
     });
   }
 

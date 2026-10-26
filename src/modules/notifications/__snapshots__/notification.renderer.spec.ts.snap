@@ -448,6 +448,17 @@ Open the wishes: https://app.wishtick.test/x",
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: memory_wish_invited 1`] = `
+{
+  "sms": "Someone invited you to add a wish — https://app.wishtick.test/x",
+  "subject": "Someone invited you to add a wish",
+  "text": "Add your wish to Password changed — it opens on the day.
+
+Add your wish: https://app.wishtick.test/x",
+  "title": "Someone invited you to add a wish",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: memory_wish_loved 1`] = `
 {
   "sms": "Someone loved your wish ❤️ — https://app.wishtick.test/x",

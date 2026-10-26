@@ -146,6 +146,21 @@ export class MemoryCapsule {
   @Prop({ type: [SchemaTypes.ObjectId], ref: 'User', default: [] })
   sharedWith!: Types.ObjectId[];
 
+  /**
+   * WishMates the host has asked, by name, to add a wish.
+   *
+   * A record of who was asked, not a permission: anyone signed in who holds
+   * the capsule id may contribute, invited or not — the share link has always
+   * worked that way. It exists so the same person is not notified twice, and
+   * so the host's picker can mark who it already went to. Never the
+   * recipient: telling them would be telling them the surprise exists.
+   *
+   * Not indexed. It is only ever read off a capsule already in hand, never
+   * queried by, so an index would be a write cost with no read behind it.
+   */
+  @Prop({ type: [SchemaTypes.ObjectId], ref: 'User', default: [] })
+  invitedUserIds!: Types.ObjectId[];
+
   createdAt!: Date;
   updatedAt!: Date;
 }

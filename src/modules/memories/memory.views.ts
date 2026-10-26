@@ -163,6 +163,17 @@ export interface MemoryCapsuleView {
    * to know who else was shown.
    */
   sharedWith?: PublicIdentity[];
+  /**
+   * Host-only: the WishMates already asked to add a wish, so the invite
+   * picker marks them rather than offering a tap the server would skip.
+   */
+  invitedUserIds?: string[];
+  /**
+   * Host-only: the accounts that have written a wish here, so the same picker
+   * can say "Added a wish" beside them. Ids alone — the host already sees
+   * their first names in [contributors], and nothing they wrote.
+   */
+  contributorIds?: string[];
   createdAt: Date;
   // Everything below is empty until `unlocked` — the time-lock.
   wishes: MemoryWishView[];
@@ -280,6 +291,18 @@ export const toMemoryCapsuleView = (
     isRecipient,
     isSharedWithMe,
     ...(isRecipient ? { sharedWith: opts.sharedWith ?? [] } : {}),
+    // Who the host asked, and who has answered, are the host's business: a
+    // contributor has no need to know who else was asked.
+    ...(isHost
+      ? {
+          invitedUserIds: (capsule.invitedUserIds ?? []).map((u) => u.toString()),
+          contributorIds: [
+            ...new Set(
+              wishes.flatMap((w) => (w.contributorId ? [w.contributorId.toString()] : [])),
+            ),
+          ],
+        }
+      : {}),
     createdAt: capsule.createdAt,
     // The wishes are for the person the memory is *for*, and nobody else —
     // opening the capsule used to hand every wish to every viewer, so a host

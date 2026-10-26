@@ -1904,6 +1904,151 @@ describe('Memories (e2e)', () => {
     });
   });
 
+  describe('inviting WishMates to add a wish', () => {
+    interface InviteResult {
+      invited: string[];
+      skipped: { userId: string; reason: string }[];
+    }
+
+    const invite = (actor: Actor, capsuleId: string, userIds: string[]) =>
+      request(app.getHttpServer())
+        .post(`${V1}/memories/${capsuleId}/invites`)
+        .set(auth(actor.token))
+        .send({ userIds });
+
+    /** Every invitation-to-wish notice [actor] holds. */
+    const invitations = async (actor: Actor): Promise<{ title: string; body: string }[]> => {
+      await new Promise((r) => setTimeout(r, 150));
+      await ctx.drainNotifications();
+      return (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/notifications`)
+            .set(auth(actor.token))
+            .expect(200)
+        ).body as Envelope<{ type: string; title: string; body: string }[]>
+      ).data.filter((n) => n.type === 'memory_wish_invited');
+    };
+
+    const hostView = async (host: Actor, capsuleId: string) =>
+      (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/memories/${capsuleId}`)
+            .set(auth(host.token))
+            .expect(200)
+        ).body as Envelope<MemoryView & { invitedUserIds?: string[]; contributorIds?: string[] }>
+      ).data;
+
+    it('asks a WishMate once, who can then add a wish — and never tells the recipient', async () => {
+      const { host, recipient } = await hostAndRecipient();
+      const mate = await newUser();
+      await becomeWishmates(host, mate);
+      const stranger = await newUser();
+      const memory = await createMemory(host, {}, recipient);
+
+      const res = await invite(host, memory.id, [
+        mate.userId,
+        recipient.userId,
+        stranger.userId,
+        host.userId,
+      ]).expect(200);
+      const result = (res.body as Envelope<InviteResult>).data;
+      expect(result.invited).toEqual([mate.userId]);
+      expect(result.skipped).toEqual(
+        expect.arrayContaining([
+          { userId: recipient.userId, reason: 'recipient' },
+          { userId: stranger.userId, reason: 'not_wishmate' },
+          { userId: host.userId, reason: 'self' },
+        ]),
+      );
+      expect(result.skipped).toHaveLength(3);
+
+      // The WishMate hears who asked and what for — and nothing anyone wrote.
+      const told = await invitations(mate);
+      expect(told).toHaveLength(1);
+      expect(told[0].title).toBe('Aarav Sharma invited you to add a wish');
+      expect(told[0].body).toBe("Add your wish to Ananya's Birthday — it opens on the day.");
+
+      // The surprise survives: the person it is for heard nothing, and neither
+      // did the stranger who was named.
+      expect(await invitations(recipient)).toHaveLength(0);
+      expect(await invitations(stranger)).toHaveLength(0);
+
+      // The host's view says who was asked, so the picker can mark them.
+      const view = await hostView(host, memory.id);
+      expect(view.invitedUserIds).toEqual([mate.userId]);
+
+      // Asked again: skipped, and not told twice.
+      const again = (await invite(host, memory.id, [mate.userId]).expect(200))
+        .body as Envelope<InviteResult>;
+      expect(again.data).toEqual({
+        invited: [],
+        skipped: [{ userId: mate.userId, reason: 'already_invited' }],
+      });
+      expect(await invitations(mate)).toHaveLength(1);
+
+      // What the invitation was for.
+      await request(app.getHttpServer())
+        .post(`${V1}/memories/${memory.id}/wishes`)
+        .set(auth(mate.token))
+        .send({ kind: 'text', text: 'Happy Birthday!' })
+        .expect(201);
+      expect((await hostView(host, memory.id)).contributorIds).toEqual([mate.userId]);
+
+      // Who was asked is the host's to know, not a contributor's.
+      const asMate = (
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/memories/${memory.id}`)
+            .set(auth(mate.token))
+            .expect(200)
+        ).body as Envelope<MemoryView & { invitedUserIds?: string[] }>
+      ).data;
+      expect(asMate.invitedUserIds).toBeUndefined();
+    });
+
+    it('is the host’s alone: anyone else gets a 404', async () => {
+      const { host, recipient } = await hostAndRecipient();
+      const mate = await newUser();
+      await becomeWishmates(host, mate);
+      const memory = await createMemory(host, {}, recipient);
+
+      const res = await invite(mate, memory.id, [recipient.userId]).expect(404);
+      expect((res.body as Envelope<unknown>).error?.code).toBe(ErrorCode.MEMORY_NOT_FOUND);
+      expect(await invitations(recipient)).toHaveLength(0);
+    });
+
+    it('refuses once the memory has stopped taking wishes', async () => {
+      const { host, recipient } = await hostAndRecipient();
+      const mate = await newUser();
+      await becomeWishmates(host, mate);
+      const memory = await createMemory(host, {}, recipient);
+      await request(app.getHttpServer())
+        .post(`${V1}/memories/${memory.id}/unlock`)
+        .set(auth(host.token))
+        .expect(200);
+
+      const res = await invite(host, memory.id, [mate.userId]).expect(409);
+      expect((res.body as Envelope<unknown>).error?.code).toBe(
+        ErrorCode.MEMORY_NOT_ACCEPTING_WISHES,
+      );
+      expect(await invitations(mate)).toHaveLength(0);
+
+      // Sealed by the host but not yet open takes no wishes either.
+      const sealed = await createMemory(host, {}, recipient);
+      await capsuleModel.updateOne({ _id: sealed.id }, { $set: { status: 'locked' } }).exec();
+      await invite(host, sealed.id, [mate.userId]).expect(409);
+    });
+
+    it('needs somebody to ask', async () => {
+      const host = await newUser();
+      const memory = await createMemory(host);
+      await invite(host, memory.id, []).expect(400);
+      await invite(host, memory.id, ['not-an-id']).expect(400);
+    });
+  });
+
   describe('the two lists on the Memories tab (4104:1433)', () => {
     it('separates what you created from what you contributed to', async () => {
       const host = await newUser();

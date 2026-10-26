@@ -11,8 +11,10 @@ import { ErrorCode } from 'src/common/errors/error-codes';
 import {
   MEMORY_SHARED,
   MEMORY_UNLOCKED,
+  MEMORY_WISH_INVITED,
   type MemorySharedEvent,
   type MemoryUnlockedEvent,
+  type MemoryWishInvitedEvent,
 } from 'src/common/events/domain-events';
 import type { AppConfig } from 'src/config/configuration';
 import { QUEUE } from 'src/infra/queue/queue.constants';
@@ -28,7 +30,13 @@ import { WishmatesService } from 'src/modules/wishmates/wishmates.service';
 import { WishmateRelationship, type PublicIdentity } from 'src/modules/wishmates/wishmates.views';
 import type { CreateMemoryDto, UpdateMemoryDto } from './dto/memory.dto';
 import { MEMORY_UNLOCK_JOB, unlockJobId, type MemoryUnlockJobData } from './memory.jobs';
-import { MEMORY_MAX_UNLOCK_YEARS, MEMORY_TRANSITIONS, MemoryStatus } from './memory.types';
+import {
+  MEMORY_MAX_UNLOCK_YEARS,
+  MEMORY_SUBMITTABLE,
+  MEMORY_TRANSITIONS,
+  MemoryStatus,
+  type MemoryInviteSkipReason,
+} from './memory.types';
 import {
   toIncomingMemoryView,
   toMemoryCapsuleView,
@@ -432,6 +440,96 @@ export class MemoriesService {
       .limit(MAX_OPEN_CAPSULES)
       .exec();
     return Promise.all(capsules.map((c) => this.assemble(c, userId)));
+  }
+
+  // ── Inviting contributors ─────────────────────────────────────────────────
+
+  /**
+   * The host asking some of their WishMates, by name, to add a wish.
+   *
+   * The link has always been the way in, and still is for anyone else; this
+   * is the way to reach the people already on Wishtick without leaving it.
+   * Nothing here grants access — anyone signed in who holds the capsule id may
+   * contribute — so what an invitation actually does is put a notification in
+   * front of the right person, once.
+   *
+   * Ids that cannot be asked are skipped and reported, not refused: a picker of
+   * several people that fails wholesale over one stale row is worse than one
+   * that asks who it can and says why it left the others out. The recipient is
+   * always skipped, before anything else is checked about them — they are the
+   * one person whose notification would spoil the whole thing.
+   *
+   * 404 to anyone but the host, like every host-only call here; 409 once the
+   * capsule has stopped taking wishes, since an invitation to add one then
+   * would be an invitation to a refusal.
+   */
+  async invite(
+    id: string,
+    hostId: string,
+    userIds: string[],
+  ): Promise<{
+    invited: string[];
+    skipped: { userId: string; reason: MemoryInviteSkipReason }[];
+  }> {
+    const capsule = await this.findOwnedOrFail(id, hostId);
+    if (!MEMORY_SUBMITTABLE.includes(capsule.status)) {
+      throw new AppException(
+        ErrorCode.MEMORY_NOT_ACCEPTING_WISHES,
+        'No more wishes can be added here',
+        409,
+      );
+    }
+
+    const recipientId = capsule.recipientUserId?.toString() ?? null;
+    const asked = new Set((capsule.invitedUserIds ?? []).map((u) => u.toString()));
+    // One read for the whole batch rather than a relationship lookup per id.
+    const mates = new Set((await this.wishmates.mateIdsOf(hostId)).map((u) => u.toString()));
+
+    // In this order: the recipient is named as the recipient even when they
+    // are also a WishMate, which they almost always are.
+    const skipReason = (userId: string): MemoryInviteSkipReason | null => {
+      if (userId === hostId) return 'self';
+      if (userId === recipientId) return 'recipient';
+      if (asked.has(userId)) return 'already_invited';
+      if (!mates.has(userId)) return 'not_wishmate';
+      return null;
+    };
+
+    const invited: string[] = [];
+    const skipped: { userId: string; reason: MemoryInviteSkipReason }[] = [];
+    for (const userId of new Set(userIds)) {
+      const reason = skipReason(userId);
+      if (reason) skipped.push({ userId, reason });
+      else invited.push(userId);
+    }
+
+    if (invited.length > 0) {
+      // Guarded on the status as well as the id: the capsule may have opened
+      // between the read above and now, and an invitation recorded against an
+      // opened capsule would announce something nobody can do any more.
+      const written = await this.capsuleModel
+        .updateOne(
+          { _id: capsule._id, status: { $in: MEMORY_SUBMITTABLE } },
+          { $addToSet: { invitedUserIds: { $each: invited.map((u) => new Types.ObjectId(u)) } } },
+        )
+        .exec();
+      if (written.matchedCount === 0) {
+        throw new AppException(
+          ErrorCode.MEMORY_NOT_ACCEPTING_WISHES,
+          'No more wishes can be added here',
+          409,
+        );
+      }
+
+      this.emitter.emit(MEMORY_WISH_INVITED, {
+        capsuleId: capsule._id.toString(),
+        hostId,
+        title: capsule.title,
+        invitedUserIds: invited,
+      } satisfies MemoryWishInvitedEvent);
+      this.logger.log(`Memory ${id}: ${invited.length} invited, ${skipped.length} skipped`);
+    }
+    return { invited, skipped };
   }
 
   // ── Unlock ────────────────────────────────────────────────────────────────

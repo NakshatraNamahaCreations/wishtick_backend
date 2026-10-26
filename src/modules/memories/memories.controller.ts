@@ -20,6 +20,7 @@ import { Public } from 'src/common/decorators/public.decorator';
 import {
   AddMemoryWishDto,
   CreateMemoryDto,
+  InviteToMemoryDto,
   SendMemoryReplyDto,
   ShareMemoriesDto,
   UpdateMemoryDto,
@@ -27,6 +28,7 @@ import {
 import { MemoriesService } from './memories.service';
 import { MemoryRepliesService } from './memory-replies.service';
 import { MemoryWishesService } from './memory-wishes.service';
+import type { MemoryInviteSkipReason } from './memory.types';
 import type {
   IncomingMemoryView,
   MemoryCapsuleView,
@@ -202,6 +204,28 @@ export class MemoriesController {
   @ApiOperation({ summary: 'Delete a capsule and every wish in it (host)' })
   remove(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<void> {
     return this.memories.remove(id, userId);
+  }
+
+  @Post(':id/invites')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Ask some of your WishMates to add a wish (host)',
+    description:
+      'Each person newly asked is notified once. The recipient, anyone already asked and ' +
+      'anyone who is not your WishMate are skipped, each with a reason, rather than ' +
+      'failing the batch.',
+  })
+  @ApiResponseDoc({ status: 404, description: 'MEMORY_NOT_FOUND — not your capsule' })
+  @ApiResponseDoc({ status: 409, description: 'MEMORY_NOT_ACCEPTING_WISHES' })
+  invite(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Body() dto: InviteToMemoryDto,
+  ): Promise<{
+    invited: string[];
+    skipped: { userId: string; reason: MemoryInviteSkipReason }[];
+  }> {
+    return this.memories.invite(id, userId, dto.userIds);
   }
 
   @Post(':id/unlock')

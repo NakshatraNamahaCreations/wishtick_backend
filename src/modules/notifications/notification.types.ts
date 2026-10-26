@@ -87,6 +87,8 @@ export enum NotificationType {
   /** The person a memory was for loved your wish in it. */
   MEMORY_WISH_LOVED = 'memory_wish_loved',
   MEMORY_SHARED = 'memory_shared',
+  /** A memory's host asked you, by name, to add a wish to it. */
+  MEMORY_WISH_INVITED = 'memory_wish_invited',
   CONTENT_REMOVED = 'content_removed',
   /** A message from Wishtick to a group of people, written by an admin. */
   ADMIN_ANNOUNCEMENT = 'admin_announcement',
@@ -451,6 +453,16 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.MEMORIES,
     template: 'memory-wish-loved',
+  },
+  [NotificationType.MEMORY_WISH_INVITED]: {
+    // Not DIGEST, for the reason GROUP_GIFT_INVITE is not: it asks for
+    // something before a deadline — the capsule seals — and tomorrow's summary
+    // is how somebody hears about it after it has opened. No email: a WishMate
+    // is reached in the app.
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.MEMORIES,
+    template: 'memory-wish-invited',
   },
   [NotificationType.CONTENT_REMOVED]: {
     // A moderation notice is account business and cannot be unsubscribed.

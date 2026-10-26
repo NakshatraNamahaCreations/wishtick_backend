@@ -624,6 +624,20 @@ const CONTENT: Record<NotificationType, (p: Payload) => Content> = {
     ],
     cta: { label: 'See your wish', url: s(p, 'url') },
   }),
+  /**
+   * "Priya invited you to add a wish" — the capsule's title and that it is
+   * sealed, and nothing else. What anybody else wrote is not the invitee's to
+   * read, now or after it opens.
+   */
+  [NotificationType.MEMORY_WISH_INVITED]: (p) => {
+    const headline = `${who(p, 'hostName')} invited you to add a wish`;
+    return {
+      subject: headline,
+      title: headline,
+      lines: [`Add your wish to ${s(p, 'title', 'their wishes')} — it opens on the day.`],
+      cta: { label: 'Add your wish', url: s(p, 'url') },
+    };
+  },
   [NotificationType.ADMIN_ANNOUNCEMENT]: (p) => ({
     subject: s(p, 'title', 'News from Wishtick'),
     title: s(p, 'title', 'News from Wishtick'),
