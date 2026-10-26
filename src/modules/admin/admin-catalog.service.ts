@@ -37,6 +37,7 @@ import type { AdminPage } from './admin-query.util';
 import { AdminUser360Service } from './admin-user360.service';
 import { AdminPermission, type AuthenticatedAdmin } from './admin.types';
 import { AuditService } from './audit.service';
+import { SearchOrigin, withSearchContext } from 'src/modules/products/search-context';
 
 // ── Products, as an explorer area ─────────────────────────────────────────────
 
@@ -970,9 +971,10 @@ export class AdminCatalogService {
       inStock: d.inStock !== false,
       offers: Array.isArray(d.offers) ? d.offers.length : 0,
     });
-    const { freshness } = await this.products.getDetails(
-      String(doc.provider),
-      String(doc.externalId),
+    // An admin asking for it again means now, not the copy kept for shoppers.
+    const { freshness } = await withSearchContext(
+      { userId: null, origin: SearchOrigin.ADMIN },
+      () => this.products.getDetails(String(doc.provider), String(doc.externalId), { fresh: true }),
     );
     const after = await loadDoc(this.db, SPECS[kind].collection, rowId);
     await this.audit.record({

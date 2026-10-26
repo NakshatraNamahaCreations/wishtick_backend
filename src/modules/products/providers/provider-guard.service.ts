@@ -1,8 +1,37 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
 import type { AppConfig } from 'src/config/configuration';
 import { CacheService } from 'src/infra/redis/cache.service';
+import {
+  RequestOutcome,
+  RequestPurpose,
+  VendorRequest,
+  type VendorRequestDocument,
+} from '../schemas/vendor-request.schema';
+import { currentSearchContext, SearchOrigin } from '../search-context';
 import { CircuitBreaker } from './circuit-breaker';
+
+/** What each guard label is for, when the label alone says. */
+const LABEL_PURPOSE: Record<string, RequestPurpose> = {
+  search: RequestPurpose.SEARCH,
+  sync: RequestPurpose.PRICE_CHECK,
+  'monetize-details': RequestPurpose.AFFILIATE_LINK,
+  categories: RequestPurpose.CATEGORIES,
+  amazon_product: RequestPurpose.PASTED_LINK,
+  link_match: RequestPurpose.PASTED_LINK,
+};
+
+/** What a detail lookup is for depends on what the person was doing. */
+const DETAIL_PURPOSE: Partial<Record<SearchOrigin, RequestPurpose>> = {
+  [SearchOrigin.ADD_TO_WISHLIST]: RequestPurpose.ADD_TO_WISHLIST,
+  [SearchOrigin.PASTED_LINK]: RequestPurpose.PASTED_LINK,
+  [SearchOrigin.ADMIN]: RequestPurpose.ADMIN,
+};
+
+/** SerpApi's words when the plan's searches are used up (it answers 429). */
+const PLAN_USED_UP = /run out of searches|out of searches/i;
 
 export class ProviderUnavailableError extends Error {
   constructor(
@@ -36,6 +65,9 @@ export class ProviderGuard {
   constructor(
     private readonly cache: CacheService,
     private readonly config: ConfigService<AppConfig, true>,
+    @Optional()
+    @InjectModel(VendorRequest.name)
+    private readonly requests?: Model<VendorRequestDocument>,
   ) {}
 
   private breakerFor(provider: string): CircuitBreaker {
@@ -64,8 +96,10 @@ export class ProviderGuard {
    * Runs a provider call under the full guard.
    *
    * @param label used in logs and as the rate-limit bucket key.
+   * @param subject what is being asked about — the words, or the product —
+   *   kept with the record of each request.
    */
-  async run<T>(provider: string, label: string, fn: () => Promise<T>): Promise<T> {
+  async run<T>(provider: string, label: string, fn: () => Promise<T>, subject = ''): Promise<T> {
     const cfg = this.config.get('products', { infer: true });
     const breaker = this.breakerFor(provider);
 
@@ -96,9 +130,11 @@ export class ProviderGuard {
       try {
         const result = await ProviderGuard.withTimeout(fn(), cfg.timeoutMs, provider);
         breaker.recordSuccess();
+        this.note(provider, label, subject, attempt, RequestOutcome.ANSWERED, null);
         return result;
       } catch (err) {
         lastError = err;
+        this.note(provider, label, subject, attempt, ProviderGuard.outcomeOf(err), statusOf(err));
 
         if (!ProviderGuard.isRetryable(err)) {
           // A 4xx means the request itself is wrong; retrying just repeats it.
@@ -215,13 +251,67 @@ export class ProviderGuard {
    * a statement about the request, and repeating it three times just multiplies
    * the load and the latency for the same answer.
    */
+  /**
+   * Notes one request sent — what for, who for, how it was answered — for the
+   * admin panel. Never awaited, and never able to fail the request.
+   */
+  private note(
+    provider: string,
+    label: string,
+    subject: string,
+    attempt: number,
+    outcome: RequestOutcome,
+    status: number | null,
+  ): void {
+    if (!this.requests) return;
+    const ctx = currentSearchContext();
+    const purpose =
+      label === 'details'
+        ? ((ctx && DETAIL_PURPOSE[ctx.origin]) ?? RequestPurpose.PRODUCT_OPENED)
+        : (LABEL_PURPOSE[label] ?? RequestPurpose.OTHER);
+    const oid = (v: string | null | undefined) =>
+      v && Types.ObjectId.isValid(v) ? new Types.ObjectId(v) : null;
+    this.requests
+      .create({
+        provider,
+        label,
+        purpose,
+        origin: purpose === RequestPurpose.SEARCH ? (ctx?.origin ?? SearchOrigin.OTHER) : null,
+        userId: oid(ctx?.userId),
+        forUserId: oid(ctx?.forUserId),
+        subject: subject.slice(0, 200),
+        attempt,
+        outcome,
+        status,
+      })
+      .catch((err: unknown) =>
+        this.logger.warn(
+          `Could not note a request: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+  }
+
+  private static outcomeOf(err: unknown): RequestOutcome {
+    if (ProviderGuard.planUsedUp(err)) return RequestOutcome.PLAN_USED_UP;
+    if (err instanceof Error && err.name === 'ProviderTimeoutError') return RequestOutcome.TIMEOUT;
+    const status = statusOf(err);
+    if (status !== null && status >= 400 && status < 500) return RequestOutcome.REFUSED;
+    return RequestOutcome.FAILED;
+  }
+
+  /** The plan's searches are used up: asking again cannot help until it renews. */
+  private static planUsedUp(err: unknown): boolean {
+    return statusOf(err) === 429 && err instanceof Error && PLAN_USED_UP.test(err.message);
+  }
+
   private static isRetryable(err: unknown): boolean {
     if (!(err instanceof Error)) return false;
     if (err.name === 'ProviderTimeoutError') return true;
+    // A 429 is usually "slow down", worth one more try — but not when it says
+    // the plan is used up. That retry was a second refused request every time.
+    if (ProviderGuard.planUsedUp(err)) return false;
 
-    const status =
-      (err as { status?: number; statusCode?: number }).status ??
-      (err as { statusCode?: number }).statusCode;
+    const status = statusOf(err);
     if (typeof status === 'number') {
       return status === 429 || status >= 500;
     }
@@ -231,4 +321,13 @@ export class ProviderGuard {
       code ?? '',
     );
   }
+}
+
+/** The HTTP status an upstream error carries, if any. */
+function statusOf(err: unknown): number | null {
+  if (!err || typeof err !== 'object') return null;
+  const status =
+    (err as { status?: number; statusCode?: number }).status ??
+    (err as { statusCode?: number }).statusCode;
+  return typeof status === 'number' ? status : null;
 }

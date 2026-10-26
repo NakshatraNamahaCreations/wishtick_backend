@@ -1,7 +1,7 @@
 import request from 'supertest';
 import type { INestApplication } from '@nestjs/common';
-import { getModelToken } from '@nestjs/mongoose';
-import type { Model } from 'mongoose';
+import { getConnectionToken, getModelToken } from '@nestjs/mongoose';
+import { Types, type Connection, type Model } from 'mongoose';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { ErrorCode } from 'src/common/errors/error-codes';
@@ -11,6 +11,7 @@ import { SerpApiClient } from 'src/modules/products/providers/serpapi/serpapi.cl
 import { FixtureProductProvider } from 'src/modules/products/providers/fixture-provider';
 import { ProviderGuard } from 'src/modules/products/providers/provider-guard.service';
 import { ResultFreshness } from 'src/modules/products/product.types';
+import { ProductsService } from 'src/modules/products/products.service';
 import { Product, type ProductDocument } from 'src/modules/products/schemas/product.schema';
 import {
   ClickEvent,
@@ -373,6 +374,9 @@ describe('Products & affiliate (e2e)', () => {
         .set(auth(token))
         .expect(200);
 
+      // The detail copy kept for a few hours would answer first; this is
+      // about what happens once that has lapsed.
+      for (const key of await ctx.redis.keys('*products:details:*')) await ctx.redis.del(key);
       fixture.faults = { fail: true };
       const res = (
         await request(app.getHttpServer())
@@ -383,6 +387,104 @@ describe('Products & affiliate (e2e)', () => {
 
       expect(res.data.freshness).toBe(ResultFreshness.STALE);
       expect(res.data.product.title).toContain('Headphones');
+    });
+  });
+
+  // ── What the store is sent, and what is counted ───────────────────────────
+
+  describe('store requests', () => {
+    const requests = () =>
+      app.get<Connection>(getConnectionToken()).db!.collection('vendor_requests');
+    /** Requests are recorded after the answer; give them a moment. */
+    const settle = async (check: () => Promise<boolean>) => {
+      for (let i = 0; i < 40; i++) {
+        if (await check()) return;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      throw new Error('never happened');
+    };
+    const today = () => new Date().toISOString().slice(0, 10);
+    const counters = async () => (await app.get(ProductsService).searchStatsOn([today()]))[0];
+
+    it('opens a product once from the store, then from the copy kept', async () => {
+      const { token, userId } = await newUser();
+      const open = async () =>
+        (
+          await request(app.getHttpServer())
+            .get(`${V1}/products/fixture/hp-001`)
+            .set(auth(token))
+            .expect(200)
+        ).body as Envelope<{ freshness: ResultFreshness }>;
+
+      expect((await open()).data.freshness).toBe(ResultFreshness.LIVE);
+      expect((await open()).data.freshness).toBe(ResultFreshness.CACHED);
+
+      const mine = { userId: new Types.ObjectId(userId) };
+      await settle(async () => (await requests().countDocuments(mine)) === 1);
+      expect(await requests().findOne(mine)).toMatchObject({
+        purpose: 'product_opened',
+        outcome: 'answered',
+        attempt: 0,
+      });
+    });
+
+    it('does not ask again when the plan is used up, but does after a plain 429', async () => {
+      const { token, userId } = await newUser();
+      const mine = { userId: new Types.ObjectId(userId) };
+      const search = (q: string) =>
+        request(app.getHttpServer())
+          .get(`${V1}/products/search?q=${encodeURIComponent(q)}`)
+          .set(auth(token));
+
+      fixture.faults = {
+        http: { status: 429, message: 'SerpApi 429: Your account has run out of searches.' },
+      };
+      await search(`never seen ${seq}`);
+      await settle(async () => (await requests().countDocuments(mine)) === 1);
+      expect(await requests().findOne(mine)).toMatchObject({
+        purpose: 'search',
+        origin: 'search',
+        outcome: 'plan_used_up',
+        status: 429,
+      });
+
+      // A 429 that only says "slow down" is worth the one retry the test env allows.
+      fixture.faults = { http: { status: 429, message: 'SerpApi 429: Too many requests' } };
+      await search(`never seen either ${seq}`);
+      await settle(async () => (await requests().countDocuments(mine)) === 3);
+      const retried = await requests()
+        .find({ ...mine, outcome: 'refused' })
+        .sort({ attempt: 1 })
+        .toArray();
+      expect(retried.map((r) => Number(r.attempt))).toEqual([0, 1]);
+    });
+
+    it('counts a search the store never answered as unavailable, not sent', async () => {
+      const { token } = await newUser();
+      const before = await counters();
+      fixture.faults = { fail: true };
+      await request(app.getHttpServer())
+        .get(`${V1}/products/search?q=${encodeURIComponent(`nothing like it ${seq}`)}`)
+        .set(auth(token));
+      const after = await counters();
+      expect(after.misses).toBe(before.misses);
+      expect(after.unavailable).toBe(before.unavailable + 1);
+    });
+
+    it('does not count scrolling to a further page as another search', async () => {
+      const { token } = await newUser();
+      const page = (n: number) =>
+        request(app.getHttpServer())
+          .get(`${V1}/products/search`)
+          .query({ q: 'headphones', platform: 'amazon', page: n, pageSize: 1 })
+          .set(auth(token))
+          .expect(200);
+      await page(1);
+      const before = await counters();
+      await page(2);
+      const after = await counters();
+      expect(after.hits).toBe(before.hits);
+      expect(after.misses).toBe(before.misses);
     });
   });
 

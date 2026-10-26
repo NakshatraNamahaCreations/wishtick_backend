@@ -37,11 +37,29 @@ export interface SearchResponse extends ProductSearchResult {
   freshness: ResultFreshness;
 }
 
+export interface SearchOptions {
+  /** A prewarm renewing the cache: not anyone's search, never counted. */
+  refresh?: boolean;
+  /** A further page of a search already counted, so a cache answer is not counted again. */
+  scroll?: boolean;
+}
+
+/** The per-day counter each kind of answer adds to. */
+const COUNTER: Record<LookupAnswer, 'hit' | 'miss' | 'unavailable'> = {
+  [LookupAnswer.CACHE]: 'hit',
+  [LookupAnswer.SHARED]: 'hit',
+  [LookupAnswer.STORE]: 'miss',
+  [LookupAnswer.UNAVAILABLE]: 'unavailable',
+  [LookupAnswer.FAILED]: 'unavailable',
+};
+
 /** One day of search counters, as the admin panel reads them. */
 export interface SearchDayStats {
   day: string;
   hits: number;
   misses: number;
+  /** Searches the store could not answer — refused, down, or not asked. */
+  unavailable: number;
   /** First pages that came back with nothing. */
   empty: number;
   /** Searches on each store tab. */
@@ -143,8 +161,15 @@ export class ProductsService {
   // A prewarm refresh is not a person's search and is never counted.
 
   /** Searches answered from cache vs. sent on, per day, for the last [days]. */
-  async lookupStats(days: number): Promise<{ day: string; hits: number; misses: number }[]> {
-    return (await this.searchStats(days)).map(({ day, hits, misses }) => ({ day, hits, misses }));
+  async lookupStats(
+    days: number,
+  ): Promise<{ day: string; hits: number; misses: number; unavailable: number }[]> {
+    return (await this.searchStats(days)).map(({ day, hits, misses, unavailable }) => ({
+      day,
+      hits,
+      misses,
+      unavailable,
+    }));
   }
 
   /** Every per-day search counter for the last [days], oldest first. */
@@ -159,16 +184,18 @@ export class ProductsService {
   async searchStatsOn(days: string[]): Promise<SearchDayStats[]> {
     const out: SearchDayStats[] = [];
     for (const day of days) {
-      const [hits, misses, empty] = await this.cache.client.mget(
+      const [hits, misses, empty, unavailable] = await this.cache.client.mget(
         `products:lookups:${day}:hit`,
         `products:lookups:${day}:miss`,
         `products:lookups:${day}:empty`,
+        `products:lookups:${day}:unavailable`,
       );
       const platforms = await this.cache.client.hgetall(`products:platforms:${day}`);
       out.push({
         day,
         hits: Number(hits) || 0,
         misses: Number(misses) || 0,
+        unavailable: Number(unavailable) || 0,
         empty: Number(empty) || 0,
         platforms: Object.fromEntries(
           Object.entries(platforms ?? {}).map(([k, v]) => [k, Number(v) || 0]),
@@ -188,7 +215,7 @@ export class ProductsService {
     }
   }
 
-  private async countLookup(outcome: 'hit' | 'miss' | 'empty'): Promise<void> {
+  private async countLookup(outcome: 'hit' | 'miss' | 'unavailable' | 'empty'): Promise<void> {
     const key = `products:lookups:${new Date().toISOString().slice(0, 10)}:${outcome}`;
     try {
       const n = await this.cache.client.incr(key);
@@ -235,21 +262,18 @@ export class ProductsService {
    * price is a much smaller problem than a search page that does not load — and
    * the price is re-checked at import anyway.
    */
-  async search(
-    query: ProductSearchQuery,
-    opts: { refresh?: boolean } = {},
-  ): Promise<SearchResponse> {
+  async search(query: ProductSearchQuery, opts: SearchOptions = {}): Promise<SearchResponse> {
     const result = await this.searchUncounted(query, opts);
-    if (!opts.refresh) {
+    if (!opts.refresh && query.page <= 1) {
       if (query.platform) await this.countPlatform(query.platform);
-      if (result.items.length === 0 && query.page <= 1) await this.countLookup('empty');
+      if (result.items.length === 0) await this.countLookup('empty');
     }
     return result;
   }
 
   private async searchUncounted(
     query: ProductSearchQuery,
-    opts: { refresh?: boolean },
+    opts: SearchOptions,
   ): Promise<SearchResponse> {
     if (query.platform) return this.searchOnPlatform(query, query.platform, opts);
     if (this.provider.answersWhole && !ProductsService.isWhole(query)) {
@@ -266,17 +290,21 @@ export class ProductsService {
     // that emptied them was fixed.
     const fresh =
       !opts.refresh && cached && Date.now() - cached.cachedAt < this.cfg.cacheTtlSeconds * 1_000;
-    // A prewarm refresh is not a person's search; it would skew the hit rate.
-    if (!opts.refresh) await this.countLookup(fresh ? 'hit' : 'miss');
-    const note = (
+    // Counted once it is answered, by how: a search the store never received
+    // is not "sent to the store". A prewarm refresh is not a person's search,
+    // and scrolling to a further page of an answer already in hand is not a
+    // new one — both would skew the numbers.
+    const note = async (
       answer: LookupAnswer,
       results: number,
       extra?: { reason?: string; fallback?: LookupFallback },
     ) => {
-      if (!opts.refresh) this.noteLookup(query, answer, results, extra);
+      if (opts.refresh || (opts.scroll && answer === LookupAnswer.CACHE)) return;
+      await this.countLookup(COUNTER[answer]);
+      this.noteLookup(query, answer, results, extra);
     };
     if (fresh && cached) {
-      note(LookupAnswer.CACHE, cached.data.items.length);
+      await note(LookupAnswer.CACHE, cached.data.items.length);
       return {
         ...cached.data,
         items: trustedFirst(cached.data.items),
@@ -288,9 +316,14 @@ export class ProductsService {
       // A search already on its way to the store is shared, not sent again.
       const sharing = this.inFlight.has(key);
       const result = await this.once(key, () =>
-        this.guard.run(this.provider.name, 'search', () => this.provider.search(query)),
+        this.guard.run(
+          this.provider.name,
+          'search',
+          () => this.provider.search(query),
+          ProductsService.subjectOf(query),
+        ),
       );
-      note(sharing ? LookupAnswer.SHARED : LookupAnswer.STORE, result.items.length);
+      await note(sharing ? LookupAnswer.SHARED : LookupAnswer.STORE, result.items.length);
 
       // Cached with the STALE ttl, not the fresh one: the envelope's timestamp
       // decides freshness, so one key serves both roles and there is always a
@@ -309,12 +342,12 @@ export class ProductsService {
       return { ...result, items: trustedFirst(result.items), freshness: ResultFreshness.LIVE };
     } catch (err) {
       if (!(err instanceof ProviderUnavailableError)) {
-        note(LookupAnswer.FAILED, 0);
+        await note(LookupAnswer.FAILED, 0);
         throw err;
       }
 
       if (cached) {
-        note(LookupAnswer.UNAVAILABLE, cached.data.items.length, {
+        await note(LookupAnswer.UNAVAILABLE, cached.data.items.length, {
           reason: err.reason,
           fallback: LookupFallback.OLD_COPY,
         });
@@ -333,7 +366,7 @@ export class ProductsService {
       // dead end. This is what keeps search working when the vendor's monthly
       // quota runs out, which is not an outage that ends in minutes.
       const saved = await this.catalogueSearch(query);
-      note(LookupAnswer.UNAVAILABLE, saved?.items.length ?? 0, {
+      await note(LookupAnswer.UNAVAILABLE, saved?.items.length ?? 0, {
         reason: err.reason,
         fallback: saved ? LookupFallback.SAVED_PRODUCTS : LookupFallback.NOTHING,
       });
@@ -365,8 +398,11 @@ export class ProductsService {
     }
 
     try {
-      const categories = await this.guard.run(this.provider.name, 'categories', () =>
-        this.provider.getCategories(),
+      const categories = await this.guard.run(
+        this.provider.name,
+        'categories',
+        () => this.provider.getCategories(),
+        'Store categories',
       );
       await this.cache.set(
         key,
@@ -394,6 +430,7 @@ export class ProductsService {
   async getDetails(
     providerName: string,
     externalId: string,
+    opts: { fresh?: boolean } = {},
   ): Promise<{ product: NormalizedProduct; freshness: ResultFreshness }> {
     if (providerName !== this.provider.name) {
       throw new AppException(
@@ -403,6 +440,17 @@ export class ProductsService {
       );
     }
 
+    // Opening the same product again — or adding it to a wishlist straight
+    // after looking at it — used to pay the store each time. A detail answer
+    // is kept as long as a search answer is; [fresh] asks again regardless.
+    const detailKey = ProductsService.detailsKey(providerName, externalId);
+    if (!opts.fresh) {
+      const kept = await this.cache.get<CacheEnvelope<NormalizedProduct>>(detailKey);
+      if (kept && Date.now() - kept.cachedAt < this.cfg.cacheTtlSeconds * 1_000) {
+        return { product: kept.data, freshness: ResultFreshness.CACHED };
+      }
+    }
+
     // The snapshot is read first, not as a fallback: providers whose id is not
     // enough on its own (SerpApi, whose engine is keyed by a per-search token)
     // need what we captured at search time to look anything up at all. Without
@@ -410,10 +458,14 @@ export class ProductsService {
     const snapshot = await this.model.findOne({ provider: providerName, externalId }).exec();
 
     try {
-      const product = await this.guard.run(this.provider.name, 'details', () =>
-        this.provider.getDetailsByRef && snapshot
-          ? this.provider.getDetailsByRef(externalId, snapshot.affiliateMeta)
-          : this.provider.getDetails(externalId),
+      const product = await this.guard.run(
+        this.provider.name,
+        'details',
+        () =>
+          this.provider.getDetailsByRef && snapshot
+            ? this.provider.getDetailsByRef(externalId, snapshot.affiliateMeta)
+            : this.provider.getDetails(externalId),
+        snapshot?.title ?? externalId,
       );
       if (!product) {
         // The provider cannot answer for this id. A snapshot we already hold
@@ -427,6 +479,11 @@ export class ProductsService {
         throw new AppException(ErrorCode.PRODUCT_NOT_FOUND, 'Product not found', 404);
       }
       await this.upsertMany([product]);
+      await this.cache.set(
+        detailKey,
+        { data: product, cachedAt: Date.now() } satisfies CacheEnvelope<NormalizedProduct>,
+        this.cfg.cacheTtlSeconds,
+      );
       return { product, freshness: ResultFreshness.LIVE };
     } catch (err) {
       if (!(err instanceof ProviderUnavailableError)) throw err;
@@ -668,11 +725,11 @@ export class ProductsService {
   private async searchOnPlatform(
     query: ProductSearchQuery,
     platform: PlatformKey,
-    opts: { refresh?: boolean },
+    opts: SearchOptions,
   ): Promise<SearchResponse> {
     const all = await this.search(
       { ...query, platform: undefined, page: 1, pageSize: ProductsService.WHOLE_ANSWER },
-      opts,
+      { ...opts, scroll: query.page > 1 },
     );
     const matching = all.items.filter((p) => soldOn(p, platform));
     const offset = (query.page - 1) * query.pageSize;
@@ -725,11 +782,11 @@ export class ProductsService {
    */
   private async sliceOfWhole(
     query: ProductSearchQuery,
-    opts: { refresh?: boolean },
+    opts: SearchOptions,
   ): Promise<SearchResponse> {
     const all = await this.searchUncounted(
       { ...query, page: 1, pageSize: ProductsService.WHOLE_ANSWER },
-      opts,
+      { ...opts, scroll: opts.scroll || query.page > 1 },
     );
     const offset = (query.page - 1) * query.pageSize;
     const items = all.items.slice(offset, offset + query.pageSize);
@@ -741,6 +798,19 @@ export class ProductsService {
       totalEstimate: all.items.length,
       hasMore: offset + items.length < all.items.length,
     };
+  }
+
+  /** Where one product's detail answer is kept. */
+  private static detailsKey(provider: string, externalId: string): string {
+    const id = createHash('sha256').update(externalId).digest('hex').slice(0, 32);
+    return `products:details:v1:${provider}:${id}`;
+  }
+
+  /** What a search asked, in words, for the record of the request it sent. */
+  private static subjectOf(query: ProductSearchQuery): string {
+    const words = query.q?.trim();
+    if (words) return words;
+    return query.category ? `Shelf: ${query.category.replace(/_/g, ' ')}` : 'Shelf';
   }
 
   private static searchKey(query: ProductSearchQuery): string {

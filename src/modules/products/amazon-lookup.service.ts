@@ -40,8 +40,11 @@ export class AmazonLookupService {
 
     let response;
     try {
-      response = await this.guard.run(GUARD_KEY, 'amazon_product', () =>
-        this.client.amazonProduct(ref.asin, ref.domain),
+      response = await this.guard.run(
+        GUARD_KEY,
+        'amazon_product',
+        () => this.client.amazonProduct(ref.asin, ref.domain),
+        `Amazon ${ref.asin}`,
       );
     } catch (err) {
       const why = err instanceof ProviderUnavailableError ? err.reason : (err as Error).message;

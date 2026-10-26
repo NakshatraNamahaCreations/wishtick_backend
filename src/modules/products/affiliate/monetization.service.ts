@@ -216,10 +216,14 @@ export class MonetizationService {
     try {
       // SerpApi's detail lookup needs the immersive token captured at search
       // time, not just the product id — see IProductProvider.getDetailsByRef.
-      const fresh = await this.guard.run(this.provider.name, 'monetize-details', () =>
-        this.provider.getDetailsByRef
-          ? this.provider.getDetailsByRef(product.externalId, product.affiliateMeta)
-          : this.provider.getDetails(product.externalId),
+      const fresh = await this.guard.run(
+        this.provider.name,
+        'monetize-details',
+        () =>
+          this.provider.getDetailsByRef
+            ? this.provider.getDetailsByRef(product.externalId, product.affiliateMeta)
+            : this.provider.getDetails(product.externalId),
+        product.title,
       );
       if (!fresh) return null;
 

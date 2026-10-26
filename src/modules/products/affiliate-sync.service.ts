@@ -1,7 +1,9 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import type { AppConfig } from 'src/config/configuration';
 import {
   WishlistItem,
   type WishlistItemDocument,
@@ -66,6 +68,7 @@ export class AffiliateSyncService {
     private readonly productsService: ProductsService,
     private readonly monetization: MonetizationService,
     private readonly events: EventEmitter2,
+    @Optional() private readonly config?: ConfigService<AppConfig, true>,
   ) {}
 
   /**
@@ -75,10 +78,13 @@ export class AffiliateSyncService {
    * search ever touched, and re-checking all of it every night would spend the
    * vendor's quota on products nobody is waiting for.
    *
-   * @param limit bounds one run. The sweep is oldest-first, so a backlog drains
-   *   over successive nights instead of one run trying to do everything.
+   * @param limit bounds one run — by default PRODUCT_PRICE_CHECK_LIMIT, since
+   *   each product is one paid store request. The sweep is oldest-first, so a
+   *   backlog drains over successive nights instead of one run doing it all.
    */
-  async syncReferencedProducts(limit = 200): Promise<SyncReport> {
+  async syncReferencedProducts(
+    limit = this.config?.get('products', { infer: true }).priceCheckLimit ?? 200,
+  ): Promise<SyncReport> {
     const report: SyncReport = {
       productsChecked: 0,
       productsUpdated: 0,
@@ -128,12 +134,16 @@ export class AffiliateSyncService {
     for (const product of stale) {
       report.productsChecked++;
       try {
-        const fresh = await this.guard.run(this.provider.name, 'sync', () =>
-          // Same reason as MonetizationService: a provider whose id is not
-          // enough on its own gets the stored reference handed back to it.
-          this.provider.getDetailsByRef
-            ? this.provider.getDetailsByRef(product.externalId, product.affiliateMeta)
-            : this.provider.getDetails(product.externalId),
+        const fresh = await this.guard.run(
+          this.provider.name,
+          'sync',
+          () =>
+            // Same reason as MonetizationService: a provider whose id is not
+            // enough on its own gets the stored reference handed back to it.
+            this.provider.getDetailsByRef
+              ? this.provider.getDetailsByRef(product.externalId, product.affiliateMeta)
+              : this.provider.getDetails(product.externalId),
+          product.title,
         );
 
         if (!fresh) {

@@ -14,6 +14,8 @@ export interface FixtureFaults {
   fail?: boolean;
   /** Delay every call by this long, so the caller's timeout can bite. */
   delayMs?: number;
+  /** Answer with this HTTP status and message, as SerpApi does when it refuses. */
+  http?: { status: number; message: string };
 }
 
 /**
@@ -43,6 +45,11 @@ export class FixtureProductProvider implements IProductProvider {
   private async gate(): Promise<void> {
     if (this.faults.delayMs) {
       await new Promise((resolve) => setTimeout(resolve, this.faults.delayMs));
+    }
+    if (this.faults.http) {
+      throw Object.assign(new Error(this.faults.http.message), {
+        status: this.faults.http.status,
+      });
     }
     if (this.faults.fail) {
       // Throwing, not returning empty: an outage must be distinguishable from

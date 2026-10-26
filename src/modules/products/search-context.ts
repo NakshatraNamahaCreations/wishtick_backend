@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-/** Why a product lookup happened — what the person was doing in the app. */
+/** Why a product lookup or a store request happened — what the person was doing. */
 export enum SearchOrigin {
   /** Typed on the search screen. */
   SEARCH = 'search',
@@ -12,6 +12,14 @@ export enum SearchOrigin {
   DISCOVER = 'discover',
   /** Gift ideas on an invitation a guest opened. */
   INVITE = 'invite',
+  /** A product page someone opened. */
+  PRODUCT_OPENED = 'product_opened',
+  /** A product added to a wishlist from search. */
+  ADD_TO_WISHLIST = 'add_to_wishlist',
+  /** A product link someone pasted. */
+  PASTED_LINK = 'pasted_link',
+  /** An admin refreshing a product in the panel. */
+  ADMIN = 'admin',
   /** Anything else that searched without saying why. */
   OTHER = 'other',
 }

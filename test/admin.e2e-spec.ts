@@ -1021,6 +1021,8 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
           _id: listId,
           title: 'Zorblat turns 30',
           ownerId: new Types.ObjectId(a.userId),
+          createdAt: new Date(),
+          updatedAt: new Date(),
         });
       await db()
         .collection('chats')
@@ -2519,6 +2521,10 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       await eventually(
         async () => (await db().collection('search_logs').countDocuments({ userId: uid })) === 2,
       );
+      await eventually(
+        async () =>
+          (await db().collection('vendor_requests').countDocuments({ userId: uid })) === 1,
+      );
       const day = new Date().toISOString().slice(0, 10);
 
       const summary = (
@@ -2537,8 +2543,18 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
           why: Record<string, number>;
         }[];
         topSearches: { query: string; searches: number }[];
+        sent: {
+          answered: number;
+          byPurpose: { purpose: string; answered: number }[];
+        } | null;
+        priceCheckLimit: number;
       }>;
       expect(summary.data.recordedSince).not.toBeNull();
+      // What the store was sent, by what for — one search, answered.
+      expect(
+        summary.data.sent?.byPurpose.find((p) => p.purpose === 'search')?.answered,
+      ).toBeGreaterThanOrEqual(1);
+      expect(summary.data.priceCheckLimit).toBe(200);
       expect(summary.data.byReason.map((r) => r.origin)).toContain('search');
       expect(summary.data.people.find((p) => p.userId === user.userId)).toMatchObject({
         typed: 2,
@@ -2555,8 +2571,12 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       ).body as Envelope<{
         lookups: { origin: string; query: string; answer: string }[];
         typed: { query: string; freshness: string }[];
+        requests: { purpose: string; subject: string; outcome: string }[];
         allowance: { budget: number } | null;
       }>;
+      expect(person.data.requests.map((r) => [r.purpose, r.subject, r.outcome])).toEqual([
+        ['search', words, 'answered'],
+      ]);
       expect(person.data.lookups.map((l) => [l.origin, l.query, l.answer])).toEqual([
         ['search', words, 'store'],
         ['search', words, 'cache'],

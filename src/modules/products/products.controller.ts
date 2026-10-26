@@ -78,8 +78,13 @@ export class ProductsController {
   })
   @ApiResponseDoc({ status: 400, description: 'URL_NOT_ALLOWED' })
   @ApiResponseDoc({ status: 422, description: 'PRODUCT_URL_UNSUPPORTED / PRODUCT_URL_UNREACHABLE' })
-  resolveUrl(@Body() dto: ResolveUrlDto): Promise<ResolvedUrlProduct> {
-    return this.urls.resolve(dto.url);
+  resolveUrl(
+    @CurrentUser('id') userId: string,
+    @Body() dto: ResolveUrlDto,
+  ): Promise<ResolvedUrlProduct> {
+    return withSearchContext({ userId, origin: SearchOrigin.PASTED_LINK }, () =>
+      this.urls.resolve(dto.url),
+    );
   }
 
   /**
@@ -99,9 +104,12 @@ export class ProductsController {
   })
   @ApiResponseDoc({ status: 404, description: 'PRODUCT_NOT_FOUND' })
   getDetailsById(
+    @CurrentUser('id') userId: string,
     @Param('productId') productId: string,
   ): Promise<{ product: NormalizedProduct; freshness: ResultFreshness }> {
-    return this.products.getDetailsById(productId);
+    return withSearchContext({ userId, origin: SearchOrigin.PRODUCT_OPENED }, () =>
+      this.products.getDetailsById(productId),
+    );
   }
 
   @Get(':provider/:externalId')
@@ -111,9 +119,12 @@ export class ProductsController {
   })
   @ApiResponseDoc({ status: 404, description: 'PRODUCT_NOT_FOUND / PRODUCT_PROVIDER_UNKNOWN' })
   getDetails(
+    @CurrentUser('id') userId: string,
     @Param('provider') provider: string,
     @Param('externalId') externalId: string,
   ): Promise<{ product: NormalizedProduct; freshness: ResultFreshness }> {
-    return this.products.getDetails(provider, externalId);
+    return withSearchContext({ userId, origin: SearchOrigin.PRODUCT_OPENED }, () =>
+      this.products.getDetails(provider, externalId),
+    );
   }
 }

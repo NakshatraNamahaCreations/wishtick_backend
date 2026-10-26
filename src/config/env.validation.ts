@@ -272,6 +272,7 @@ export const envValidationSchema = Joi.object({
   PRODUCT_BREAKER_RESET_MS: Joi.number().min(1_000).default(30_000),
   /** How long a search result counts as fresh. */
   PRODUCT_CACHE_TTL_SECONDS: Joi.number().min(0).default(900),
+  PRODUCT_PRICE_CHECK_LIMIT: Joi.number().integer().min(0).default(200),
   /**
    * How long a stale result may still be served when the provider is down.
    * Much longer than the fresh window: an old price beats a broken page.

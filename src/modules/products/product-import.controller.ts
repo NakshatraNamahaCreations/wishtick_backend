@@ -9,6 +9,7 @@ import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import type { ItemView } from 'src/modules/wishlists/wishlist.views';
 import { ImportProductDto } from './dto/product.dto';
 import { ProductImportService } from './product-import.service';
+import { SearchOrigin, withSearchContext } from './search-context';
 
 /**
  * Lives in ProductsModule but mounts under /wishlists, because the dependency
@@ -36,6 +37,8 @@ export class ProductImportController {
     @Param('id') wishlistId: string,
     @Body() dto: ImportProductDto,
   ): Promise<ItemView> {
-    return this.imports.importToWishlist(wishlistId, { userId }, dto);
+    return withSearchContext({ userId, origin: SearchOrigin.ADD_TO_WISHLIST }, () =>
+      this.imports.importToWishlist(wishlistId, { userId }, dto),
+    );
   }
 }

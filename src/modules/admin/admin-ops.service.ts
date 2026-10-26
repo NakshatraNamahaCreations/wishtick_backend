@@ -270,18 +270,38 @@ export class AdminOpsService {
     const last = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1))
       .toISOString()
       .slice(0, 7);
-    const [thisMonth, lastMonth, lookups, account] = await Promise.all([
+    const monthStart = new Date(`${month}-01T00:00:00.000Z`);
+    const [thisMonth, lastMonth, lookups, account, outcomes, since] = await Promise.all([
       this.guard.requestsIn(cfg.provider, month),
       this.guard.requestsIn(cfg.provider, last),
       this.products.lookupStats(14),
       this.serpApiAccount(),
+      this.db
+        .collection('vendor_requests')
+        .aggregate<{ _id: string; n: number }>([
+          { $match: { provider: cfg.provider, createdAt: { $gte: monthStart } } },
+          { $group: { _id: '$outcome', n: { $sum: 1 } } },
+        ])
+        .toArray(),
+      this.requestsSince(),
     ]);
+    const outcome = (k: string) => outcomes.find((o) => o._id === k)?.n ?? 0;
     const hits = lookups.reduce((s, d) => s + d.hits, 0);
     const misses = lookups.reduce((s, d) => s + d.misses, 0);
     return {
       provider: cfg.provider,
       breaker: this.guard.stateOf(cfg.provider),
-      requests: { thisMonth, lastMonth, month },
+      requests: {
+        thisMonth,
+        lastMonth,
+        month,
+        // From the day requests were first recorded one by one; null before.
+        recordedSince: since,
+        answered: since ? outcome('answered') : null,
+        refused: since ? outcome('plan_used_up') + outcome('refused') : null,
+        failed: since ? outcome('timeout') + outcome('failed') : null,
+      },
+      priceCheckLimit: cfg.priceCheckLimit,
       account,
       cache: {
         days: lookups,
@@ -367,6 +387,18 @@ export class AdminOpsService {
     return { start, end: new Date(start.getTime() + 86_400_000) };
   }
 
+  /** When store requests were first recorded one by one — null if never. */
+  private async requestsSince(): Promise<Date | null> {
+    const first = await this.db
+      .collection('vendor_requests')
+      .find()
+      .sort({ createdAt: 1 })
+      .limit(1)
+      .project({ createdAt: 1 })
+      .next();
+    return first?.createdAt instanceof Date ? first.createdAt : null;
+  }
+
   /** When lookups were first recorded with names on them — null if never. */
   private async lookupsSince(): Promise<Date | null> {
     const first = await this.db
@@ -393,71 +425,140 @@ export class AdminOpsService {
     const logs = this.db.collection('search_logs');
     const empty = { $sum: { $cond: [{ $eq: ['$results', 0] }, 1, 0] } };
 
-    const [stats, requests, lookupRows, typedRows, topRows, nothingRows, since] = await Promise.all(
-      [
-        this.products.searchStatsOn([day]),
-        this.guard.requestsOnDays(provider, [day]),
-        lookups
-          .aggregate<{
-            _id: { userId: Types.ObjectId | null; origin: string; answer: string };
-            n: number;
-            lastAt: Date;
-          }>([
-            { $match: range },
-            {
-              $group: {
-                _id: { userId: '$userId', origin: '$origin', answer: '$answer' },
-                n: { $sum: 1 },
-                lastAt: { $max: '$createdAt' },
-              },
+    const [
+      stats,
+      requests,
+      lookupRows,
+      typedRows,
+      topRows,
+      nothingRows,
+      since,
+      requestRows,
+      requestsSince,
+    ] = await Promise.all([
+      this.products.searchStatsOn([day]),
+      this.guard.requestsOnDays(provider, [day]),
+      lookups
+        .aggregate<{
+          _id: { userId: Types.ObjectId | null; origin: string; answer: string };
+          n: number;
+          lastAt: Date;
+        }>([
+          { $match: range },
+          {
+            $group: {
+              _id: { userId: '$userId', origin: '$origin', answer: '$answer' },
+              n: { $sum: 1 },
+              lastAt: { $max: '$createdAt' },
             },
-          ])
-          .toArray(),
-        logs
-          .aggregate<{
-            _id: { userId: Types.ObjectId; freshness: string };
-            n: number;
-            empty: number;
-            lastAt: Date;
-          }>([
-            { $match: range },
-            {
-              $group: {
-                _id: { userId: '$userId', freshness: '$freshness' },
-                n: { $sum: 1 },
-                empty,
-                lastAt: { $max: '$createdAt' },
-              },
+          },
+        ])
+        .toArray(),
+      logs
+        .aggregate<{
+          _id: { userId: Types.ObjectId; freshness: string };
+          n: number;
+          empty: number;
+          lastAt: Date;
+        }>([
+          { $match: range },
+          {
+            $group: {
+              _id: { userId: '$userId', freshness: '$freshness' },
+              n: { $sum: 1 },
+              empty,
+              lastAt: { $max: '$createdAt' },
             },
-          ])
-          .toArray(),
-        logs
-          .aggregate<{ _id: string; query: string; n: number; people: unknown[]; empty: number }>([
-            { $match: { ...range, normalized: { $ne: '' } } },
-            {
-              $group: {
-                _id: '$normalized',
-                query: { $last: '$query' },
-                n: { $sum: 1 },
-                people: { $addToSet: '$userId' },
-                empty,
-              },
+          },
+        ])
+        .toArray(),
+      logs
+        .aggregate<{ _id: string; query: string; n: number; people: unknown[]; empty: number }>([
+          { $match: { ...range, normalized: { $ne: '' } } },
+          {
+            $group: {
+              _id: '$normalized',
+              query: { $last: '$query' },
+              n: { $sum: 1 },
+              people: { $addToSet: '$userId' },
+              empty,
             },
-            { $sort: { n: -1, _id: 1 } },
-            { $limit: 10 },
-          ])
-          .toArray(),
-        logs
-          .aggregate<{ _id: string; query: string; n: number }>([
-            { $match: { ...range, normalized: { $ne: '' }, results: 0 } },
-            { $group: { _id: '$normalized', query: { $last: '$query' }, n: { $sum: 1 } } },
-            { $sort: { n: -1, _id: 1 } },
-            { $limit: 10 },
-          ])
-          .toArray(),
-        this.lookupsSince(),
-      ],
-    );
+          },
+          { $sort: { n: -1, _id: 1 } },
+          { $limit: 10 },
+        ])
+        .toArray(),
+      logs
+        .aggregate<{ _id: string; query: string; n: number }>([
+          { $match: { ...range, normalized: { $ne: '' }, results: 0 } },
+          { $group: { _id: '$normalized', query: { $last: '$query' }, n: { $sum: 1 } } },
+          { $sort: { n: -1, _id: 1 } },
+          { $limit: 10 },
+        ])
+        .toArray(),
+      this.lookupsSince(),
+      this.db
+        .collection('vendor_requests')
+        .aggregate<{
+          _id: {
+            purpose: string;
+            outcome: string;
+            retry: boolean;
+            userId: Types.ObjectId | null;
+          };
+          n: number;
+        }>([
+          { $match: { ...range, provider } },
+          {
+            $group: {
+              _id: {
+                purpose: '$purpose',
+                outcome: '$outcome',
+                retry: { $gt: ['$attempt', 0] },
+                userId: '$userId',
+              },
+              n: { $sum: 1 },
+            },
+          },
+        ])
+        .toArray(),
+      this.requestsSince(),
+    ]);
+
+    // What the store was sent, by what for: answered (billed), refused,
+    // failed, and how many of those were retries.
+    type Sent = {
+      total: number;
+      answered: number;
+      refused: number;
+      failed: number;
+      retries: number;
+    };
+    const noneSent = (): Sent => ({ total: 0, answered: 0, refused: 0, failed: 0, retries: 0 });
+    const addSent = (t: Sent, outcome: string, retry: boolean, n: number) => {
+      t.total += n;
+      if (outcome === 'answered') t.answered += n;
+      else if (outcome === 'plan_used_up' || outcome === 'refused') t.refused += n;
+      else t.failed += n;
+      if (retry) t.retries += n;
+    };
+    const sent = noneSent();
+    const sentFor = new Map<string, Sent>();
+    const sentBy = new Map<string, Sent>();
+    let planUsedUp = 0;
+    for (const r of requestRows) {
+      addSent(sent, r._id.outcome, r._id.retry, r.n);
+      const p = sentFor.get(r._id.purpose) ?? noneSent();
+      addSent(p, r._id.outcome, r._id.retry, r.n);
+      sentFor.set(r._id.purpose, p);
+      if (r._id.outcome === 'plan_used_up') planUsedUp += r.n;
+      if (r._id.userId) {
+        const key = String(r._id.userId);
+        const u = sentBy.get(key) ?? noneSent();
+        addSent(u, r._id.outcome, r._id.retry, r.n);
+        sentBy.set(key, u);
+      }
+    }
 
     type Answers = Record<'cache' | 'store' | 'shared' | 'unavailable' | 'failed', number>;
     const none = (): Answers => ({ cache: 0, store: 0, shared: 0, unavailable: 0, failed: 0 });
@@ -523,6 +624,8 @@ export class AdminOpsService {
       p.lastAt = later(p.lastAt, r.lastAt);
     }
 
+    // Someone who only opened products or pasted links still spent requests.
+    for (const key of sentBy.keys()) personOf(key);
     const names = await this.user360.namesFor([...people.keys()]);
     const counters = stats[0];
     return {
@@ -530,6 +633,7 @@ export class AdminOpsService {
       counters: {
         fromCache: counters.hits,
         sentToStore: counters.misses,
+        unavailable: counters.unavailable,
         foundNothing: counters.empty,
         platforms: counters.platforms,
       },
@@ -537,6 +641,19 @@ export class AdminOpsService {
       storeRequests: requests[0] ?? 0,
       /** Null: no lookup that day was recorded with a name. */
       recordedSince: since && since < end ? since : null,
+      /** Every request the store was sent, by what it was for. Null before they were recorded. */
+      sent:
+        requestsSince && requestsSince < end
+          ? {
+              recordedSince: requestsSince,
+              ...sent,
+              planUsedUp,
+              byPurpose: [...sentFor]
+                .map(([purpose, t]) => ({ purpose, ...t }))
+                .sort((a, b) => b.total - a.total),
+            }
+          : null,
+      priceCheckLimit: this.config.get('products', { infer: true }).priceCheckLimit,
       lookups: { total: total(answers), ...answers },
       byReason: [...origins]
         .map(([origin, a]) => ({ origin, total: total(a), ...a }))
@@ -552,9 +669,11 @@ export class AdminOpsService {
           lookups: { total: total(p.lookups), ...p.lookups },
           why: p.why,
           lastAt: p.lastAt,
+          sent: sentBy.get(userId) ?? noneSent(),
         }))
         .sort(
           (a, b) =>
+            b.sent.answered - a.sent.answered ||
             b.lookups.store - a.lookups.store ||
             b.lookups.total - a.lookups.total ||
             b.typed - a.typed,
@@ -582,30 +701,38 @@ export class AdminOpsService {
     const uid = new Types.ObjectId(userId);
     const range = { createdAt: { $gte: start, $lt: end } };
     const today = new Date().toISOString().slice(0, 10) === day;
-    const [lookupDocs, typedDocs, addedDocs, since, spent, allowance] = await Promise.all([
-      this.db
-        .collection('search_lookups')
-        .find({ userId: uid, ...range })
-        .sort({ createdAt: 1 })
-        .limit(1000)
-        .toArray(),
-      this.db
-        .collection('search_logs')
-        .find({ userId: uid, ...range })
-        .sort({ createdAt: 1 })
-        .limit(500)
-        .toArray(),
-      this.db
-        .collection('wishlist_items')
-        .find({ ownerId: uid, sourceProductId: { $ne: null }, ...range })
-        .sort({ createdAt: 1 })
-        .limit(100)
-        .project({ title: 1, wishlistId: 1, createdAt: 1 })
-        .toArray(),
-      this.lookupsSince(),
-      today ? this.budget.spentToday(userId) : Promise.resolve(null),
-      today ? this.budget.allowanceFor(userId) : Promise.resolve(null),
-    ]);
+    const provider = this.config.get('products', { infer: true }).provider;
+    const [lookupDocs, typedDocs, addedDocs, since, spent, allowance, requestDocs] =
+      await Promise.all([
+        this.db
+          .collection('search_lookups')
+          .find({ userId: uid, ...range })
+          .sort({ createdAt: 1 })
+          .limit(1000)
+          .toArray(),
+        this.db
+          .collection('search_logs')
+          .find({ userId: uid, ...range })
+          .sort({ createdAt: 1 })
+          .limit(500)
+          .toArray(),
+        this.db
+          .collection('wishlist_items')
+          .find({ ownerId: uid, sourceProductId: { $ne: null }, ...range })
+          .sort({ createdAt: 1 })
+          .limit(100)
+          .project({ title: 1, wishlistId: 1, createdAt: 1 })
+          .toArray(),
+        this.lookupsSince(),
+        today ? this.budget.spentToday(userId) : Promise.resolve(null),
+        today ? this.budget.allowanceFor(userId) : Promise.resolve(null),
+        this.db
+          .collection('vendor_requests')
+          .find({ userId: uid, provider, ...range })
+          .sort({ createdAt: 1 })
+          .limit(1000)
+          .toArray(),
+      ]);
     const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
     const num = (v: unknown) => (typeof v === 'number' ? v : null);
     const idOf = (v: unknown) => (v instanceof Types.ObjectId ? String(v) : null);
@@ -639,6 +766,16 @@ export class AdminOpsService {
         platform: str(d.platform),
         freshness: str(d.freshness) ?? 'live',
         results: num(d.results) ?? 0,
+      })),
+      /** Every request the store was sent for them — searches, products opened, links. */
+      requests: requestDocs.map((d) => ({
+        id: String(d._id),
+        at: d.createdAt instanceof Date ? d.createdAt : null,
+        purpose: str(d.purpose) ?? 'other',
+        origin: str(d.origin),
+        subject: str(d.subject) ?? '',
+        attempt: num(d.attempt) ?? 0,
+        outcome: str(d.outcome) ?? 'failed',
       })),
       added: addedDocs.map((d) => ({
         id: String(d._id),

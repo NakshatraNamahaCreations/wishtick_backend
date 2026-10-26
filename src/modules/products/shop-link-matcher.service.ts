@@ -53,7 +53,12 @@ export class ShopLinkMatcher {
 
     let response;
     try {
-      response = await this.guard.run(GUARD_KEY, 'link_match', () => this.client.shopping({ q }));
+      response = await this.guard.run(
+        GUARD_KEY,
+        'link_match',
+        () => this.client.shopping({ q }),
+        q,
+      );
     } catch (err) {
       const why = err instanceof ProviderUnavailableError ? err.reason : (err as Error).message;
       this.logger.warn(`Link match on ${link.shop} failed: ${why}`);

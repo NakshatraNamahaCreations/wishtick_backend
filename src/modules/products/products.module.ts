@@ -33,6 +33,7 @@ import {
 } from './schemas/conversion.schema';
 import { SearchLog, SearchLogSchema } from './schemas/search-log.schema';
 import { SearchLookup, SearchLookupSchema } from './schemas/search-lookup.schema';
+import { VendorRequest, VendorRequestSchema } from './schemas/vendor-request.schema';
 import { Product, ProductSchema } from './schemas/product.schema';
 import { UrlResolverService } from './url-resolver.service';
 import { AmazonLookupService } from './amazon-lookup.service';
@@ -49,6 +50,7 @@ const logger = new Logger('ProductsModule');
       { name: AffiliateSyncState.name, schema: AffiliateSyncStateSchema },
       { name: SearchLog.name, schema: SearchLogSchema },
       { name: SearchLookup.name, schema: SearchLookupSchema },
+      { name: VendorRequest.name, schema: VendorRequestSchema },
     ]),
     BullModule.registerQueue({ name: QUEUE.AFFILIATE_SYNC }),
     // For AccessPolicyService, WishlistsService, and the WishlistItem model.

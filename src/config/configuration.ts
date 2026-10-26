@@ -230,6 +230,8 @@ export interface AppConfig {
     staleTtlSeconds: number;
     prewarmEnabled: boolean;
     prewarmCron: string;
+    /** Products the nightly price check re-reads from the store, at most. */
+    priceCheckLimit: number;
     urlFetchTimeoutMs: number;
     urlMaxBytes: number;
     urlMaxRedirects: number;
@@ -470,6 +472,9 @@ export const configuration = (): AppConfig => {
       // never lapses back to cold. Off the hour for the same reason the
       // nightly sync is: shared vendors, shared schedulers.
       prewarmCron: process.env.PRODUCT_PREWARM_CRON ?? '20 */4 * * *',
+      // Each product checked is one paid store request, every night. 0 turns
+      // the nightly price check off.
+      priceCheckLimit: toInt(process.env.PRODUCT_PRICE_CHECK_LIMIT, 200),
       urlFetchTimeoutMs: toInt(process.env.PRODUCT_URL_FETCH_TIMEOUT_MS, 5_000),
       urlMaxBytes: toInt(process.env.PRODUCT_URL_MAX_BYTES, 512 * 1024),
       urlMaxRedirects: toInt(process.env.PRODUCT_URL_MAX_REDIRECTS, 3),
