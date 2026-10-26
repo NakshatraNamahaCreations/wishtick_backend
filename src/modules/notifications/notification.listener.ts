@@ -918,7 +918,9 @@ export class NotificationListener {
       await this.notifications.enqueue({
         userId: e.ownerId,
         type: NotificationType.ITEM_PRICE_DROP,
-        refId: `${e.itemId}:${e.currentAmountMinor}`,
+        // The list first, so the app can open the item itself; the price last,
+        // so each new drop is its own notification.
+        refId: `${e.wishlistId}:${e.itemId}:${e.currentAmountMinor}`,
         payload: {
           itemTitle: e.title,
           snapshotAmountMinor: e.snapshotAmountMinor,
@@ -1022,7 +1024,8 @@ export class NotificationListener {
       await this.notifications.enqueue({
         userId: e.ownerId,
         type: NotificationType.ITEM_OUT_OF_STOCK,
-        refId: e.itemId,
+        // The list as well as the item: the app opens one inside the other.
+        refId: `${e.wishlistId}:${e.itemId}`,
         payload: { itemTitle: e.title },
       });
     });

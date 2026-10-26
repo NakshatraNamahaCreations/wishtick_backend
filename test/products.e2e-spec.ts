@@ -488,17 +488,22 @@ describe('Products & affiliate (e2e)', () => {
         if (hidden) {
           await itemModel.updateOne({ _id: item.data.id }, { $set: { hiddenFromOwner: true } });
         }
-        return { ...user, itemId: item.data.id };
+        return { ...user, itemId: item.data.id, wishlistId };
       };
 
-      const inboxOf = async (token: string, type: string): Promise<unknown[]> => {
+      const inboxOf = async (
+        token: string,
+        type: string,
+      ): Promise<{ type: string; refId: string }[]> => {
         await new Promise((resolve) => setTimeout(resolve, 150));
         await ctx.drainNotifications();
         const res = await request(app.getHttpServer())
           .get(`${V1}/notifications`)
           .set(auth(token))
           .expect(200);
-        return (res.body as Envelope<{ type: string }[]>).data.filter((n) => n.type === type);
+        return (res.body as Envelope<{ type: string; refId: string }[]>).data.filter(
+          (n) => n.type === type,
+        );
       };
 
       it('never tells the owner its price dropped', async () => {
@@ -508,8 +513,11 @@ describe('Products & affiliate (e2e)', () => {
         fixture.__setPrice('hp-001', 1_999_00);
         await sync.syncReferencedProducts();
 
-        // The control: an ordinary item's owner is told.
-        expect(await inboxOf(visible.token, 'item_price_drop')).toHaveLength(1);
+        // The control: an ordinary item's owner is told — with the list and the
+        // item, so tapping it opens the item.
+        const told = await inboxOf(visible.token, 'item_price_drop');
+        expect(told).toHaveLength(1);
+        expect(told[0].refId).toBe(`${visible.wishlistId}:${visible.itemId}:199900`);
         expect(await inboxOf(surprise.token, 'item_price_drop')).toHaveLength(0);
 
         // The new price is still recorded beside the hidden item, for whoever is
@@ -525,7 +533,9 @@ describe('Products & affiliate (e2e)', () => {
         fixture.__setStock('hp-001', false);
         await sync.syncReferencedProducts();
 
-        expect(await inboxOf(visible.token, 'item_out_of_stock')).toHaveLength(1);
+        const told = await inboxOf(visible.token, 'item_out_of_stock');
+        expect(told).toHaveLength(1);
+        expect(told[0].refId).toBe(`${visible.wishlistId}:${visible.itemId}`);
         expect(await inboxOf(surprise.token, 'item_out_of_stock')).toHaveLength(0);
       });
     });
