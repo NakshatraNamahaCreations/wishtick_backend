@@ -34,6 +34,17 @@ export class AuthNotificationsService {
     // a real line, and texting it would cost an SMS for nothing.
     const { reviewPhone } = this.config.get('otp', { infer: true });
     if (reviewPhone && phone === reviewPhone) return;
+    const { otpTemplate, otpTemplateId } = this.config.get('delivery.sms', { infer: true });
+    if (otpTemplate) {
+      // DLT: the text must match the approved template exactly, so it comes
+      // from config verbatim with only the code filled in.
+      await this.sms.send({
+        to: phone,
+        body: otpTemplate.replace('{#num#}', code),
+        templateId: otpTemplateId,
+      });
+      return;
+    }
     const minutes = Math.round(this.config.get('otp.ttlSeconds', { infer: true }) / 60);
     await this.sms.send({
       to: phone,

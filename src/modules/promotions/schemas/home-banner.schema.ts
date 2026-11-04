@@ -19,7 +19,8 @@ export class HomeBanner {
   @Prop({ type: String, enum: Object.values(BannerPlacement), required: true })
   placement!: BannerPlacement;
 
-  @Prop({ type: String, required: true })
+  /** Empty on new banners: the picture carries the words. */
+  @Prop({ type: String, default: '' })
   title!: string;
 
   @Prop({ type: String, default: null })

@@ -110,6 +110,10 @@ export class AuthController {
   })
   @ApiResponseDoc({ status: 202, description: 'Code sent' })
   @ApiResponseDoc({ status: 429, description: 'OTP_COOLDOWN' })
+  @ApiResponseDoc({
+    status: 503,
+    description: 'OTP_DELIVERY_FAILED (cooldown lifted; safe to retry)',
+  })
   requestOtpLogin(
     @Body() dto: RequestOtpLoginDto,
   ): Promise<{ expiresInSeconds: number; devCode?: string }> {

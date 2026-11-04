@@ -206,6 +206,8 @@ export class MemoryRepliesService {
       ),
       kind: dto.kind,
       text,
+      // A card is a picture of words; on any other kind the flag means nothing.
+      card: dto.card === true && dto.kind === MemoryWishKind.PHOTO,
       mediaId: dto.mediaId ? new Types.ObjectId(dto.mediaId) : null,
       mediaUrl,
       contentType,
@@ -301,6 +303,48 @@ export class MemoryRepliesService {
       if (memories.length > 0) views.push(toMemoryReplyView(reply, userId, memories));
     }
     return views;
+  }
+
+  /**
+   * Every thank-you the caller sent, newest first — "Thank-yous → Sent" on
+   * the Wishes tab.
+   *
+   * The author may see everything about their own reply: every memory it
+   * answers (all of them were made for the author) and everyone it went to.
+   */
+  async listMine(userId: string): Promise<MemoryReplyView[]> {
+    const replies = await this.replyModel
+      .find({ authorId: new Types.ObjectId(userId) })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .exec();
+    if (replies.length === 0) return [];
+
+    const capsuleIds = [...new Set(replies.flatMap((r) => r.capsuleIds.map(String)))].map(
+      (id) => new Types.ObjectId(id),
+    );
+    const recipientIds = [...new Set(replies.flatMap((r) => r.recipientIds.map(String)))];
+    const [capsules, people] = await Promise.all([
+      this.capsuleModel
+        .find({ _id: { $in: capsuleIds } })
+        .select('title')
+        .exec(),
+      this.identify(recipientIds),
+    ]);
+    const titles = new Map(capsules.map((c) => [c._id.toString(), c.title]));
+
+    return replies.map((reply) => ({
+      ...toMemoryReplyView(
+        reply,
+        userId,
+        reply.capsuleIds
+          .map(String)
+          // A memory deleted since has nothing left to name.
+          .filter((id) => titles.has(id))
+          .map((id) => ({ id, title: titles.get(id)! })),
+      ),
+      recipients: reply.recipientIds.map((id) => people.get(id.toString())!),
+    }));
   }
 
   /** The author withdrawing their own reply. It vanishes for everyone at once. */

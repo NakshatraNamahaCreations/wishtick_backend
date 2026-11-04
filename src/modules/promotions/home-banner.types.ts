@@ -5,7 +5,7 @@
 export enum BannerPlacement {
   /** "Exclusive Offers" — wide picture banners, the picture is the message. */
   EXCLUSIVE_OFFERS = 'exclusive_offers',
-  /** "Special Offers for You" — a picture beside a title and a line of text. */
+  /** "Special Offers for You" — smaller wide picture cards, the next one peeking in. */
   SPECIAL_OFFERS = 'special_offers',
 }
 

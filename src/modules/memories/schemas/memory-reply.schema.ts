@@ -59,6 +59,10 @@ export class MemoryReply {
   @Prop({ type: String, default: null, trim: true, maxlength: MEMORY_WISH_TEXT_MAX })
   text!: string | null;
 
+  /** A designed text card sent as a picture — see `MemoryWish.card`. */
+  @Prop({ type: Boolean, default: false })
+  card!: boolean;
+
   @Prop({ type: SchemaTypes.ObjectId, ref: 'Media', default: null })
   mediaId!: Types.ObjectId | null;
 

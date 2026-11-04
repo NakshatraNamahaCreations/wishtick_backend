@@ -173,14 +173,35 @@ export class AuthService implements OnModuleInit {
     if (existing) this.users.assertUsable(existing);
 
     const code = await this.otp.issue(OtpPurpose.SIGN_IN, normalized);
-    await this.authNotifications.sendPhoneVerification(normalized, code);
+    try {
+      await this.authNotifications.sendPhoneVerification(normalized, code);
+    } catch (err) {
+      // The code never reached the phone, so the resend cooldown would only
+      // lock the person out of trying again. Lift it and say what happened.
+      await this.otp.clearCooldown(OtpPurpose.SIGN_IN, normalized);
+      this.logger.error(`Sign-in SMS failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new AppException(
+        ErrorCode.OTP_DELIVERY_FAILED,
+        "We couldn't send the code right now. Please try again in a moment.",
+        503,
+      );
+    }
 
     return {
       expiresInSeconds: this.config.get('otp.ttlSeconds', { infer: true }),
-      // Lets the app show the code inline instead of reading it off the SMS
-      // adapter's console log — never sent once real SMS delivery is live.
-      ...(this.config.get('app.isProduction', { infer: true }) ? {} : { devCode: code }),
+      // For local development and automated tests only, while the console
+      // driver just logs the SMS. Once a real SMS driver is live the code goes
+      // to the phone alone — echoing it here would let anyone who can call the
+      // API sign in as any number, staging included.
+      ...(this.exposesDevCode() ? { devCode: code } : {}),
     };
+  }
+
+  private exposesDevCode(): boolean {
+    return (
+      !this.config.get('app.isProduction', { infer: true }) &&
+      this.config.get('delivery.smsDriver', { infer: true }) === 'console'
+    );
   }
 
   /**

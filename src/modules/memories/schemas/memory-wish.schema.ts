@@ -38,6 +38,15 @@ export class MemoryWish {
   @Prop({ type: String, default: null, trim: true, maxlength: MEMORY_WISH_TEXT_MAX })
   text!: string | null;
 
+  /**
+   * A text wish the writer designed as a picture card — words over a
+   * background — and sent as that picture. Only ever on a photo. [text] keeps
+   * the words, for a screen reader and for remaking it; the picture is what is
+   * shown, so the words are never drawn over it as a caption.
+   */
+  @Prop({ type: Boolean, default: false })
+  card!: boolean;
+
   @Prop({ type: SchemaTypes.ObjectId, ref: 'Media', default: null })
   mediaId!: Types.ObjectId | null;
 

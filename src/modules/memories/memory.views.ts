@@ -51,6 +51,8 @@ export interface MemoryWishView {
   contributorAvatarUrl: string | null;
   kind: string;
   text: string | null;
+  /** A designed text card, sent as the picture at `mediaUrl`. */
+  card: boolean;
   mediaUrl: string | null;
   contentType: string | null;
   durationMs: number;
@@ -86,6 +88,8 @@ export interface MemoryReplyView {
   authorAvatarUrl: string | null;
   kind: string;
   text: string | null;
+  /** A designed text card, sent as the picture at `mediaUrl`. */
+  card: boolean;
   mediaUrl: string | null;
   contentType: string | null;
   durationMs: number;
@@ -93,6 +97,11 @@ export interface MemoryReplyView {
   recipientCount: number;
   /** Whether the caller wrote it, rather than received it. */
   isMine: boolean;
+  /**
+   * Who it went to — filled on the author's own list ("Thank-yous → Sent")
+   * only. A recipient is never told who else it was addressed to.
+   */
+  recipients?: PublicIdentity[];
   createdAt: Date;
 }
 
@@ -212,6 +221,7 @@ export const toMemoryReplyView = (
   authorAvatarUrl: reply.authorAvatarUrl,
   kind: reply.kind,
   text: reply.text,
+  card: reply.card ?? false,
   mediaUrl: reply.mediaUrl,
   contentType: reply.contentType,
   durationMs: reply.durationMs,
@@ -226,6 +236,7 @@ export const toMemoryWishView = (wish: MemoryWishDocument): MemoryWishView => ({
   contributorAvatarUrl: wish.contributorAvatarUrl,
   kind: wish.kind,
   text: wish.text,
+  card: wish.card ?? false,
   mediaUrl: wish.mediaUrl,
   contentType: wish.contentType,
   durationMs: wish.durationMs,

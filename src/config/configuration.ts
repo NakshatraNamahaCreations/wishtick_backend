@@ -82,7 +82,7 @@ export interface AppConfig {
   };
   delivery: {
     mailerDriver: 'console' | 'ses';
-    smsDriver: 'console' | 'http';
+    smsDriver: 'console' | 'http' | 'smsgraph';
     pushDriver: 'console' | 'fcm';
     mailFrom: string;
     ses: {
@@ -96,6 +96,22 @@ export interface AppConfig {
       endpoint: string;
       authToken: string;
       senderId: string;
+      /**
+       * The sign-in SMS exactly as approved on DLT, with `{#num#}` where the
+       * code goes. Empty keeps the built-in wording, which is fine for the
+       * console driver but would be dropped by Indian operators.
+       */
+      otpTemplate: string;
+      /** DLT template ID of `otpTemplate`. */
+      otpTemplateId: string;
+      /** SMSGraph (smsgraph.biz) DLT gateway, selected when SMS_DRIVER=smsgraph. */
+      smsgraph: {
+        baseUrl: string;
+        userId: string;
+        password: string;
+        /** DLT principal entity ID. */
+        entityId: string;
+      };
     };
     /** Firebase service account, for FCM HTTP v1. Empty until push is set up. */
     fcm: {
@@ -355,7 +371,7 @@ export const configuration = (): AppConfig => {
     },
     delivery: {
       mailerDriver: (process.env.MAILER_DRIVER ?? 'console') as 'console' | 'ses',
-      smsDriver: (process.env.SMS_DRIVER ?? 'console') as 'console' | 'http',
+      smsDriver: (process.env.SMS_DRIVER ?? 'console') as 'console' | 'http' | 'smsgraph',
       pushDriver: (process.env.PUSH_DRIVER ?? 'console') as 'console' | 'fcm',
       mailFrom: process.env.MAIL_FROM ?? 'Wishtick <no-reply@wishtick.app>',
       ses: {
@@ -368,6 +384,17 @@ export const configuration = (): AppConfig => {
         endpoint: process.env.SMS_HTTP_ENDPOINT ?? '',
         authToken: process.env.SMS_HTTP_AUTH_TOKEN ?? '',
         senderId: process.env.SMS_SENDER_ID ?? 'WISHTK',
+        otpTemplate: process.env.SMS_OTP_TEMPLATE ?? '',
+        otpTemplateId: (process.env.SMS_OTP_TEMPLATE_ID ?? '').trim(),
+        smsgraph: {
+          baseUrl: (process.env.SMSGRAPH_BASE_URL ?? 'http://smsgraph.biz/api/SmsApi').replace(
+            /\/+$/,
+            '',
+          ),
+          userId: process.env.SMSGRAPH_USER_ID ?? '',
+          password: process.env.SMSGRAPH_PASSWORD ?? '',
+          entityId: (process.env.SMSGRAPH_ENTITY_ID ?? '').trim(),
+        },
       },
       fcm: {
         projectId: process.env.FIREBASE_PROJECT_ID ?? '',

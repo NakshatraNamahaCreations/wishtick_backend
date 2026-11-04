@@ -253,6 +253,17 @@ describe('Home banners (e2e)', () => {
     await post({ linkUrl: 'javascript:alert(1)' }).expect(400);
     await post({ linkUrl: 'http://insecure.example' }).expect(400);
     await post({ linkUrl: '/wishlist' }).expect(201);
+    // Only a picture: the words are in it.
+    const bare = (
+      (
+        await request(server())
+          .post(`${V1}/admin/banners`)
+          .set(auth(admin))
+          .send({ placement: 'exclusive_offers', imageUrl: url })
+          .expect(201)
+      ).body as Envelope<Banner>
+    ).data;
+    expect(bare).toMatchObject({ title: '', subtitle: null });
     // A placement that does not exist.
     await post({ placement: 'popup' }).expect(400);
     // Ending before it starts.

@@ -140,6 +140,18 @@ export class MemoriesController {
     return this.replies.listForMe(userId);
   }
 
+  /** Declared before `:id`, for the same reason as `reply-audience`. */
+  @Get('replies/mine')
+  @ApiOperation({
+    summary: '"Thank-yous → Sent" — every reply you wrote, newest first',
+    description:
+      'Each names every memory it answers and everyone it went to: all of it is the ' +
+      "author's own.",
+  })
+  repliesMine(@CurrentUser('id') userId: string): Promise<MemoryReplyView[]> {
+    return this.replies.listMine(userId);
+  }
+
   @Post('replies')
   @ApiOperation({
     summary: 'Reply to the people who filled your memories — one reply, many recipients',

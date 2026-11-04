@@ -95,7 +95,7 @@ export class PromotionsService {
     PromotionsService.checkWindow(startsAt, endsAt);
     const banner = await this.banners.create({
       placement: input.placement,
-      title: input.title,
+      title: input.title ?? '',
       subtitle: input.subtitle ?? null,
       imageUrl: this.checkImage(input.imageUrl),
       linkUrl: input.linkUrl ?? null,

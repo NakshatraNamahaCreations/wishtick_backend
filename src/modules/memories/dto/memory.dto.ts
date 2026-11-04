@@ -165,6 +165,13 @@ export class AddMemoryWishDto {
   mediaId?: string | null;
 
   @ApiPropertyOptional({
+    description: 'A designed text card sent as a picture. Photo only; the words go in `text`.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  card?: boolean;
+
+  @ApiPropertyOptional({
     description: 'Name to show on the wish. Defaults to your profile name.',
     maxLength: 80,
   })
@@ -200,6 +207,13 @@ export class SendMemoryReplyDto {
   @IsOptional()
   @IsMongoId()
   mediaId?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'A designed text card sent as a picture. Photo only; the words go in `text`.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  card?: boolean;
 
   /**
    * Who to send it to.

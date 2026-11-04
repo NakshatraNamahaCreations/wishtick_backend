@@ -107,6 +107,8 @@ export class MemoryWishesService {
       contributorName,
       kind: dto.kind,
       text,
+      // A card is a picture of words; on any other kind the flag means nothing.
+      card: dto.card === true && dto.kind === MemoryWishKind.PHOTO,
       mediaId: dto.mediaId ? new Types.ObjectId(dto.mediaId) : null,
       mediaUrl,
       contentType,

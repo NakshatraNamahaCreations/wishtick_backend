@@ -834,6 +834,43 @@ describe('Memories (e2e)', () => {
       expect(await forMe(host)).toHaveLength(0);
     });
 
+    // "Thank-yous → Sent": the author's own list, naming who each went to.
+    it('lists the thank-yous you sent, with who they went to', async () => {
+      const { host, friend, recipient, memory } = await openedMemoryWithAWish();
+      await request(app.getHttpServer())
+        .post(`${V1}/memories/replies`)
+        .set(auth(recipient.token))
+        .send({ kind: 'text', text: 'Thank you!', recipientIds: [friend.userId] })
+        .expect(201);
+
+      const sent = async (actor: Actor) =>
+        (
+          (
+            await request(app.getHttpServer())
+              .get(`${V1}/memories/replies/mine`)
+              .set(auth(actor.token))
+              .expect(200)
+          ).body as Envelope<
+            {
+              text: string;
+              isMine: boolean;
+              memories: { id: string; title: string }[];
+              recipients: { userId: string }[];
+            }[]
+          >
+        ).data;
+
+      const mine = await sent(recipient);
+      expect(mine).toHaveLength(1);
+      expect(mine[0].text).toBe('Thank you!');
+      expect(mine[0].isMine).toBe(true);
+      expect(mine[0].memories).toEqual([{ id: memory.id, title: memory.title }]);
+      expect(mine[0].recipients.map((r) => r.userId)).toEqual([friend.userId]);
+      // Receiving one is not sending one.
+      expect(await sent(friend)).toHaveLength(0);
+      expect(await sent(host)).toHaveLength(0);
+    });
+
     it('refuses to address somebody who has sent you nothing', async () => {
       const { recipient } = await openedMemoryWithAWish();
       const stranger = await newUser();
@@ -1654,6 +1691,20 @@ describe('Memories (e2e)', () => {
       expect((noFile.body as Envelope<unknown>).error?.code).toBe(
         ErrorCode.MEMORY_WISH_MEDIA_REQUIRED,
       );
+    });
+
+    // A card is a picture of words: the flag means nothing on a wish that is
+    // not a picture, and says so by not sticking.
+    it('ignores the card flag on anything but a photo', async () => {
+      const host = await newUser();
+      const memory = await createMemory(host);
+
+      const res = await request(app.getHttpServer())
+        .post(`${V1}/memories/${memory.id}/wishes`)
+        .set(auth(host.token))
+        .send({ kind: 'text', text: 'Happy birthday!', card: true })
+        .expect(201);
+      expect((res.body as Envelope<{ card: boolean }>).data.card).toBe(false);
     });
 
     it('refuses an image passed off as a video wish', async () => {

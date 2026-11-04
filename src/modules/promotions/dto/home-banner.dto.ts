@@ -7,7 +7,6 @@ import {
   IsISO8601,
   IsOptional,
   IsString,
-  Length,
   Matches,
   Max,
   MaxLength,
@@ -29,14 +28,13 @@ export class CreateHomeBannerDto {
   @IsEnum(BannerPlacement)
   placement!: BannerPlacement;
 
-  @ApiProperty({
-    maxLength: 60,
-    description: 'The headline, e.g. "Curated gifts for every occasion".',
-  })
+  /** The app no longer draws it — the words are in the picture. Kept for older builds. */
+  @ApiPropertyOptional({ maxLength: 60 })
+  @IsOptional()
   @IsString()
-  @Length(1, 60)
+  @MaxLength(60)
   @Transform(trim)
-  title!: string;
+  title?: string;
 
   @ApiPropertyOptional({ maxLength: 120, nullable: true })
   @IsOptional()

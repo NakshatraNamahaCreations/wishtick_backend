@@ -69,7 +69,7 @@ export const envValidationSchema = Joi.object({
 
   // Delivery
   MAILER_DRIVER: Joi.string().valid('console', 'ses').default('console'),
-  SMS_DRIVER: Joi.string().valid('console', 'http').default('console'),
+  SMS_DRIVER: Joi.string().valid('console', 'http', 'smsgraph').default('console'),
   MAIL_FROM: Joi.string().default('Wishtick <no-reply@wishtick.app>'),
   // SES creds required only when MAILER_DRIVER=ses, mirroring the S3 precedent.
   SES_REGION: Joi.string().allow('').default(''),
@@ -92,6 +92,43 @@ export const envValidationSchema = Joi.object({
   }),
   SMS_HTTP_AUTH_TOKEN: Joi.string().allow('').default(''),
   SMS_SENDER_ID: Joi.string().default('WISHTK'),
+  // The DLT-approved sign-in SMS. Operators drop text that differs from the
+  // approved template, so a DLT gateway cannot start without both.
+  SMS_OTP_TEMPLATE: Joi.string()
+    .pattern(/\{#num#\}/, '{#num#} placeholder')
+    .when('SMS_DRIVER', {
+      is: 'smsgraph',
+      then: Joi.required(),
+      otherwise: Joi.allow('').default(''),
+    }),
+  SMS_OTP_TEMPLATE_ID: Joi.string()
+    .pattern(/^\d+$/, 'numeric DLT template ID')
+    .when('SMS_DRIVER', {
+      is: 'smsgraph',
+      then: Joi.required(),
+      otherwise: Joi.allow('').default(''),
+    }),
+  // SMSGraph credentials required only when SMS_DRIVER=smsgraph.
+  SMSGRAPH_BASE_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .default('http://smsgraph.biz/api/SmsApi'),
+  SMSGRAPH_USER_ID: Joi.string().when('SMS_DRIVER', {
+    is: 'smsgraph',
+    then: Joi.required(),
+    otherwise: Joi.string().allow('').default(''),
+  }),
+  SMSGRAPH_PASSWORD: Joi.string().when('SMS_DRIVER', {
+    is: 'smsgraph',
+    then: Joi.required(),
+    otherwise: Joi.string().allow('').default(''),
+  }),
+  SMSGRAPH_ENTITY_ID: Joi.string()
+    .pattern(/^\d+$/, 'numeric DLT entity ID')
+    .when('SMS_DRIVER', {
+      is: 'smsgraph',
+      then: Joi.required(),
+      otherwise: Joi.allow('').default(''),
+    }),
 
   // Push. Firebase creds required only when PUSH_DRIVER=fcm, mirroring SES.
   // Until then the console driver no-ops and the other channels are unaffected.
