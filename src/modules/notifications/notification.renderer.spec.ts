@@ -116,6 +116,65 @@ describe('NotificationRenderer', () => {
       expect(rsvp({ response: 'maybe' })).toBe("Priya isn't sure about coming to Diwali Night");
       expect(rsvp({ response: 'no', plusOnes: 3 })).toBe("Priya can't make it to Diwali Night");
     });
+
+    it('a first reply reads as before', () => {
+      expect(rsvp({ response: 'yes', plusOnes: 1, previousResponse: 'pending' })).toBe(
+        'Priya is coming to Diwali Night (+1)',
+      );
+    });
+
+    describe('a changed reply', () => {
+      const changed = (over: Record<string, unknown>) => {
+        const c = renderer.content(NotificationType.EVENT_RSVP, {
+          guestName: 'Priya',
+          eventTitle: 'Diwali Night',
+          ...over,
+        });
+        return { title: c.title, line: c.text.split('\n')[0] };
+      };
+
+      it('names the old and new answer', () => {
+        expect(
+          changed({ previousResponse: 'maybe', previousPlusOnes: 0, response: 'yes', plusOnes: 0 }),
+        ).toEqual({
+          title: 'Priya changed their RSVP: Maybe → Going',
+          line: 'Diwali Night · Going · 1 person.',
+        });
+        expect(
+          changed({ previousResponse: 'yes', previousPlusOnes: 2, response: 'no', plusOnes: 0 }),
+        ).toEqual({
+          title: 'Priya changed their RSVP: Going → Not going',
+          line: 'Diwali Night · Not going.',
+        });
+      });
+
+      it('names the old and new head count, in people including the guest', () => {
+        expect(
+          changed({ previousResponse: 'yes', previousPlusOnes: 1, response: 'yes', plusOnes: 3 }),
+        ).toEqual({
+          title: 'Priya changed their head count: 2 → 4',
+          line: 'Diwali Night · Going · 2 → 4 people.',
+        });
+      });
+
+      it('shows both when the answer and the count move together', () => {
+        expect(
+          changed({ previousResponse: 'maybe', previousPlusOnes: 0, response: 'yes', plusOnes: 2 }),
+        ).toEqual({
+          title: 'Priya changed their RSVP: Maybe → Going',
+          line: 'Diwali Night · Going · 1 → 3 people.',
+        });
+      });
+
+      it('does not compare a count from a "no"', () => {
+        expect(
+          changed({ previousResponse: 'no', previousPlusOnes: 0, response: 'yes', plusOnes: 2 }),
+        ).toEqual({
+          title: 'Priya changed their RSVP: Not going → Going',
+          line: 'Diwali Night · Going · 3 people.',
+        });
+      });
+    });
   });
 
   /** A change, to the guests: what moved, with its new value. */

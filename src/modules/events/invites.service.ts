@@ -604,6 +604,7 @@ export class InvitesService {
     opts: { plusOnes?: number; message?: string },
   ): Promise<EventInviteDocument> {
     const previous = invite.rsvp;
+    const previousPlusOnes = invite.plusOnes ?? 0;
     invite.rsvp = response;
     invite.respondedAt = new Date();
 
@@ -615,10 +616,15 @@ export class InvitesService {
 
     await invite.save();
 
-    // Only a changed answer is news. The same button tapped again — an
-    // invite link gets reopened constantly — would otherwise buzz the host
-    // every time.
-    if (response !== previous && response !== RsvpResponse.PENDING) {
+    // Only a change is news: a different answer, or the same yes/maybe with a
+    // different head count — the host caters for the number, so "2 of us" now
+    // being 4 matters as much as maybe becoming yes. The same button tapped
+    // again with the same count — an invite link gets reopened constantly —
+    // would otherwise buzz the host every time.
+    const answerChanged = response !== previous;
+    const countChanged =
+      !answerChanged && response !== RsvpResponse.NO && invite.plusOnes !== previousPlusOnes;
+    if (response !== RsvpResponse.PENDING && (answerChanged || countChanged)) {
       const event = await this.events.findOrFail(invite.eventId.toString());
       this.emitter.emit(EVENT_RSVP_CHANGED, {
         eventId: event._id.toString(),
@@ -628,6 +634,8 @@ export class InvitesService {
         eventTitle: event.title,
         response,
         plusOnes: invite.plusOnes ?? 0,
+        previousResponse: previous ?? RsvpResponse.PENDING,
+        previousPlusOnes,
         respondedAt: invite.respondedAt ?? new Date(),
       } satisfies EventRsvpChangedEvent);
     }

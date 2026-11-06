@@ -295,8 +295,14 @@ export class CreateItemDto {
   @Type(() => GiftPreferencesDto)
   giftPreferences?: GiftPreferencesDto;
 
-  @ApiPropertyOptional({ type: [String], description: 'Confirmed media ids you own' })
+  @ApiPropertyOptional({
+    type: [String],
+    description: `Confirmed media ids you own, purpose wishlist_item. At most ${MAX_ITEM_IMAGES}.`,
+  })
   @IsOptional()
+  // The same cap as the pictures themselves: anything past it would be cut
+  // from imageUrls on save but still stored here, holding uploads nothing shows.
+  @ArrayMaxSize(MAX_ITEM_IMAGES)
   @IsMongoId({ each: true })
   mediaIds?: string[];
 

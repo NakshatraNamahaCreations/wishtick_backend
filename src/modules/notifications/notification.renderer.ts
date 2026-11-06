@@ -461,6 +461,42 @@ const CONTENT: Record<NotificationType, (p: Payload) => Content> = {
     const event = s(p, 'eventTitle', 'your event');
     const extra = Number(p.plusOnes);
     const plus = Number.isFinite(extra) && extra > 0 ? ` (+${extra})` : '';
+
+    // A change to an earlier answer says what moved, in the app's own words
+    // (Going / Maybe / Not going) and in people including the guest — the
+    // "2 of you" the guest picked — so the host sees "2 → 4", not "+1 → +3".
+    // A first reply, or a row queued before this existed, has no earlier
+    // answer and falls through to the plain headline below.
+    const label: Record<string, string> = { yes: 'Going', maybe: 'Maybe', no: 'Not going' };
+    const prev = typeof p.previousResponse === 'string' ? p.previousResponse : '';
+    const now = typeof p.response === 'string' ? p.response : '';
+    if (label[prev] && label[now]) {
+      const heads = (plusOnes: unknown): number => {
+        const n = Number(plusOnes);
+        return (Number.isFinite(n) && n > 0 ? Math.floor(n) : 0) + 1;
+      };
+      const people = (n: number): string => `${n} ${n === 1 ? 'person' : 'people'}`;
+      const before = heads(p.previousPlusOnes);
+      const after = heads(p.plusOnes);
+      // A "no" carries no head count, so there is nothing to compare from it.
+      const countMoved = prev !== 'no' && now !== 'no' && before !== after;
+
+      const title =
+        prev !== now
+          ? `${guest} changed their RSVP: ${label[prev]} → ${label[now]}`
+          : `${guest} changed their head count: ${before} → ${after}`;
+      const detail =
+        now === 'no'
+          ? `${event} · ${label[now]}`
+          : `${event} · ${label[now]} · ${countMoved ? `${before} → ${people(after)}` : people(after)}`;
+      return {
+        subject: title,
+        title,
+        lines: [`${detail}.`],
+        cta: { label: 'See the guest list', url: s(p, 'url') },
+      };
+    }
+
     // Each answer named outright, and anything else left neutral: a missing
     // response reading as "can't make it" would tell a host a guest declined.
     const headline =

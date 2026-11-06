@@ -550,6 +550,10 @@ describe('Notifications (e2e)', () => {
         eventTitle: 'Siya turns 24',
         response,
         plusOnes: 0,
+        // Each one a first reply, so the titles below stay the plain answer:
+        // what is under test here is which row survives, not the wording.
+        previousResponse: 'pending',
+        previousPlusOnes: 0,
         respondedAt: new Date(at),
       } satisfies EventRsvpChangedEvent);
     };

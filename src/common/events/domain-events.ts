@@ -722,6 +722,12 @@ export interface EventRsvpChangedEvent {
   eventTitle: string;
   response: 'yes' | 'no' | 'maybe';
   plusOnes: number;
+  /**
+   * The answer and plus-ones before this one, so the host is told what
+   * changed ("Maybe → Going", "2 → 4 people"). `pending` is a first reply.
+   */
+  previousResponse: 'pending' | 'yes' | 'no' | 'maybe';
+  previousPlusOnes: number;
   /** When they answered — part of the dedupe key, so a changed mind is news. */
   respondedAt: Date;
 }

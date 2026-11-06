@@ -313,6 +313,19 @@ describe('Wishlists (e2e)', () => {
         .expect(400);
     });
 
+    it('refuses more uploaded photos than an item can show', async () => {
+      const owner = await newUser();
+      const wishlist = await createWishlist(owner);
+      // Six well-formed ids: refused for the count, before any is looked up.
+      const sixIds = Array.from({ length: 6 }, (_, i) => `65a0000000000000000000a${i}`);
+      const res = await request(app.getHttpServer())
+        .post(`${V1}/wishlists/${wishlist.id}/items`)
+        .set(auth(owner.token))
+        .send({ title: 'Handmade frame', mediaIds: sixIds })
+        .expect(400);
+      expect(JSON.stringify(res.body)).toContain('mediaIds');
+    });
+
     it('rejects an unknown category', async () => {
       const owner = await newUser();
       const wishlist = await createWishlist(owner);

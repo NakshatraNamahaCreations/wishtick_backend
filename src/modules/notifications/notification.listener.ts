@@ -705,6 +705,8 @@ export class NotificationListener {
           eventTitle: e.eventTitle,
           response: e.response,
           plusOnes: e.plusOnes,
+          previousResponse: e.previousResponse,
+          previousPlusOnes: e.previousPlusOnes,
           url: `${this.web}/events/${e.eventId}`,
         },
       });

@@ -2973,11 +2973,42 @@ describe('Events & invites (e2e)', () => {
       await settle();
       rows = await rowsFor(host, 'event_rsvp');
       expect(rows).toHaveLength(1);
-      expect(rows[0].title).toBe("Priya Nair can't make it to Diwali Night");
+      // A change says what it changed from, not just where it landed.
+      expect(rows[0].title).toBe('Priya Nair changed their RSVP: Going → Not going');
       expect(rows[0].refId).not.toBe(first);
 
       // And the guest is never told about their own reply.
       expect(await rowsFor(guest, 'event_rsvp')).toHaveLength(0);
+    });
+
+    it('tells the host when a guest who is going changes how many are coming', async () => {
+      const host = await newUser('Rohan Mehta');
+      const guest = await newUser('Priya Nair');
+      const { token } = await partyWith(host, guest);
+
+      await rsvp(token, 'yes', 1); // "2 of us"
+      await settle();
+
+      // Still going, but now four of them: the host caters for the number.
+      await rsvp(token, 'yes', 3);
+      await settle();
+      let rows = await rowsFor(host, 'event_rsvp');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toBe('Priya Nair changed their head count: 2 → 4');
+
+      // The same count again is not news.
+      await rsvp(token, 'yes', 3);
+      await settle();
+      rows = await rowsFor(host, 'event_rsvp');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toBe('Priya Nair changed their head count: 2 → 4');
+
+      // A new answer and a new count together lead with the answer.
+      await rsvp(token, 'maybe', 0);
+      await settle();
+      rows = await rowsFor(host, 'event_rsvp');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toBe('Priya Nair changed their RSVP: Going → Maybe');
     });
 
     it('tells guests a party is off, but not the ones who had declined', async () => {
