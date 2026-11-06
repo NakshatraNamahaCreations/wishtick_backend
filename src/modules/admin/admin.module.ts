@@ -42,6 +42,8 @@ import { BlogModule } from 'src/modules/blog/blog.module';
 import { AdminBlogController } from './admin-blog.controller';
 import { PromotionsModule } from 'src/modules/promotions/promotions.module';
 import { AdminBannersController } from './admin-banners.controller';
+import { AdminAppVersionController } from './admin-app-version.controller';
+import { AppVersionModule } from 'src/modules/app-version/app-version.module';
 import { MediaModule } from 'src/modules/media/media.module';
 import { MemoriesModule } from 'src/modules/memories/memories.module';
 import { WishlistsModule } from 'src/modules/wishlists/wishlists.module';
@@ -152,6 +154,8 @@ import { AdminJwtStrategy } from './strategies/admin-jwt.strategy';
     BlogModule,
     // Home's ad banners.
     PromotionsModule,
+    // The app update prompt and force update.
+    AppVersionModule,
   ],
   controllers: [
     AdminAuthController,
@@ -163,6 +167,7 @@ import { AdminJwtStrategy } from './strategies/admin-jwt.strategy';
     AdminCatalogController,
     AdminBlogController,
     AdminBannersController,
+    AdminAppVersionController,
     AdminInsightsController,
     AdminGovernanceController,
     ReportsController,

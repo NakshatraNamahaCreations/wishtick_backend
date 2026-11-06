@@ -24,6 +24,7 @@ import { VideoModule } from './infra/video/video.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { BlogModule } from './modules/blog/blog.module';
 import { PromotionsModule } from './modules/promotions/promotions.module';
+import { AppVersionModule } from './modules/app-version/app-version.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ChatModule } from './modules/chat/chat.module';
@@ -136,6 +137,7 @@ import { WishmatesModule } from './modules/wishmates/wishmates.module';
     GroupGiftModule,
     BlogModule,
     PromotionsModule,
+    AppVersionModule,
     ChatModule,
     NotificationsModule,
     ReelsModule,
