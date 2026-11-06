@@ -268,6 +268,13 @@ export interface AppConfig {
   observability: {
     sentryDsn: string;
   };
+  /** Reads the live build off Google Play, for the app update prompt. */
+  playStore: {
+    packageName: string;
+    /** Empty turns the sync off: the latest version is then set by hand. */
+    clientEmail: string;
+    privateKey: string;
+  };
 }
 
 const toBool = (v: string | undefined, fallback = false): boolean =>
@@ -515,6 +522,11 @@ export const configuration = (): AppConfig => {
     },
     observability: {
       sentryDsn: process.env.SENTRY_DSN ?? '',
+    },
+    playStore: {
+      packageName: process.env.PLAY_PACKAGE_NAME || 'com.wishtick.wishtick',
+      clientEmail: process.env.PLAY_CLIENT_EMAIL ?? '',
+      privateKey: process.env.PLAY_PRIVATE_KEY ?? '',
     },
   };
 };

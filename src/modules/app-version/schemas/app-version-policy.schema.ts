@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
-import { AppPlatform } from '../app-version.types';
+import { AppPlatform, type PlaySyncState } from '../app-version.types';
 
 export type AppVersionPolicyDocument = HydratedDocument<AppVersionPolicy>;
 
@@ -43,6 +43,10 @@ export class AppVersionPolicy {
 
   @Prop({ type: SchemaTypes.ObjectId, default: null })
   updatedBy!: Types.ObjectId | null;
+
+  /** The last read of Google Play: what it found, or why it failed. */
+  @Prop({ type: SchemaTypes.Mixed, default: null })
+  playSync!: PlaySyncState | null;
 
   createdAt!: Date;
   updatedAt!: Date;

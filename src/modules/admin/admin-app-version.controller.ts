@@ -1,4 +1,16 @@
-import { Body, Controller, Get, Ip, Param, ParseEnumPipe, Put, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Ip,
+  Param,
+  ParseEnumPipe,
+  Post,
+  Put,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from 'src/common/decorators/public.decorator';
 import { AppVersionService } from 'src/modules/app-version/app-version.service';
@@ -41,6 +53,33 @@ export class AdminAppVersionController {
   @ApiOperation({ summary: "Each platform's latest version and force update" })
   list(): Promise<AdminAppVersionView[]> {
     return this.versions.adminList();
+  }
+
+  @Post('android/sync')
+  @RequirePermission(AdminPermission.OPS_MANAGE)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Read Google Play now; a newer build out to everyone becomes the latest (audited)',
+  })
+  async sync(
+    @CurrentAdmin() actor: AuthenticatedAdmin,
+    @Ip() ip: string,
+  ): Promise<AdminAppVersionView> {
+    const { before, after, advanced } = await this.versions.syncFromPlay();
+    // Only a refresh that changed something is worth a line in the log.
+    if (advanced) {
+      await this.audit.record({
+        actor,
+        action: 'app_version.play_sync',
+        targetType: 'app_version',
+        targetId: AppPlatform.ANDROID,
+        before: snapshot(before),
+        after: snapshot(after),
+        meta: { platform: AppPlatform.ANDROID, source: 'google_play' },
+        ip: ip ?? null,
+      });
+    }
+    return after;
   }
 
   @Put(':platform')

@@ -334,6 +334,12 @@ export const envValidationSchema = Joi.object({
 
   // Observability
   SENTRY_DSN: Joi.string().allow('').default(''),
+
+  // Google Play, read once a day for the app's latest version. Both empty
+  // turns the sync off and the admin panel sets the version by hand.
+  PLAY_PACKAGE_NAME: Joi.string().allow('').default('com.wishtick.wishtick'),
+  PLAY_CLIENT_EMAIL: Joi.string().allow('').default(''),
+  PLAY_PRIVATE_KEY: Joi.string().allow('').default(''),
 })
   // The two JWT secrets must differ, otherwise a refresh token would validate
   // as an access token and silently bypass the 15-minute access window.

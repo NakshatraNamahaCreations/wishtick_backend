@@ -12,6 +12,7 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { AppPlatform, STORE_URL_PATTERN } from '../app-version.types';
+import { RELEASE_NOTES_MAX } from '../play-store.client';
 
 /** An empty string from a cleared field means "none". */
 const blankToNull = ({ value }: { value: unknown }): unknown =>
@@ -79,12 +80,13 @@ export class UpdateAppVersionPolicyDto {
   @Matches(STORE_URL_PATTERN, { message: 'storeUrl must be a Play Store or App Store link' })
   storeUrl?: string | null;
 
-  @ApiPropertyOptional({ nullable: true, maxLength: 200 })
+  /** As long as Play's own "What's new", which a sync copies in. */
+  @ApiPropertyOptional({ nullable: true, maxLength: RELEASE_NOTES_MAX })
   @IsOptional()
   @Transform(blankToNull)
   @ValidateIf((_, v) => v !== null)
   @IsString()
-  @MaxLength(200)
+  @MaxLength(RELEASE_NOTES_MAX)
   message?: string | null;
 
   @ApiPropertyOptional({ description: 'Why, for the audit log', maxLength: 300 })

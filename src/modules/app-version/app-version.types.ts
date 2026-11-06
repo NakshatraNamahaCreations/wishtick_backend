@@ -38,6 +38,86 @@ export interface AdminAppVersionView {
   forced: boolean;
   updatedBy: string | null;
   updatedAt: string | null;
+  /** The Google Play sync: Android only; never connected for iOS. */
+  play: AdminPlaySyncView;
+}
+
+/** What the last read of Google Play found, as the admin panel shows it. */
+export interface AdminPlaySyncView {
+  /** A service account is set up on the server. */
+  connected: boolean;
+  checkedAt: string | null;
+  /** Null before the first check. */
+  ok: boolean | null;
+  error: string | null;
+  /** The newest build out to everyone on production. */
+  liveVersionCode: number | null;
+  liveVersionName: string | null;
+  /** A staged rollout still under way, if any, and how far it has got. */
+  rolloutVersionCode: number | null;
+  rolloutVersionName: string | null;
+  rolloutPercent: number | null;
+  /** When a sync last moved the latest version forward. */
+  advancedAt: string | null;
+}
+
+/** What is kept on the policy between checks. */
+export interface PlaySyncState {
+  checkedAt: Date;
+  ok: boolean;
+  error: string | null;
+  liveVersionCode: number | null;
+  liveVersionName: string | null;
+  rolloutVersionCode: number | null;
+  rolloutVersionName: string | null;
+  rolloutFraction: number | null;
+  advancedAt: Date | null;
+}
+
+/** A Play release, as far as the rule needs it. */
+interface ReleaseLike {
+  versionCode: number;
+  versionName: string | null;
+  status: string;
+  userFraction: number | null;
+  notes: string | null;
+}
+
+/** What one read of Play means for the policy. */
+export interface PlayPlan<R extends ReleaseLike = ReleaseLike> {
+  /** The newest release out to everyone. */
+  live: R | null;
+  /** A staged rollout above it, still under way. */
+  rollout: R | null;
+  /** Set when the live build is newer than the latest version on file. */
+  advanceTo: R | null;
+}
+
+/**
+ * Only a release out to 100% becomes the latest version. Offering a build
+ * that Play is still holding back would send people to a listing with no
+ * update on it. And the latest version only ever moves up: a build set by
+ * hand above what Play has is left alone.
+ */
+export function planFromPlay<R extends ReleaseLike>(
+  releases: R[],
+  latestVersionCode: number,
+): PlayPlan<R> {
+  const newest = (list: R[]): R | null =>
+    list.reduce<R | null>((a, r) => (!a || r.versionCode > a.versionCode ? r : a), null);
+  const live = newest(releases.filter((r) => r.status === 'completed'));
+  const rollout = newest(
+    releases.filter(
+      (r) =>
+        (r.status === 'inProgress' || r.status === 'halted') &&
+        r.versionCode > (live?.versionCode ?? 0),
+    ),
+  );
+  return {
+    live,
+    rollout,
+    advanceTo: live && live.versionCode > latestVersionCode ? live : null,
+  };
 }
 
 /** Where each store's listing is when the panel has not set one. */
