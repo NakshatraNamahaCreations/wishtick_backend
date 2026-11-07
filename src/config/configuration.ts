@@ -1,3 +1,5 @@
+import { parseTrustProxy, type TrustProxy } from './trust-proxy';
+
 /**
  * Typed view over the validated environment. Nothing outside this file reads
  * `process.env` — every consumer goes through ConfigService<AppConfig, true>.
@@ -19,6 +21,8 @@ export interface AppConfig {
     logLevel: string;
     swaggerEnabled: boolean;
     isProduction: boolean;
+    /** Which proxies may report a visitor's address. See parseTrustProxy. */
+    trustProxy: TrustProxy;
   };
   mongo: {
     uri: string;
@@ -337,6 +341,7 @@ export const configuration = (): AppConfig => {
       logLevel: process.env.LOG_LEVEL ?? 'info',
       swaggerEnabled: toBool(process.env.SWAGGER_ENABLED, true),
       isProduction: env === 'production',
+      trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
     },
     mongo: {
       uri: process.env.MONGO_URI as string,

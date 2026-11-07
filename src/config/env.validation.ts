@@ -1,3 +1,4 @@
+import { isValidTrustProxy } from './trust-proxy';
 import * as Joi from 'joi';
 
 /**
@@ -15,6 +16,19 @@ export const envValidationSchema = Joi.object({
   APP_URL: Joi.string().uri().default('http://localhost:3000'),
   WEB_APP_URL: Joi.string().uri().default('http://localhost:5173'),
   WEB_REVALIDATE_SECRET: Joi.string().allow('').default(''),
+  // Which proxies may report a visitor's address (X-Forwarded-For): a hop
+  // count, or a list of addresses and ranges. Production, with the website on
+  // its own server: loopback,<the website server's IP>. See trust-proxy.ts.
+  TRUST_PROXY: Joi.string()
+    .allow('')
+    .default('1')
+    .custom((value: string, helpers) =>
+      isValidTrustProxy(value)
+        ? value
+        : helpers.message({
+            custom: 'TRUST_PROXY must be a number, or addresses, ranges and loopback',
+          }),
+    ),
   LOG_LEVEL: Joi.string()
     .valid('fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent')
     .default('info'),

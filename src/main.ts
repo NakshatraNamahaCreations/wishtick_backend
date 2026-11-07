@@ -33,7 +33,9 @@ async function bootstrap(): Promise<void> {
   // gzip response bodies — the list and dashboard payloads are the ones that
   // benefit, and the CPU cost is negligible next to the bytes saved on mobile.
   app.use(compression());
-  app.set('trust proxy', 1);
+  // Who may tell us a visitor's address: the rate limits, the admin IP
+  // allowlist and the audit log all read it. TRUST_PROXY, default one hop.
+  app.set('trust proxy', appCfg.trustProxy);
 
   // Back the chat gateway with the Redis adapter so a message emitted on one
   // instance reaches clients connected to any other — horizontal scale from the
