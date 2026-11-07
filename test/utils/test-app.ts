@@ -25,6 +25,7 @@ import { configuration } from 'src/config/configuration';
 import { envValidationSchema } from 'src/config/env.validation';
 import { MIGRATIONS, MigrationRunner } from 'src/infra/migrations';
 import { QUEUE } from 'src/infra/queue/queue.constants';
+import { HealthProcessor } from 'src/infra/queue/processors/health.processor';
 import { StorageModule } from 'src/infra/storage/storage.module';
 import { VideoModule } from 'src/infra/video/video.module';
 import { AdminModule } from 'src/modules/admin/admin.module';
@@ -229,6 +230,14 @@ export async function createTestApp(
     .useValue({})
     .overrideProvider(getQueueToken(QUEUE.ANALYTICS_ROLLUP))
     .useValue(analytics)
+    // The health probe's queue and worker. Left real, the worker reconnects to
+    // Redis for the whole run, and any read of the queue — the admin
+    // dashboard's failed-job count, the queue health check — waits on that
+    // reconnect for ever instead of failing, so the request never answers.
+    .overrideProvider(HealthProcessor)
+    .useValue({})
+    .overrideProvider(getQueueToken(QUEUE.HEALTH))
+    .useValue(new FakeQueue())
     .compile();
 
   // rawBody: true matches main.ts — the affiliate webhook needs req.rawBody to
