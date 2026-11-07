@@ -55,7 +55,7 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 {
   "sms": "Aarav's Birthday has been cancelled — https://app.wishtick.test/x",
   "subject": "Aarav's Birthday has been cancelled",
-  "text": "Someone cancelled Aarav's Birthday, planned for in 2 days.
+  "text": "Rohan cancelled Aarav's Birthday, planned for in 2 days.
 
 View the invitation: https://app.wishtick.test/x",
   "title": "Aarav's Birthday has been cancelled",
@@ -66,7 +66,7 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 {
   "sms": "Aarav's Birthday has been deleted",
   "subject": "Aarav's Birthday has been deleted",
-  "text": "Someone deleted Aarav's Birthday, planned for in 2 days.",
+  "text": "Rohan deleted Aarav's Birthday, planned for in 2 days.",
   "title": "Aarav's Birthday has been deleted",
 }
 `;
@@ -74,8 +74,8 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: event_invite 1`] = `
 {
   "sms": "You're invited to Aarav's Birthday — https://app.wishtick.test/x",
-  "subject": "Someone invited you to Aarav's Birthday",
-  "text": "Someone invited you to Aarav's Birthday.
+  "subject": "Rohan invited you to Aarav's Birthday",
+  "text": "Rohan invited you to Aarav's Birthday.
 
 Open the invitation to RSVP.
 
@@ -136,7 +136,7 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 {
   "sms": "Aarav's Birthday has been updated — https://app.wishtick.test/x",
   "subject": "Aarav's Birthday has been updated",
-  "text": "Someone updated Aarav's Birthday.
+  "text": "Rohan updated Aarav's Birthday.
 
 View the invitation: https://app.wishtick.test/x",
   "title": "Aarav's Birthday has been updated",
@@ -202,11 +202,22 @@ View your gift: https://app.wishtick.test/x",
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_buy_reminder 1`] = `
+{
+  "sms": "Time to buy Password changed — https://app.wishtick.test/x",
+  "subject": "Time to buy Password changed",
+  "text": "Password changed has been fully funded for two days — INR 1500.00 is in. Buy it and mark it as bought so everyone knows.
+
+Mark as bought: https://app.wishtick.test/x",
+  "title": "Time to buy Password changed",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_cancelled 1`] = `
 {
   "sms": "Password changed was cancelled — https://app.wishtick.test/x",
-  "subject": "Someone cancelled the group gift",
-  "text": "Someone cancelled the group gift for Password changed. You don't owe anything for it now.
+  "subject": "Rohan cancelled the group gift",
+  "text": "Rohan cancelled the group gift for Password changed. You don't owe anything for it now.
 
 See the group gift: https://app.wishtick.test/x",
   "title": "Password changed was cancelled",
@@ -216,11 +227,33 @@ See the group gift: https://app.wishtick.test/x",
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_charge_added 1`] = `
 {
   "sms": "A charge added: INR 500.00 — https://app.wishtick.test/x",
-  "subject": "Someone added a charge to Password changed",
-  "text": "Someone added a charge of INR 500.00 to Password changed. Reason: not given. The total is now INR 2000.00.
+  "subject": "Rohan added a charge to Password changed",
+  "text": "Rohan added a charge of INR 500.00 to Password changed. Reason: not given. The total is now INR 2000.00.
 
 See the group gift: https://app.wishtick.test/x",
   "title": "A charge added: INR 500.00",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_close_reminder 1`] = `
+{
+  "sms": "Password changed is still INR 500.00 short — https://app.wishtick.test/x",
+  "subject": "Password changed is still waiting on you",
+  "text": "It closed 3 days ago. Settle up, extend the deadline or cancel it — if nothing changes, it's cancelled a week after it closed.
+
+Decide what to do: https://app.wishtick.test/x",
+  "title": "Password changed is still INR 500.00 short",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_closed 1`] = `
+{
+  "sms": "The collection has closed — https://app.wishtick.test/x",
+  "subject": "Password changed has closed",
+  "text": "The deadline for Password changed has passed. Rohan will settle up, extend the deadline or cancel it.
+
+See the group gift: https://app.wishtick.test/x",
+  "title": "The collection has closed",
 }
 `;
 
@@ -243,6 +276,39 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 
 Collected so far: INR 1500.00 of INR 2000.00.",
   "title": "Someone chipped in",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_deadline_extended 1`] = `
+{
+  "sms": "Rohan extended the deadline — https://app.wishtick.test/x",
+  "subject": "Rohan extended the deadline for Password changed",
+  "text": "Password changed is now open until 24 Oct.
+
+See the group gift: https://app.wishtick.test/x",
+  "title": "Rohan extended the deadline",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_deadline_reminder 1`] = `
+{
+  "sms": "3 days left to chip in for Password changed — https://app.wishtick.test/x",
+  "subject": "3 days left to chip in for Password changed",
+  "text": "Your INR 250.00 share for Password changed is due by 24 Oct. Chip in before the collection closes.
+
+Chip in: https://app.wishtick.test/x",
+  "title": "3 days left to chip in for Password changed",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_delivered_recipient 1`] = `
+{
+  "sms": "A group gift for you — https://app.wishtick.test/x",
+  "subject": "A gift from your friends 🎁",
+  "text": "Rohan and your friends chipped in together for Noise-cancelling headphones. Open it to see who gave it, and say thank you.
+
+See who chipped in: https://app.wishtick.test/x",
+  "title": "A group gift for you",
 }
 `;
 
@@ -272,25 +338,25 @@ View the group gift: https://app.wishtick.test/x",
 
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_invite 1`] = `
 {
-  "sms": "Join a group gift — https://app.wishtick.test/x",
-  "subject": "Someone asked you to chip in",
-  "text": "Someone invited you to chip in for Noise-cancelling headphones.
+  "sms": "Someone invited you to chip in on Noise-cancelling headphones — https://app.wishtick.test/x",
+  "subject": "Someone invited you to chip in on Noise-cancelling headphones",
+  "text": "Someone invited you to chip in on Noise-cancelling headphones. Accept to join, or decline.
 
 See the invitation: https://app.wishtick.test/x",
-  "title": "Join a group gift",
+  "title": "Someone invited you to chip in on Noise-cancelling headphones",
 }
 `;
 
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_invite_reminder 1`] = `
 {
-  "sms": "Your share is  — https://app.wishtick.test/x",
+  "sms": "Your share is INR 250.00 — https://app.wishtick.test/x",
   "subject": "You're invited to chip in for Password changed",
   "text": "Split equally, your share for Password changed is .
 
 Chip in to join the group.
 
 See the invitation: https://app.wishtick.test/x",
-  "title": "Your share is ",
+  "title": "Your share is INR 250.00",
 }
 `;
 
@@ -303,11 +369,22 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 }
 `;
 
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_nudge 1`] = `
+{
+  "sms": "A nudge from Rohan — https://app.wishtick.test/x",
+  "subject": "Rohan is waiting on you",
+  "text": "Rohan is asking everyone to chip in for Password changed. Your INR 250.00 share is still to pay. It closes on 24 Oct.
+
+Chip in: https://app.wishtick.test/x",
+  "title": "A nudge from Rohan",
+}
+`;
+
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_payment_disputed 1`] = `
 {
   "sms": "Priya says they sent  — https://app.wishtick.test/x",
   "subject": "Priya says they paid",
-  "text": "Priya says they sent  for Password changed; you recorded .
+  "text": "Priya says they sent  for Password changed; you recorded . UPI ref: 123456789012. "For the speaker"
 
 Check the payment: https://app.wishtick.test/x",
   "title": "Priya says they sent ",
@@ -317,8 +394,8 @@ Check the payment: https://app.wishtick.test/x",
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_payment_reviewed 1`] = `
 {
   "sms": "Payment confirmed — https://app.wishtick.test/x",
-  "subject": "Someone received your payment",
-  "text": "Someone received your  for Password changed.
+  "subject": "Rohan received your payment",
+  "text": "Rohan received your  for Password changed.
 
 See the group gift: https://app.wishtick.test/x",
   "title": "Payment confirmed",
@@ -351,7 +428,7 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 {
   "sms": "New goal: INR 2000.00 — https://app.wishtick.test/x",
   "subject": "Password changed: the goal is now INR 2000.00",
-  "text": "Someone updated Noise-cancelling headphones to the shop's new price,  (was ). The goal is now INR 2000.00.
+  "text": "Rohan updated Noise-cancelling headphones to the shop's new price,  (was ). The goal is now INR 2000.00.
 
 See the group gift: https://app.wishtick.test/x",
   "title": "New goal: INR 2000.00",
@@ -373,7 +450,7 @@ exports[`NotificationRenderer renders in-app/text/sms content for every notifica
 {
   "sms": "Nothing more to pay — https://app.wishtick.test/x",
   "subject": "Password changed is fully funded",
-  "text": "Someone paid the remaining INR 500.00 for Password changed. It's fully funded — nothing more is needed from you.
+  "text": "Rohan paid the remaining INR 500.00 for Password changed. It's fully funded — nothing more is needed from you.
 
 See the group gift: https://app.wishtick.test/x",
   "title": "Nothing more to pay",
@@ -382,14 +459,71 @@ See the group gift: https://app.wishtick.test/x",
 
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_share_reminder 1`] = `
 {
-  "sms": " left to chip in — https://app.wishtick.test/x",
+  "sms": "INR 250.00 left to chip in — https://app.wishtick.test/x",
   "subject": "Your share for Password changed",
   "text": "Your share for Password changed is .
 
 Chip in today so the gift can be bought in time.
 
 Chip in: https://app.wishtick.test/x",
-  "title": " left to chip in",
+  "title": "INR 250.00 left to chip in",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_thank_you 1`] = `
+{
+  "sms": "Siya said thank you — https://app.wishtick.test/x",
+  "subject": "A thank-you from Siya",
+  "text": "Siya wrote a thank-you to everyone who chipped in for Password changed.
+
+"For the speaker"
+
+Read the thank-you: https://app.wishtick.test/x",
+  "title": "Siya said thank you",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_thank_you_prompt 1`] = `
+{
+  "sms": "Say thank you — https://app.wishtick.test/x",
+  "subject": "Say thank you for Password changed",
+  "text": "Password changed arrived yesterday. The people who chipped in would love to hear from you.
+
+Write a thank-you: https://app.wishtick.test/x",
+  "title": "Say thank you",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_unsent_pledge 1`] = `
+{
+  "sms": "Have you sent your share? — https://app.wishtick.test/x",
+  "subject": "Your INR 500.00 for Password changed",
+  "text": "You chipped in INR 500.00 for Password changed yesterday, but haven't marked it as sent. Pay Rohan at rohan@upi, then tap "I've sent it".
+
+Mark it sent: https://app.wishtick.test/x",
+  "title": "Have you sent your share?",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_upi_changed 1`] = `
+{
+  "sms": "Rohan changed their UPI ID — https://app.wishtick.test/x",
+  "subject": "Rohan changed their UPI ID",
+  "text": "Send your share for Password changed to rohan@upi — the old one won't reach them.
+
+See the group gift: https://app.wishtick.test/x",
+  "title": "Rohan changed their UPI ID",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: group_gift_withdrawn 1`] = `
+{
+  "sms": "Priya withdrew their INR 500.00 — https://app.wishtick.test/x",
+  "subject": "Priya withdrew their INR 500.00",
+  "text": "Priya took back the INR 500.00 they said they sent for Password changed. UPI ref: 123456789012. If it did arrive, check with them.
+
+See the group gift: https://app.wishtick.test/x",
+  "title": "Priya withdrew their INR 500.00",
 }
 `;
 
@@ -450,12 +584,12 @@ Open the wishes: https://app.wishtick.test/x",
 
 exports[`NotificationRenderer renders in-app/text/sms content for every notification type: memory_wish_invited 1`] = `
 {
-  "sms": "Someone invited you to add a wish — https://app.wishtick.test/x",
-  "subject": "Someone invited you to add a wish",
+  "sms": "Rohan invited you to add a wish — https://app.wishtick.test/x",
+  "subject": "Rohan invited you to add a wish",
   "text": "Add your wish to Password changed — it opens on the day.
 
 Add your wish: https://app.wishtick.test/x",
-  "title": "Someone invited you to add a wish",
+  "title": "Rohan invited you to add a wish",
 }
 `;
 
@@ -480,6 +614,50 @@ Tap to watch your birthday reel.
 
 Watch your reel: https://app.wishtick.test/x",
   "title": "Your reel is ready!",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: settlement_confirmed 1`] = `
+{
+  "sms": "Settled — https://app.wishtick.test/x",
+  "subject": "Priya received your INR 500.00",
+  "text": "Priya confirmed your INR 500.00 for Password changed arrived. That's settled.
+
+See the group gift: https://app.wishtick.test/x",
+  "title": "Settled",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: settlement_raised 1`] = `
+{
+  "sms": "INR 500.00 more for Password changed — https://app.wishtick.test/x",
+  "subject": "Priya asked for INR 500.00 more",
+  "text": "Priya asked you for INR 500.00 more for Password changed. "For the speaker"
+
+Settle up: https://app.wishtick.test/x",
+  "title": "INR 500.00 more for Password changed",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: settlement_sent 1`] = `
+{
+  "sms": "Confirm Priya's payment — https://app.wishtick.test/x",
+  "subject": "Did Priya's INR 500.00 arrive?",
+  "text": "Priya says they sent you INR 500.00 for Password changed. Check it arrived and confirm.
+
+Confirm it arrived: https://app.wishtick.test/x",
+  "title": "Confirm Priya's payment",
+}
+`;
+
+exports[`NotificationRenderer renders in-app/text/sms content for every notification type: settlement_upi_shared 1`] = `
+{
+  "sms": "Priya shared their UPI ID — https://app.wishtick.test/x",
+  "subject": "Priya shared their UPI ID",
+  "text": "Send INR 500.00 for Password changed to priya@upi, then mark it sent.
+
+Settle up: https://app.wishtick.test/x",
+  "title": "Priya shared their UPI ID",
 }
 `;
 

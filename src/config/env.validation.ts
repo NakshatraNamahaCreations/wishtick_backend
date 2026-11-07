@@ -205,6 +205,8 @@ export const envValidationSchema = Joi.object({
   /** Leave false on any non-AWS endpoint — see configuration.ts. */
   S3_REQUEST_CHECKSUMS: Joi.boolean().default(false),
   LOCAL_STORAGE_DIR: Joi.string().default('./uploads'),
+  /** Bunny account API key — clears the CDN copy of a deleted file. Optional. */
+  BUNNY_API_KEY: Joi.string().allow('').default(''),
 
   // Video. 'storage' keeps clips as flat files, which is right for local dev
   // and wrong for anyone on mobile data.
@@ -285,6 +287,14 @@ export const envValidationSchema = Joi.object({
   // real catalogue, reading Google Shopping through SerpApi.
   PRODUCT_PROVIDER: Joi.string().valid('fixture', 'serpapi').default('fixture'),
   SERPAPI_KEY: Joi.string().allow('').default(''),
+  /**
+   * Who answers PRODUCT_PROVIDER=serpapi's searches: SerpApi itself, or
+   * SearchApi.io (searchapi.io) in its place, with SEARCHAPI_KEY. Switching
+   * back and forth needs nothing else — the same country/language settings
+   * below apply to both.
+   */
+  PRODUCT_SEARCH_VENDOR: Joi.string().valid('serpapi', 'searchapi').default('serpapi'),
+  SEARCHAPI_KEY: Joi.string().allow('').default(''),
   /**
    * SerpApi locale. Defaults target India, which is the only market Wishtick
    * prices in — everything downstream assumes INR minor units.
@@ -373,8 +383,15 @@ export const envValidationSchema = Joi.object({
   // call — an outage that looks like an empty catalogue. Refuse the boot
   // instead, the same reasoning as the fixture-in-production guard.
   .custom((value: Record<string, unknown>, helpers) => {
-    if (value.PRODUCT_PROVIDER === 'serpapi' && !value.SERPAPI_KEY) {
-      return helpers.message({ custom: 'PRODUCT_PROVIDER=serpapi requires SERPAPI_KEY' });
+    if (value.PRODUCT_PROVIDER === 'serpapi') {
+      if (value.PRODUCT_SEARCH_VENDOR === 'searchapi' && !value.SEARCHAPI_KEY) {
+        return helpers.message({
+          custom: 'PRODUCT_SEARCH_VENDOR=searchapi requires SEARCHAPI_KEY',
+        });
+      }
+      if (value.PRODUCT_SEARCH_VENDOR !== 'searchapi' && !value.SERPAPI_KEY) {
+        return helpers.message({ custom: 'PRODUCT_PROVIDER=serpapi requires SERPAPI_KEY' });
+      }
     }
     if (value.AFFILIATE_NETWORK === 'cuelinks' && !value.CUELINKS_API_KEY) {
       return helpers.message({ custom: 'AFFILIATE_NETWORK=cuelinks requires CUELINKS_API_KEY' });

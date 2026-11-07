@@ -19,9 +19,10 @@ export const PRICE_MOVE_FLOOR_MINOR = 50_00;
 /** …or 2% of the price, whichever is larger — ₹50 on a ₹40,000 phone is nothing. */
 export const PRICE_MOVE_SHARE = 0.02;
 
-/** Only a gift still collecting, or collected and not yet bought, is watched. */
+/** Only a gift still collecting, closed short, or collected and not yet bought, is watched. */
 export const PRICE_WATCHED_STATUSES: GroupGiftStatus[] = [
   GroupGiftStatus.OPEN,
+  GroupGiftStatus.CLOSED,
   GroupGiftStatus.FUNDED,
 ];
 

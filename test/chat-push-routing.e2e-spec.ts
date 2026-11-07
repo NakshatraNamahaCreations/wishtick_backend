@@ -131,7 +131,12 @@ describe('Chat push routing (e2e)', () => {
           .post(`${V1}/items/${itemId}/group-gift`)
           .set(auth(host.token))
           .set('Idempotency-Key', randomUUID())
-          .send({ title: 'Speaker for Owner', targetAmountMinor: 1000, visibility: 'visible' })
+          .send({
+            title: 'Speaker for Owner',
+            targetAmountMinor: 1000,
+            visibility: 'visible',
+            hostUpiId: 'host@okaxis',
+          })
           .expect(201)
       ).body as Envelope<{ id: string; chatId: string }>
     ).data;

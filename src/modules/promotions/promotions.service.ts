@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { type FilterQuery, Model, Types } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { CacheService } from 'src/infra/redis/cache.service';
+import { deleteStoredUrl } from 'src/infra/storage/storage-url';
 import { STORAGE, type IStorageProvider } from 'src/infra/storage/storage.port';
 import type { CreateHomeBannerDto, UpdateHomeBannerDto } from './dto/home-banner.dto';
 import {
@@ -32,6 +33,8 @@ const LIVE_CACHE_TTL = 60;
  */
 @Injectable()
 export class PromotionsService {
+  private readonly logger = new Logger(PromotionsService.name);
+
   constructor(
     @InjectModel(HomeBanner.name) private readonly banners: Model<HomeBannerDocument>,
     private readonly cache: CacheService,
@@ -111,6 +114,7 @@ export class PromotionsService {
 
   async update(id: string, input: UpdateHomeBannerDto): Promise<AdminBannerView> {
     const banner = await this.find(id);
+    const previousImage = banner.imageUrl;
     if (input.placement !== undefined) banner.placement = input.placement;
     if (input.title !== undefined) banner.title = input.title;
     if (input.subtitle !== undefined) banner.subtitle = input.subtitle ?? null;
@@ -123,15 +127,18 @@ export class PromotionsService {
     PromotionsService.checkWindow(banner.startsAt, banner.endsAt);
     await banner.save();
     await this.changed();
+    // A new picture replaces the old one, which nothing shows any more.
+    if (previousImage !== banner.imageUrl) await this.releaseImage(previousImage);
     return PromotionsService.adminView(banner, new Date());
   }
 
-  /** Deletes a banner for good. Its picture stays in storage, unreferenced. */
+  /** Deletes a banner for good, and its picture from storage with it. */
   async remove(id: string): Promise<AdminBannerView> {
     const banner = await this.find(id);
     const snapshot = PromotionsService.adminView(banner, new Date());
     await banner.deleteOne();
     await this.changed();
+    await this.releaseImage(banner.imageUrl);
     return snapshot;
   }
 
@@ -167,6 +174,19 @@ export class PromotionsService {
     const banner = await this.banners.findById(id).exec();
     if (!banner) throw new AppException(ErrorCode.NOT_FOUND, 'Banner not found', 404);
     return banner;
+  }
+
+  /**
+   * Deletes a picture no banner uses any more, from storage and the CDN.
+   *
+   * Checked rather than assumed: nothing stops two banners being given the
+   * same picture URL, and deleting it under the other would leave a hole on
+   * Home.
+   */
+  private async releaseImage(url: string | null | undefined): Promise<void> {
+    if (!url) return;
+    if (await this.banners.exists({ imageUrl: url })) return;
+    await deleteStoredUrl(this.storage, url, this.logger);
   }
 
   /** A write shows on Home at once, not a minute later. */

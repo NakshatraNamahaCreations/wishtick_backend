@@ -5,8 +5,10 @@ import {
   ApiResponse as ApiResponseDoc,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from 'src/common/decorators/current-user.decorator';
 import { DistributeReturnDto, RequestTopUpDto, ShareUpiDto } from './dto/group-gift.dto';
+import { GROUP_GIFT_THROTTLE } from './group-gift.throttle';
 import { SettlementService, type GroupGiftBalance } from './settlement.service';
 import { toSettlementView, type SettlementView } from './settlement.views';
 
@@ -27,6 +29,7 @@ export class SettlementController {
   constructor(private readonly settlements: SettlementService) {}
 
   @Get('group-gifts/:id/balance')
+  @Throttle(GROUP_GIFT_THROTTLE)
   @ApiOperation({
     summary: 'What the group owes or is owed (host, members and contributors)',
     description:
@@ -39,6 +42,7 @@ export class SettlementController {
   }
 
   @Get('group-gifts/:id/settlements')
+  @Throttle(GROUP_GIFT_THROTTLE)
   @ApiOperation({
     summary: 'Every open and closed balance on this group gift (host and members)',
   })
@@ -52,6 +56,7 @@ export class SettlementController {
   }
 
   @Post('group-gifts/:id/settlements/return')
+  @Throttle(GROUP_GIFT_THROTTLE)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Return a surplus to contributors (initiator only)',
@@ -74,6 +79,7 @@ export class SettlementController {
   }
 
   @Post('group-gifts/:id/settlements/top-up')
+  @Throttle(GROUP_GIFT_THROTTLE)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Ask the group for more money (initiator only)',
@@ -96,6 +102,7 @@ export class SettlementController {
   }
 
   @Post('settlements/:settlementId/upi')
+  @Throttle(GROUP_GIFT_THROTTLE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Share the UPI ID you want to be paid on',
@@ -118,6 +125,7 @@ export class SettlementController {
   }
 
   @Post('settlements/:settlementId/sent')
+  @Throttle(GROUP_GIFT_THROTTLE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Mark that you have paid (payer only)',
@@ -132,6 +140,7 @@ export class SettlementController {
   }
 
   @Post('settlements/:settlementId/received')
+  @Throttle(GROUP_GIFT_THROTTLE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Confirm the money arrived (receiver only)',

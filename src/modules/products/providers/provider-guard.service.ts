@@ -30,8 +30,14 @@ const DETAIL_PURPOSE: Partial<Record<SearchOrigin, RequestPurpose>> = {
   [SearchOrigin.ADMIN]: RequestPurpose.ADMIN,
 };
 
-/** SerpApi's words when the plan's searches are used up (it answers 429). */
-const PLAN_USED_UP = /run out of searches|out of searches/i;
+/**
+ * A vendor's words when the plan's searches are used up (it answers 429) —
+ * SerpApi's "run out of searches", and the credits/quota wording SearchApi.io
+ * may use. Not a plain rate limit: that one clears in a minute, this one not
+ * until the plan renews, so retrying it only wastes time.
+ */
+const PLAN_USED_UP =
+  /run out of searches|out of searches|out of credits|no (remaining )?credits|credits? (are |have been )?exhausted|exhausted (your |the )?(monthly )?(credits|searches|quota)|quota exceeded/i;
 
 export class ProviderUnavailableError extends Error {
   constructor(

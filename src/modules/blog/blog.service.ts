@@ -5,6 +5,7 @@ import { type FilterQuery, Model, Types } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { CacheService } from 'src/infra/redis/cache.service';
+import { deleteStoredUrl } from 'src/infra/storage/storage-url';
 import { STORAGE, type IStorageProvider } from 'src/infra/storage/storage.port';
 import { cleanBlogHtml, readingMinutes, slugOf, textOf } from './blog-html';
 import { BlogRevalidator } from './blog-revalidator';
@@ -128,6 +129,7 @@ export class BlogService {
   async update(id: string, input: UpdateBlogPostDto): Promise<BlogPostDetail> {
     const post = await this.find(id);
     const oldSlug = post.slug;
+    const picturesBefore = this.picturesOf(post);
     if (input.title !== undefined) post.title = input.title;
     if (input.slug !== undefined && input.slug !== post.slug) {
       post.slug = await this.freeSlug(input.slug, post._id, true);
@@ -157,6 +159,9 @@ export class BlogService {
     if (input.authorName !== undefined) post.authorName = input.authorName.trim() || 'Wishtick';
     await post.save();
     if (post.status === BlogStatus.PUBLISHED) await this.changed([post.slug, oldSlug]);
+    // A cover replaced, or a picture taken out of the body.
+    const kept = this.picturesOf(post);
+    await this.releasePictures([...picturesBefore].filter((url) => !kept.has(url)));
     return this.detail(post.toObject());
   }
 
@@ -207,6 +212,7 @@ export class BlogService {
     const snapshot = this.detail(post.toObject());
     await post.deleteOne();
     if (snapshot.status === BlogStatus.PUBLISHED) await this.changed([snapshot.slug]);
+    await this.releasePictures([...this.picturesOf(post)]);
     return snapshot;
   }
 
@@ -338,6 +344,31 @@ export class BlogService {
   private async changed(slugs: string[]): Promise<void> {
     await this.cache.delByPattern(`${CACHE_PREFIX}*`);
     await this.revalidator.notify(slugs);
+  }
+
+  /** Every picture of ours a post shows: its cover, and each one in its body. */
+  private picturesOf(post: { coverUrl?: string | null; contentHtml?: string }): Set<string> {
+    const found = new Set<string>();
+    if (post.coverUrl) found.add(post.coverUrl);
+    const inBody = new RegExp(`${escapeRegex(this.imageBase)}[^"'\\s<>)]+`, 'g');
+    for (const match of (post.contentHtml ?? '').matchAll(inBody)) found.add(match[0]);
+    return found;
+  }
+
+  /**
+   * Deletes pictures no post shows any more, from storage and the CDN.
+   *
+   * Each is checked against every post first: a picture can be pasted from
+   * one post into another, and deleting it under the second would leave a
+   * broken image on the website.
+   */
+  private async releasePictures(urls: string[]): Promise<void> {
+    for (const url of urls) {
+      const inUse = await this.posts.exists({
+        $or: [{ coverUrl: url }, { contentHtml: { $regex: escapeRegex(url) } }],
+      });
+      if (!inUse) await deleteStoredUrl(this.storage, url, this.logger);
+    }
   }
 
   private async find(id: string): Promise<BlogPostDocument> {

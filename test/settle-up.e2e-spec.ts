@@ -3,7 +3,9 @@ import type { INestApplication } from '@nestjs/common';
 import { getModelToken } from '@nestjs/mongoose';
 import { randomUUID } from 'node:crypto';
 import { Types, type Model } from 'mongoose';
+import { ErrorCode } from 'src/common/errors/error-codes';
 import { AuthService } from 'src/modules/auth/auth.service';
+import { Message, type MessageDocument } from 'src/modules/chat/schemas/message.schema';
 import { ContributionStatus } from 'src/modules/group-gifts/group-gift.types';
 import {
   Contribution,
@@ -80,6 +82,7 @@ describe('Group-gift settle-up (e2e)', () => {
   let contributionModel: Model<ContributionDocument>;
   let groupGiftModel: Model<GroupGiftDocument>;
   let profileModel: Model<UserProfileDocument>;
+  let messageModel: Model<MessageDocument>;
   let seq = 0;
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
@@ -196,6 +199,30 @@ describe('Group-gift settle-up (e2e)', () => {
         .body as Envelope<Balance>
     ).data;
 
+  /**
+   * Lets the event listeners finish. They run off the emit, not under the
+   * request, so the response can arrive before the note or the notification
+   * it set off has been written.
+   */
+  const listenersDone = () => new Promise((resolve) => setTimeout(resolve, 150));
+
+  /** [who]'s notifications of one type about one group gift, the queue drained first. */
+  const inbox = async (who: Actor, type: string, ggId: string) => {
+    await listenersDone();
+    await ctx.drainNotifications();
+    return (
+      (await http().get(`${V1}/notifications`).set(auth(who.token)).expect(200)).body as Envelope<
+        { type: string; refId: string }[]
+      >
+    ).data.filter((n) => n.type === type && n.refId.startsWith(ggId));
+  };
+
+  /** The system notes in a group gift's chat, by their dedupe key's prefix. */
+  const chatNotes = async (prefix: string) => {
+    await listenersDone();
+    return messageModel.countDocuments({ dedupeKey: { $regex: `^${prefix}` } }).exec();
+  };
+
   beforeAll(async () => {
     ctx = await createTestApp();
     app = ctx.app;
@@ -203,6 +230,7 @@ describe('Group-gift settle-up (e2e)', () => {
     contributionModel = app.get<Model<ContributionDocument>>(getModelToken(Contribution.name));
     groupGiftModel = app.get<Model<GroupGiftDocument>>(getModelToken(GroupGift.name));
     profileModel = app.get<Model<UserProfileDocument>>(getModelToken(UserProfile.name));
+    messageModel = app.get<Model<MessageDocument>>(getModelToken(Message.name));
   }, 120_000);
 
   afterAll(async () => {
@@ -446,6 +474,46 @@ describe('Group-gift settle-up (e2e)', () => {
       }
       expect([...perPerson.values()].every((n) => n === 1)).toBe(true);
     });
+
+    it('a custom split goes only to people who paid, never more than they still have in', async () => {
+      const { ggId, host, members } = await givenFundedGroup(300_000, 3);
+      const late = await newUser();
+      const later = await newUser();
+      await seedContribution(ggId, late.userId, 60_000);
+      await seedContribution(ggId, later.userId, 200_000);
+      const stranger = await newUser();
+      const custom = (rows: { contributorId: string; amountMinor: number }[]) =>
+        http()
+          .post(`${V1}/group-gifts/${ggId}/settlements/return`)
+          .set(auth(host.token))
+          .send({ custom: rows });
+
+      // Somebody who never put anything in.
+      const nobody = await custom([{ contributorId: stranger.userId, amountMinor: 10_000 }]).expect(
+        400,
+      );
+      expect((nobody.body as Envelope<never>).error?.code).toBe(ErrorCode.VALIDATION_FAILED);
+      // More than they paid.
+      const tooMuch = await custom([{ contributorId: late.userId, amountMinor: 60_001 }]).expect(
+        400,
+      );
+      expect((tooMuch.body as Envelope<never>).error?.code).toBe(
+        ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
+      );
+
+      const rows = (
+        await custom([
+          { contributorId: late.userId, amountMinor: 60_000 },
+          { contributorId: members[0].userId, amountMinor: 100_000 },
+        ]).expect(201)
+      ).body as Envelope<SettlementView[]>;
+      expect(rows.data.map((r) => r.amountMinor).sort()).toEqual([100_000, 60_000].sort());
+      // One note in the chat for the lot.
+      expect(await chatNotes(`gg_refund:${ggId}:`)).toBe(1);
+
+      // Everything [late] put in is already on its way back.
+      await custom([{ contributorId: late.userId, amountMinor: 1 }]).expect(400);
+    });
   });
 
   describe('the two-sided handshake', () => {
@@ -561,9 +629,94 @@ describe('Group-gift settle-up (e2e)', () => {
       ).body as Envelope<SettlementView>;
       expect(confirmed.data.status).toBe('confirmed');
     });
+
+    it('each step tells the person on the other side of it', async () => {
+      const { ggId, host, receiver, settlement } = await givenOpenReturn();
+
+      // A refund is the host's to pay: they are told what they owe.
+      expect(await inbox(host, 'settlement_raised', ggId)).toEqual(
+        expect.arrayContaining([expect.objectContaining({ refId: `${ggId}:${settlement.id}` })]),
+      );
+
+      await http()
+        .post(`${V1}/settlements/${settlement.id}/upi`)
+        .set(auth(receiver.token))
+        .send({ upiId: 'member@oksbi' })
+        .expect(200);
+      expect(await inbox(host, 'settlement_upi_shared', ggId)).toHaveLength(1);
+
+      await http()
+        .post(`${V1}/settlements/${settlement.id}/sent`)
+        .set(auth(host.token))
+        .expect(200);
+      expect(await inbox(receiver, 'settlement_sent', ggId)).toHaveLength(1);
+
+      await http()
+        .post(`${V1}/settlements/${settlement.id}/received`)
+        .set(auth(receiver.token))
+        .expect(200);
+      const done = await inbox(host, 'settlement_confirmed', ggId);
+      expect(done).toHaveLength(1);
+      expect(done[0].refId).toBe(`${ggId}:${settlement.id}:done`);
+      // Confirming again is not news.
+      await http()
+        .post(`${V1}/settlements/${settlement.id}/received`)
+        .set(auth(receiver.token))
+        .expect(200);
+      expect(await inbox(host, 'settlement_confirmed', ggId)).toHaveLength(1);
+    });
   });
 
   describe('asking the group for more', () => {
+    it('is refused once the gift is bought, and above the ceiling on a goal', async () => {
+      const { ggId, host } = await givenFundedGroup(300_000, 3);
+
+      const tooBig = await http()
+        .post(`${V1}/group-gifts/${ggId}/settlements/top-up`)
+        .set(auth(host.token))
+        .send({ additionalAmountMinor: 100_000_000 })
+        .expect(400);
+      expect((tooBig.body as Envelope<never>).error?.code).toBe(
+        ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
+      );
+
+      await groupGiftModel.updateOne({ _id: ggId }, { $set: { status: 'purchased' } }).exec();
+      const bought = await http()
+        .post(`${V1}/group-gifts/${ggId}/settlements/top-up`)
+        .set(auth(host.token))
+        .send({ additionalAmountMinor: 10_000 })
+        .expect(409);
+      expect((bought.body as Envelope<never>).error?.code).toBe(ErrorCode.GROUP_GIFT_NOT_OPEN);
+      expect((await groupGiftModel.findById(ggId).exec())!.targetAmountMinor).toBe(300_000);
+    });
+
+    it('a top-up that fills the goal again is a goal reached, for everybody', async () => {
+      const { ggId, host, members } = await givenFundedGroup(300_000, 3);
+      const rows = (
+        await http()
+          .post(`${V1}/group-gifts/${ggId}/settlements/top-up`)
+          .set(auth(host.token))
+          .send({ additionalAmountMinor: 200_000 })
+          .expect(201)
+      ).body as Envelope<SettlementView[]>;
+      // Asked, in the chat, once.
+      expect(await chatNotes(`gg_topup:${ggId}:500000`)).toBe(1);
+      // And each member, as the one who pays it.
+      expect(await inbox(members[0], 'settlement_raised', ggId)).toHaveLength(1);
+
+      for (const row of rows.data) {
+        await http().post(`${V1}/settlements/${row.id}/received`).set(auth(host.token)).expect(200);
+      }
+
+      const gg = await groupGiftModel.findById(ggId).exec();
+      expect(gg!.status).toBe('funded');
+      expect(gg!.fundedCount).toBe(1);
+      expect(gg!.fundedAt).not.toBeNull();
+      expect(await chatNotes(`gg_funded:${ggId}:1`)).toBe(1);
+      expect(await inbox(host, 'group_gift_funded', ggId)).toEqual([
+        expect.objectContaining({ refId: `${ggId}:1` }),
+      ]);
+    });
     it('raises the target and splits the extra across the host and members', async () => {
       const { ggId, host, members } = await givenFundedGroup(300_000, 3);
       expect(members).toHaveLength(3);

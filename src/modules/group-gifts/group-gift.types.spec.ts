@@ -1,4 +1,8 @@
-import { GROUP_GIFT_TRANSITIONS, GroupGiftStatus } from './group-gift.types';
+import {
+  DECIDABLE_GROUP_GIFT_STATUSES,
+  GROUP_GIFT_TRANSITIONS,
+  GroupGiftStatus,
+} from './group-gift.types';
 
 /**
  * The funding state machine as data, tested as data — the same treatment as
@@ -40,12 +44,46 @@ describe('GROUP_GIFT_TRANSITIONS', () => {
 
   it('never accepts contributions after open — only OPEN funds forward, not the reverse', () => {
     // Nothing goes back to OPEN but a funded gift whose host finds a payment
-    // never arrived: the money it was funded on is not all there.
+    // never arrived (the money it was funded on is not all there), and a
+    // closed one whose host moved the deadline.
     for (const from of Object.values(GroupGiftStatus)) {
-      if (from === GroupGiftStatus.PURCHASING || from === GroupGiftStatus.FUNDED) continue;
+      if (
+        from === GroupGiftStatus.PURCHASING ||
+        from === GroupGiftStatus.FUNDED ||
+        from === GroupGiftStatus.CLOSED
+      ) {
+        continue;
+      }
       expect(GROUP_GIFT_TRANSITIONS[from]).not.toContain(GroupGiftStatus.OPEN);
     }
     expect(GROUP_GIFT_TRANSITIONS[GroupGiftStatus.FUNDED]).toContain(GroupGiftStatus.OPEN);
     expect(GROUP_GIFT_TRANSITIONS[GroupGiftStatus.PURCHASING]).toContain(GroupGiftStatus.FUNDED);
+  });
+
+  it('only an open collection closes — the deadline cannot touch anything else', () => {
+    expect(GROUP_GIFT_TRANSITIONS[GroupGiftStatus.OPEN]).toContain(GroupGiftStatus.CLOSED);
+    for (const from of Object.values(GroupGiftStatus)) {
+      if (from === GroupGiftStatus.OPEN) continue;
+      expect(GROUP_GIFT_TRANSITIONS[from]).not.toContain(GroupGiftStatus.CLOSED);
+    }
+  });
+
+  it('lets the host reopen, settle or cancel a closed collection — never buy from it', () => {
+    const fromClosed = GROUP_GIFT_TRANSITIONS[GroupGiftStatus.CLOSED];
+    expect(fromClosed).toEqual(
+      expect.arrayContaining([
+        GroupGiftStatus.OPEN,
+        GroupGiftStatus.FUNDED,
+        GroupGiftStatus.CANCELLED,
+        GroupGiftStatus.REFUNDING,
+      ]),
+    );
+    expect(fromClosed).not.toContain(GroupGiftStatus.PURCHASING);
+    expect(fromClosed).not.toContain(GroupGiftStatus.PURCHASED);
+    expect(fromClosed).not.toContain(GroupGiftStatus.FULFILLED);
+  });
+
+  it('leaves the host a decision only while open or closed', () => {
+    expect(DECIDABLE_GROUP_GIFT_STATUSES).toEqual([GroupGiftStatus.OPEN, GroupGiftStatus.CLOSED]);
   });
 });

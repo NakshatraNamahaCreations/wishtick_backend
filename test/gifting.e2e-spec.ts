@@ -7,7 +7,7 @@ import { Types, type Model } from 'mongoose';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import { AuthService } from 'src/modules/auth/auth.service';
 import { ConversionReconcileService } from 'src/modules/gifting/conversion-reconcile.service';
-import { GiftStatus } from 'src/modules/gifting/gift.types';
+import { GiftStatus, GiftType } from 'src/modules/gifting/gift.types';
 import { ReservationExpiryService } from 'src/modules/gifting/reservation-expiry.service';
 import { reservationExpiryJobId } from 'src/modules/gifting/reservation-expiry.types';
 import { WebhookService } from 'src/modules/gifting/webhook.service';
@@ -1242,6 +1242,41 @@ describe('Gifting (e2e)', () => {
 
       expect(await expiry.releasePastEventCutoff()).toBe(0);
       expect((await giftModel.findById(gift.data.id).exec())!.status).toBe(GiftStatus.PURCHASED);
+    });
+
+    it('the event cutoff never releases a group holder', async () => {
+      const { owner, gifter: host, itemId } = await listOnEvent(24 * 9);
+      // A group gift holds the item through a reservation of its own: no timer,
+      // and friends' money already riding on it.
+      await request(app.getHttpServer())
+        .post(`${V1}/items/${itemId}/group-gift`)
+        .set(auth(host.token))
+        .set(idem())
+        .send({ title: 'Group gift', contributionMode: 'custom', targetAmountMinor: 100_000 })
+        .expect(201);
+      const holder = await giftModel
+        .findOne({ itemId: new Types.ObjectId(itemId), type: GiftType.GROUP })
+        .exec();
+      expect(holder).not.toBeNull();
+      expect(holder!.status).toBe(GiftStatus.RESERVED);
+
+      // The host brings the party forward to tomorrow, the one move that lets
+      // the cutoff sweep loose on ordinary holds.
+      const events = (
+        await request(app.getHttpServer())
+          .get(`${V1}/events/mine`)
+          .set(auth(owner.token))
+          .expect(200)
+      ).body as Envelope<{ id: string }[]>;
+      await request(app.getHttpServer())
+        .patch(`${V1}/events/${events.data[0].id}`)
+        .set(auth(owner.token))
+        .send({ startsAt: new Date(Date.now() + 3_600_000).toISOString() })
+        .expect(200);
+
+      // The group's own lifecycle decides when that item is let go, not this.
+      expect(await expiry.releasePastEventCutoff()).toBe(0);
+      expect((await giftModel.findById(holder!._id).exec())!.status).toBe(GiftStatus.RESERVED);
     });
 
     it('a cancelled party is no deadline at all', async () => {

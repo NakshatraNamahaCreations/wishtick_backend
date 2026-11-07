@@ -52,6 +52,8 @@ export enum ErrorCode {
   WISHLIST_ARCHIVED = 'WISHLIST_ARCHIVED',
   WISHLIST_ITEM_NOT_FOUND = 'WISHLIST_ITEM_NOT_FOUND',
   WISHLIST_ITEM_LOCKED = 'WISHLIST_ITEM_LOCKED',
+  /** A group gift on this list is still collecting, closed short, or being bought. */
+  WISHLIST_HAS_OPEN_GROUP_GIFT = 'WISHLIST_HAS_OPEN_GROUP_GIFT',
   WISHLIST_LIMIT_REACHED = 'WISHLIST_LIMIT_REACHED',
 
   // Wishlist access
@@ -108,6 +110,18 @@ export enum ErrorCode {
   NOT_THE_INITIATOR = 'NOT_THE_INITIATOR',
   INVALID_GROUP_GIFT_TRANSITION = 'INVALID_GROUP_GIFT_TRANSITION',
   GROUP_GIFT_DEADLINE_INVALID = 'GROUP_GIFT_DEADLINE_INVALID',
+  /** Nobody can be asked to pay until the host has said where to send it. */
+  GROUP_GIFT_HOST_UPI_MISSING = 'GROUP_GIFT_HOST_UPI_MISSING',
+  /** A UPI transaction ID is twelve digits. */
+  PAYMENT_REF_INVALID = 'PAYMENT_REF_INVALID',
+  /** Another payment on this gift already carries that transaction ID. */
+  PAYMENT_REF_DUPLICATE = 'PAYMENT_REF_DUPLICATE',
+  /** The host cannot record more arriving than the contributor said they sent. */
+  RECEIVED_EXCEEDS_CLAIM = 'RECEIVED_EXCEEDS_CLAIM',
+  /** Only a pledge nobody has acted on can be taken back. */
+  CONTRIBUTION_NOT_WITHDRAWABLE = 'CONTRIBUTION_NOT_WITHDRAWABLE',
+  /** The group was chased less than a day ago (429; `details.nextAllowedAt`). */
+  GROUP_GIFT_NUDGE_COOLDOWN = 'GROUP_GIFT_NUDGE_COOLDOWN',
 
   // Chat
   CHAT_NOT_FOUND = 'CHAT_NOT_FOUND',

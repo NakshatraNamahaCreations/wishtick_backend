@@ -427,7 +427,10 @@ export class AdminInsightsService {
         GroupGiftStatus.FULFILLED,
       ];
       const funded = rows.filter((r) => fundedStatuses.includes(String(r.status))).length;
-      const open = rows.filter((r) => r.status === GroupGiftStatus.OPEN).length;
+      // Closed = the deadline passed and the host has yet to decide: still open.
+      const open = rows.filter(
+        (r) => r.status === GroupGiftStatus.OPEN || r.status === GroupGiftStatus.CLOSED,
+      ).length;
       const sum = (f: string) => rows.reduce((a, r) => a + (Number(r[f]) || 0), 0);
       const ofTarget = rows
         .filter((r) => Number(r.targetAmountMinor) > 0)
@@ -1109,7 +1112,7 @@ export class AdminInsightsService {
         const pick: Record<string, (s: string) => boolean> = {
           started: () => true,
           funded: (s) => funded.includes(s),
-          open: (s) => s === String(GroupGiftStatus.OPEN),
+          open: (s) => s === String(GroupGiftStatus.OPEN) || s === String(GroupGiftStatus.CLOSED),
           cancelled: (s) =>
             s === String(GroupGiftStatus.CANCELLED) || s === String(GroupGiftStatus.REFUNDING),
         };

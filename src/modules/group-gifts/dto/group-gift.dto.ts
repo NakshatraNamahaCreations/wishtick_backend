@@ -15,6 +15,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { IsPaymentRef } from 'src/common/validators/is-payment-ref.validator';
 import { IsUpiId } from 'src/common/validators/is-upi-id.validator';
 import { ContributionMode, GroupGiftVisibility, OverfundPolicy } from '../group-gift.types';
 
@@ -162,13 +163,85 @@ export class ContributeDto {
   anonymous?: boolean;
 
   @ApiPropertyOptional({
-    description: 'The UPI transaction ID, so the host can find the payment. Optional.',
+    description: 'The 12-digit UPI transaction ID, so the host can find the payment. Optional.',
   })
   @IsOptional()
   @IsString()
   @MaxLength(64)
+  @IsPaymentRef()
   @Transform(trim)
   paymentRef?: string;
+}
+
+/** The contributor saying the money has left their account. */
+export class MarkSentDto {
+  @ApiPropertyOptional({
+    description: 'The 12-digit UPI transaction ID, so the host can find the payment. Optional.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  @IsPaymentRef()
+  @Transform(trim)
+  paymentRef?: string;
+}
+
+/**
+ * What the host may change after creating the group (`PATCH group-gifts/:id`).
+ *
+ * The goal and the split only while the bill is still editable; a deadline in
+ * the future reopens a closed collection. Every field optional: only what is
+ * sent changes.
+ */
+export class UpdateGroupGiftDto {
+  @ApiPropertyOptional({ example: "Siya's birthday gift", maxLength: 120 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  @Transform(trim)
+  title?: string;
+
+  @ApiPropertyOptional({ description: "The host's note to the group, shown on the share card." })
+  @IsOptional()
+  @IsString()
+  @MaxLength(280)
+  @Transform(trim)
+  message?: string;
+
+  @ApiPropertyOptional({
+    example: 'rohanr1@okaxis',
+    nullable: true,
+    description: 'Where members send their share, or null to clear it.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  @IsUpiId()
+  @Transform(trim)
+  hostUpiId?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'When the collection closes. Must be in the future; reopens a closed collection.',
+  })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  deadline?: string;
+
+  @ApiPropertyOptional({
+    description: 'Target in minor units. Only while nobody has contributed.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  targetAmountMinor?: number;
+
+  @ApiPropertyOptional({
+    enum: ContributionMode,
+    description: 'Only while nobody has contributed.',
+  })
+  @IsOptional()
+  @IsEnum(ContributionMode)
+  contributionMode?: ContributionMode;
 }
 
 /** The host saying what actually arrived from one payment. */
@@ -186,9 +259,10 @@ export class ReviewPaymentDto {
 
 /** The contributor adding the UPI transaction ID to a payment after the fact. */
 export class PaymentRefDto {
-  @ApiProperty({ description: 'The UPI transaction ID.' })
+  @ApiProperty({ description: 'The 12-digit UPI transaction ID.' })
   @IsString()
   @MaxLength(64)
+  @IsPaymentRef()
   @Transform(trim)
   paymentRef!: string;
 }
@@ -202,10 +276,11 @@ export class DisputePaymentDto {
   @Transform(trim)
   note?: string;
 
-  @ApiPropertyOptional({ description: 'The UPI transaction ID, if not given before.' })
+  @ApiPropertyOptional({ description: 'The 12-digit UPI transaction ID, if not given before.' })
   @IsOptional()
   @IsString()
   @MaxLength(64)
+  @IsPaymentRef()
   @Transform(trim)
   paymentRef?: string;
 }

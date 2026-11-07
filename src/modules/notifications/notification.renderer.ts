@@ -44,6 +44,20 @@ const money = (p: Payload, key: string): string => {
   return `${currency} ${(minor / 100).toFixed(2)}`;
 };
 
+/** A count as words would carry it — `{day}` to the probe, the number otherwise. */
+const num = (p: Payload, key: string): string => {
+  if (p[PROBE]) return `{${key}}`;
+  const n = Number(p[key]);
+  return Number.isFinite(n) ? String(n) : '0';
+};
+
+/** "1 person" / "3 people". */
+const people = (p: Payload, key: string): string => {
+  if (p[PROBE]) return `{${key}} people`;
+  const n = Number(p[key]);
+  return n === 1 ? '1 person' : `${Number.isFinite(n) ? n : 0} people`;
+};
+
 /** A fill-in in saved wording: `{key}` or `{key|fallback}`. */
 const FILL_IN = /\{([a-zA-Z][a-zA-Z0-9]*)(?:\|([^{}]*))?\}/g;
 
@@ -132,26 +146,24 @@ const CONTENT: Record<NotificationType, (p: Payload) => Content> = {
       `Collected so far: ${money(p, 'collectedAmountMinor')} of ${money(p, 'targetAmountMinor')}.`,
     ],
   }),
-  [NotificationType.GROUP_GIFT_INVITE]: (p) =>
-    // Added, with a share: say what it is, and that they can opt out.
-    Number(p.shareMinor ?? 0) > 0
-      ? {
-          subject: `${who(p, 'inviterName')} added you to a group gift`,
-          title: `Your share is ${money(p, 'shareMinor')}`,
-          lines: [
-            `${who(p, 'inviterName')} added you to the group gift for ${s(p, 'itemTitle', 'a gift')}, split equally.`,
-            'Not interested? You can opt out, and the shares are worked out again.',
-          ],
-          cta: { label: 'See the group gift', url: s(p, 'url') },
-        }
-      : {
-          subject: `${who(p, 'inviterName')} asked you to chip in`,
-          title: 'Join a group gift',
-          lines: [
-            `${who(p, 'inviterName')} invited you to chip in for ${s(p, 'itemTitle', 'a gift')}.`,
-          ],
-          cta: { label: 'See the invitation', url: s(p, 'url') },
-        },
+  /**
+   * An invitation asks; it does not add. One line, since in-app and push show
+   * only the first: who, what, and that there is a yes or no to give — with
+   * the share it would be on an equal split, when one can be worked out.
+   */
+  [NotificationType.GROUP_GIFT_INVITE]: (p) => {
+    const headline = `${who(p, 'inviterName')} invited you to chip in on ${s(p, 'itemTitle', 'a gift')}`;
+    const share =
+      Number(p.shareMinor ?? 0) > 0
+        ? ` Split equally, your share would be ${money(p, 'shareMinor')}.`
+        : '';
+    return {
+      subject: headline,
+      title: headline,
+      lines: [`${headline}.${share} Accept to join, or decline.`],
+      cta: { label: 'See the invitation', url: s(p, 'url') },
+    };
+  },
   [NotificationType.GROUP_GIFT_SHARE_REMINDER]: (p) => ({
     subject: `Your share for ${s(p, 'title', 'the group gift')}`,
     title: `${money(p, 'owesMinor')} left to chip in`,
@@ -346,6 +358,215 @@ const CONTENT: Record<NotificationType, (p: Payload) => Content> = {
     title: 'Group gift delivered',
     lines: [`${s(p, 'itemTitle', 'The group gift')} has been delivered.`],
     cta: { label: 'View the group gift', url: s(p, 'url') },
+  }),
+  /**
+   * The deadline passed short of the goal. The host has a decision to make
+   * and is told what happens if they make none; a member is told only that
+   * nothing more is being taken, and that the host decides what next.
+   */
+  [NotificationType.GROUP_GIFT_CLOSED]: (p) => {
+    const gift = s(p, 'title', 'The group gift');
+    return p.isHost === true
+      ? {
+          subject: `${gift}: the deadline has passed`,
+          title: 'The collection has closed',
+          lines: [
+            `${gift} closed ${money(p, 'shortMinor')} short of its goal. Settle up, extend the deadline or cancel it — if nothing changes, it's cancelled in a week.`,
+          ],
+          cta: { label: 'Decide what to do', url: s(p, 'url') },
+        }
+      : {
+          subject: `${gift} has closed`,
+          title: 'The collection has closed',
+          lines: [
+            `The deadline for ${gift} has passed. ${who(p, 'hostName')} will settle up, extend the deadline or cancel it.`,
+          ],
+          cta: { label: 'See the group gift', url: s(p, 'url') },
+        };
+  },
+  [NotificationType.GROUP_GIFT_CLOSE_REMINDER]: (p) => {
+    const gift = s(p, 'title', 'The group gift');
+    return {
+      subject: `${gift} is still waiting on you`,
+      title: `${gift} is still ${money(p, 'shortMinor')} short`,
+      lines: [
+        `It closed ${num(p, 'day')} days ago. Settle up, extend the deadline or cancel it — if nothing changes, it's cancelled a week after it closed.`,
+      ],
+      cta: { label: 'Decide what to do', url: s(p, 'url') },
+    };
+  },
+  /**
+   * The deadline is near. To a member who has not paid, what they owe and
+   * by when; to the host, how many have not.
+   */
+  [NotificationType.GROUP_GIFT_DEADLINE_REMINDER]: (p) => {
+    const gift = s(p, 'title', 'the group gift');
+    const when = s(p, 'deadlineText', 'the deadline');
+    const lastDay = !p[PROBE] && Number(p.day) === 1;
+    if (p.isHost === true) {
+      const left = lastDay ? 'tomorrow' : `in ${num(p, 'day')} days`;
+      return {
+        subject: `${gift} closes ${left}`,
+        title: `${people(p, 'stillToPay')} still to pay`,
+        lines: [
+          `${gift} closes ${left}, and ${people(p, 'stillToPay')} haven't paid yet. Remind everyone to chip in.`,
+        ],
+        cta: { label: 'See the group gift', url: s(p, 'url') },
+      };
+    }
+    const title = lastDay
+      ? `Last day to chip in for ${gift}`
+      : `${num(p, 'day')} days left to chip in for ${gift}`;
+    return {
+      subject: title,
+      title,
+      lines: [
+        Number(p.owesMinor ?? 0) > 0 || p[PROBE]
+          ? `Your ${money(p, 'owesMinor')} share for ${gift} is due by ${when}. Chip in before the collection closes.`
+          : `${gift} closes on ${when}. Chip in before then.`,
+      ],
+      cta: { label: 'Chip in', url: s(p, 'url') },
+    };
+  },
+  [NotificationType.GROUP_GIFT_DEADLINE_EXTENDED]: (p) => ({
+    subject: `${who(p, 'hostName')} extended the deadline for ${s(p, 'title', 'the group gift')}`,
+    title: `${who(p, 'hostName')} extended the deadline`,
+    lines: [
+      `${s(p, 'title', 'The group gift')} is now open until ${s(p, 'deadlineText', 'the new date')}.${
+        p.reopened === true ? ' The collection is open again.' : ''
+      }`,
+    ],
+    cta: { label: 'See the group gift', url: s(p, 'url') },
+  }),
+  [NotificationType.GROUP_GIFT_UPI_CHANGED]: (p) => ({
+    subject: `${who(p, 'hostName')} changed their UPI ID`,
+    title: `${who(p, 'hostName')} changed their UPI ID`,
+    lines: [
+      `Send your share for ${s(p, 'title', 'the group gift')} to ${s(p, 'hostUpiId', 'their new UPI ID')} — the old one won't reach them.`,
+    ],
+    cta: { label: 'See the group gift', url: s(p, 'url') },
+  }),
+  /** A pledge a day old that nobody has said was sent. */
+  [NotificationType.GROUP_GIFT_UNSENT_PLEDGE]: (p) => ({
+    subject: `Your ${money(p, 'amountMinor')} for ${s(p, 'title', 'the group gift')}`,
+    title: 'Have you sent your share?',
+    lines: [
+      `You chipped in ${money(p, 'amountMinor')} for ${s(p, 'title', 'the group gift')} yesterday, but haven't marked it as sent. Pay ${who(p, 'hostName')}${
+        s(p, 'hostUpiId') ? ` at ${s(p, 'hostUpiId')}` : ''
+      }, then tap "I've sent it".`,
+    ],
+    cta: { label: 'Mark it sent', url: s(p, 'url') },
+  }),
+  [NotificationType.GROUP_GIFT_BUY_REMINDER]: (p) => ({
+    subject: `Time to buy ${s(p, 'title', 'the group gift')}`,
+    title: `Time to buy ${s(p, 'title', 'the group gift')}`,
+    lines: [
+      `${s(p, 'title', 'The group gift')} has been fully funded for two days — ${money(p, 'collectedAmountMinor')} is in. Buy it and mark it as bought so everyone knows.`,
+    ],
+    cta: { label: 'Mark as bought', url: s(p, 'url') },
+  }),
+  [NotificationType.GROUP_GIFT_NUDGE]: (p) => {
+    const host = who(p, 'hostName');
+    const gift = s(p, 'title', 'the group gift');
+    const closes = s(p, 'deadlineText') ? ` It closes on ${s(p, 'deadlineText')}.` : '';
+    return {
+      subject: `${host} is waiting on you`,
+      title: `A nudge from ${host}`,
+      lines: [
+        Number(p.owesMinor ?? 0) > 0 || p[PROBE]
+          ? `${host} is asking everyone to chip in for ${gift}. Your ${money(p, 'owesMinor')} share is still to pay.${closes}`
+          : `${host} is asking everyone to chip in for ${gift}.${closes}`,
+      ],
+      cta: { label: 'Chip in', url: s(p, 'url') },
+    };
+  },
+  [NotificationType.GROUP_GIFT_WITHDRAWN]: (p) => ({
+    subject: `${who(p, 'contributorName')} withdrew their ${money(p, 'amountMinor')}`,
+    title: `${who(p, 'contributorName')} withdrew their ${money(p, 'amountMinor')}`,
+    lines: [
+      [
+        `${who(p, 'contributorName')} took back the ${money(p, 'amountMinor')} they said they sent for ${s(p, 'title', 'the group gift')}.`,
+        ...(s(p, 'paymentRef') ? [`UPI ref: ${s(p, 'paymentRef')}.`] : []),
+        'If it did arrive, check with them.',
+      ].join(' '),
+    ],
+    cta: { label: 'See the group gift', url: s(p, 'url') },
+  }),
+  /** The note is the second line: the email carries it, the lock screen says there is one. */
+  [NotificationType.GROUP_GIFT_THANK_YOU]: (p) => ({
+    subject: `A thank-you from ${who(p, 'recipientName')}`,
+    title: `${who(p, 'recipientName')} said thank you`,
+    lines: [
+      `${who(p, 'recipientName')} wrote a thank-you to everyone who chipped in for ${s(p, 'title', 'the group gift')}.`,
+      ...(s(p, 'note') ? [`"${s(p, 'note')}"`] : []),
+    ],
+    cta: { label: 'Read the thank-you', url: s(p, 'url') },
+  }),
+  [NotificationType.GROUP_GIFT_THANK_YOU_PROMPT]: (p) => ({
+    subject: `Say thank you for ${s(p, 'title', 'your gift')}`,
+    title: 'Say thank you',
+    lines: [
+      `${s(p, 'title', 'Your gift')} arrived yesterday. The people who chipped in would love to hear from you.`,
+    ],
+    cta: { label: 'Write a thank-you', url: s(p, 'url') },
+  }),
+  /** To the recipient, and only once the gift is in their hands: the surprise is over. */
+  [NotificationType.GROUP_GIFT_DELIVERED_RECIPIENT]: (p) => ({
+    subject: `A gift from your friends 🎁`,
+    title: 'A group gift for you',
+    lines: [
+      `${who(p, 'hostName')} and your friends chipped in together for ${s(p, 'itemTitle', 'a gift')}. Open it to see who gave it, and say thank you.`,
+    ],
+    cta: { label: 'See who chipped in', url: s(p, 'url') },
+  }),
+  /**
+   * A balance raised between two people, to whoever pays: the host, when the
+   * group collected more than it needed; a contributor, when the host asked
+   * for more. [otherName] is the one on the other side.
+   */
+  [NotificationType.SETTLEMENT_RAISED]: (p) => {
+    const other = who(p, 'otherName');
+    const gift = s(p, 'title', 'the group gift');
+    const note = s(p, 'note') ? ` "${s(p, 'note')}"` : '';
+    return p.direction === 'return'
+      ? {
+          subject: `Return ${money(p, 'amountMinor')} to ${other}`,
+          title: `Return ${money(p, 'amountMinor')} to ${other}`,
+          lines: [
+            `${gift} collected more than it needed. ${other} is owed ${money(p, 'amountMinor')} back.${note}`,
+          ],
+          cta: { label: 'Settle up', url: s(p, 'url') },
+        }
+      : {
+          subject: `${other} asked for ${money(p, 'amountMinor')} more`,
+          title: `${money(p, 'amountMinor')} more for ${gift}`,
+          lines: [`${other} asked you for ${money(p, 'amountMinor')} more for ${gift}.${note}`],
+          cta: { label: 'Settle up', url: s(p, 'url') },
+        };
+  },
+  [NotificationType.SETTLEMENT_UPI_SHARED]: (p) => ({
+    subject: `${who(p, 'otherName')} shared their UPI ID`,
+    title: `${who(p, 'otherName')} shared their UPI ID`,
+    lines: [
+      `Send ${money(p, 'amountMinor')} for ${s(p, 'title', 'the group gift')} to ${s(p, 'upiId', 'their UPI ID')}, then mark it sent.`,
+    ],
+    cta: { label: 'Settle up', url: s(p, 'url') },
+  }),
+  [NotificationType.SETTLEMENT_SENT]: (p) => ({
+    subject: `Did ${who(p, 'otherName')}'s ${money(p, 'amountMinor')} arrive?`,
+    title: `Confirm ${who(p, 'otherName')}'s payment`,
+    lines: [
+      `${who(p, 'otherName')} says they sent you ${money(p, 'amountMinor')} for ${s(p, 'title', 'the group gift')}. Check it arrived and confirm.`,
+    ],
+    cta: { label: 'Confirm it arrived', url: s(p, 'url') },
+  }),
+  [NotificationType.SETTLEMENT_CONFIRMED]: (p) => ({
+    subject: `${who(p, 'otherName')} received your ${money(p, 'amountMinor')}`,
+    title: 'Settled',
+    lines: [
+      `${who(p, 'otherName')} confirmed your ${money(p, 'amountMinor')} for ${s(p, 'title', 'the group gift')} arrived. That's settled.`,
+    ],
+    cta: { label: 'See the group gift', url: s(p, 'url') },
   }),
   [NotificationType.WISHMATE_REQUEST]: (p) => ({
     subject: `${who(p, 'requesterName')} wants to be your WishMate`,
@@ -725,7 +946,7 @@ const layout = (content: Content, unsubscribeUrl: string | null): string => {
 };
 
 /** Details that say yes or no, which read as nothing in a sentence. */
-const FLAGS = new Set(['approved', 'refundCancelled']);
+const FLAGS = new Set(['approved', 'refundCancelled', 'isHost', 'reopened', 'direction']);
 
 /**
  * One notification's built-in wording as a template, and the details it can

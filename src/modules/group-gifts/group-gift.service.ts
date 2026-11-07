@@ -10,31 +10,53 @@ import {
   GROUP_GIFT_CONTRIBUTION_RECEIVED,
   GROUP_GIFT_FULFILLED,
   GROUP_GIFT_CANCELLED,
+  GROUP_GIFT_CLOSED,
+  GROUP_GIFT_CLOSE_REMINDER_DUE,
   GROUP_GIFT_FUNDED,
   GROUP_GIFT_JOINED,
+  GROUP_GIFT_MEMBER_ADDED,
   GROUP_GIFT_PURCHASED,
   GROUP_GIFT_CHARGE_ADDED,
+  GROUP_GIFT_BUY_REMINDER_DUE,
+  GROUP_GIFT_CONTRIBUTION_WITHDRAWN,
+  GROUP_GIFT_NUDGED,
   GROUP_GIFT_PAYMENT_CLAIMED,
   GROUP_GIFT_PAYMENT_DISPUTED,
   GROUP_GIFT_PAYMENT_REVIEWED,
+  GROUP_GIFT_PLEDGED,
   GROUP_GIFT_SETTLED,
   GROUP_GIFT_PRICE_UPDATED,
+  GROUP_GIFT_THANK_YOU_PROMPT_DUE,
+  GROUP_GIFT_THANK_YOU_SET,
+  GROUP_GIFT_UNSENT_PLEDGE_DUE,
+  GROUP_GIFT_UPDATED,
+  type GroupGiftBuyReminderDueEvent,
+  type GroupGiftContributionWithdrawnEvent,
+  type GroupGiftNudgedEvent,
+  type GroupGiftPledgedEvent,
+  type GroupGiftThankYouPromptDueEvent,
+  type GroupGiftThankYouSetEvent,
+  type GroupGiftUnsentPledgeDueEvent,
   type GroupGiftPriceUpdatedEvent,
   type GroupGiftChargeAddedEvent,
+  type GroupGiftClosedEvent,
+  type GroupGiftCloseReminderDueEvent,
   type GroupGiftSettledEvent,
   type GroupGiftContributionReceivedEvent,
   type GroupGiftFulfilledEvent,
   type GroupGiftCancelledEvent,
+  type GroupGiftMemberAddedEvent,
   type GroupGiftPaymentClaimedEvent,
   type GroupGiftPaymentDisputedEvent,
   type GroupGiftPaymentReviewedEvent,
   type GroupGiftFundedEvent,
   type GroupGiftJoinedEvent,
   type GroupGiftPurchasedEvent,
+  type GroupGiftUpdatedEvent,
 } from 'src/common/events/domain-events';
+import { isValidPaymentRef } from 'src/common/validators/is-payment-ref.validator';
 import type { AppConfig } from 'src/config/configuration';
 import { LockService } from 'src/infra/redis/lock.service';
-import { EventStatus } from 'src/modules/events/event.types';
 import { Event, type EventDocument } from 'src/modules/events/schemas/event.schema';
 import { parseDeliveryDate } from 'src/modules/gifting/delivery-date';
 import { GiftStatusService } from 'src/modules/gifting/gift-status.service';
@@ -66,8 +88,12 @@ import type {
   CreateGroupGiftDto,
   DisputePaymentDto,
   GroupGiftActionDto,
+  MarkSentDto,
   ShareGroupGiftDto,
+  UpdateGroupGiftDto,
 } from './dto/group-gift.dto';
+import { withFunded, type GroupGiftUpdate } from './group-gift-funding';
+import { surpriseIsOver as isSurpriseOver } from './surprise';
 import {
   displayNameOf,
   toGroupGiftView,
@@ -93,6 +119,7 @@ import {
 import {
   CONTRIBUTABLE_GROUP_GIFT_STATUSES,
   ContributionMode,
+  DECIDABLE_GROUP_GIFT_STATUSES,
   INACTIVE_GROUP_GIFT_STATUSES,
   ContributionStatus,
   CLOSED_GROUP_GIFT_STATUSES,
@@ -115,6 +142,13 @@ const generateSlug = customAlphabet('23456789abcdefghijkmnpqrstuvwxyz', 16);
 /** How many recent contributions the timeline carries. */
 const TIMELINE_LIMIT = 20;
 
+const DAY_MS = 24 * 60 * 60_000;
+
+/** Days after closing on which a host who has not decided is reminded. */
+const CLOSE_REMINDER_DAYS = [3, 6];
+/** Days after closing on which an undecided collection is cancelled for them. */
+const CLOSE_AUTO_CANCEL_DAYS = 7;
+
 /** Thrown inside the contribute transaction when the durable idempotency key already exists. */
 class DuplicateContributionSignal extends Error {}
 
@@ -124,9 +158,14 @@ interface ContributionOutcome {
   effectiveAmount: number;
   newCollected: number;
   funded: boolean;
+  /** Which funding it was, when [funded] — the count after this one. */
+  fundedCount: number;
   /** A member's claim, awaiting the host — nothing was added to the total. */
   pledged: boolean;
 }
+
+/** A host may ask the group to chip in once a day. */
+const NUDGE_COOLDOWN_MS = DAY_MS;
 
 /** A payment the host can still say something about, and the contributor too. */
 const REVIEWABLE_STATUSES = [
@@ -343,14 +382,7 @@ export class GroupGiftService {
         400,
       );
     }
-    const maxTarget = this.config.get('groupGifting.maxTargetMinor', { infer: true });
-    if (target > maxTarget) {
-      throw new AppException(
-        ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
-        `Target exceeds the maximum of ${maxTarget} minor units`,
-        400,
-      );
-    }
+    this.assertWithinMaxTarget(target);
     const deadline = this.parseDeadline(dto.deadline);
     // Hidden from the recipient keeps a surprise — unless the recipient is the
     // one organising it, when it would hide their own group gift from them.
@@ -475,16 +507,25 @@ export class GroupGiftService {
   async join(groupGiftId: string, userId: string): Promise<GroupGiftView> {
     const gift = await this.loadOrFail(groupGiftId);
     await this.authorizeParticipation(gift, userId);
-    if (
-      [GroupGiftStatus.CANCELLED, GroupGiftStatus.REFUNDING, GroupGiftStatus.FULFILLED].includes(
-        gift.status,
-      )
-    ) {
-      throw new AppException(ErrorCode.GROUP_GIFT_CLOSED, 'This group gift is closed', 409);
-    }
+    // Only a collection still taking money has anything to join: a closed or
+    // funded one would be adding a name to a bill nobody can pay into.
+    this.assertCollecting(gift);
     const res = await this.groupGiftModel
       .updateOne({ _id: gift._id }, { $addToSet: { participantIds: new Types.ObjectId(userId) } })
       .exec();
+    // An invitation answered by joining is answered.
+    await this.inviteModel
+      .updateOne(
+        {
+          groupGiftId: gift._id,
+          invitedUserId: new Types.ObjectId(userId),
+          status: GroupGiftInviteStatus.PENDING,
+        },
+        { $set: { status: GroupGiftInviteStatus.ACCEPTED, respondedAt: new Date() } },
+      )
+      .exec();
+    // In the group's chat from here on.
+    if (gift.chatId) await this.chat.addParticipant(gift.chatId, userId);
     // Only announce a genuinely new member, so a repeat "join" is silent.
     if (res.modifiedCount === 1) {
       this.emitter.emit(GROUP_GIFT_JOINED, {
@@ -496,6 +537,27 @@ export class GroupGiftService {
     await this.shares.sync(groupGiftId);
     const refreshed = await this.loadOrFail(groupGiftId);
     return this.assembleView(refreshed, userId);
+  }
+
+  /**
+   * Still collecting: open, and before its deadline. The deadline binds
+   * everybody — the sweep that turns a passed deadline into `closed` runs
+   * every quarter-hour, and the minutes in between are not a loophole.
+   */
+  private assertCollecting(gift: GroupGiftDocument): void {
+    if (!CONTRIBUTABLE_GROUP_GIFT_STATUSES.includes(gift.status)) {
+      throw new AppException(
+        ErrorCode.GROUP_GIFT_NOT_OPEN,
+        gift.status === GroupGiftStatus.CLOSED
+          ? 'The collection has closed'
+          : 'This group gift is no longer accepting contributions',
+        409,
+        { status: gift.status },
+      );
+    }
+    if (gift.deadline && gift.deadline.getTime() <= Date.now()) {
+      throw new AppException(ErrorCode.GROUP_GIFT_CLOSED, 'The collection has closed', 409);
+    }
   }
 
   // ── Contribute: the concurrency-critical path ───────────────────────────────
@@ -528,12 +590,28 @@ export class GroupGiftService {
       );
     }
 
+    const paymentRef = GroupGiftService.paymentRefOf(dto.paymentRef);
+
     const gift = await this.loadOrFail(groupGiftId);
-    await this.acceptPendingInvite(gift, userId);
-    const { ignoresDeadline } = await this.authorizeParticipation(gift, userId);
+    // Asked first, and before an invitation is answered by it: paying into a
+    // collection that has closed is refused, and must not quietly make the
+    // payer a member on the way to being refused. The transaction below asks
+    // again against the row it holds.
+    this.assertCollecting(gift);
     // The host's own money is in their own hands; everybody else's goes to the
     // host outside the app, and counts once the host says it arrived.
     const pledged = gift.initiatorId.toString() !== userId;
+    // Nowhere to send it: a pledge the member cannot act on is worse than
+    // none, because it holds back the share of the goal it promised.
+    if (pledged && !gift.hostUpiId) {
+      throw new AppException(
+        ErrorCode.GROUP_GIFT_HOST_UPI_MISSING,
+        'The host has not said where to send the money yet',
+        409,
+      );
+    }
+    await this.acceptPendingInvite(gift, userId, { anonymous: dto.anonymous ?? false });
+    await this.authorizeParticipation(gift, userId);
 
     // Fast path for a durable replay (Redis flushed between retries): the row is
     // already there, so return the current state without re-running anything.
@@ -544,6 +622,8 @@ export class GroupGiftService {
       const refreshed = await this.loadOrFail(groupGiftId);
       return this.assembleView(refreshed, userId);
     }
+    // After the replay check, which a retry carrying the same ID must pass.
+    if (paymentRef) await this.assertPaymentRefFree(gift._id, paymentRef);
 
     let outcome: ContributionOutcome | undefined;
     try {
@@ -557,23 +637,9 @@ export class GroupGiftService {
               const gg = await this.groupGiftModel.findById(gift._id).session(session).exec();
               if (!gg)
                 throw new AppException(ErrorCode.GROUP_GIFT_NOT_FOUND, 'Group gift not found', 404);
-              if (!CONTRIBUTABLE_GROUP_GIFT_STATUSES.includes(gg.status)) {
-                throw new AppException(
-                  ErrorCode.GROUP_GIFT_NOT_OPEN,
-                  'This group gift is no longer accepting contributions',
-                  409,
-                  { status: gg.status },
-                );
-              }
-              // Not for the host, nor for the recipient after the event — see
-              // authorizeParticipation.
-              if (!ignoresDeadline && gg.deadline && gg.deadline.getTime() <= Date.now()) {
-                throw new AppException(
-                  ErrorCode.GROUP_GIFT_CLOSED,
-                  'The collection has closed',
-                  409,
-                );
-              }
+              // Everybody is held to the deadline, the host included: their
+              // way to add money after it is to settle up.
+              this.assertCollecting(gg);
 
               // Nobody may put in more than is still needed — the goal less
               // what is in, less what is awaiting the host. Refused rather than
@@ -612,13 +678,21 @@ export class GroupGiftService {
                       status: pledged ? ContributionStatus.PLEDGED : ContributionStatus.CONFIRMED,
                       anonymous: dto.anonymous ?? false,
                       message: dto.message ?? null,
-                      paymentRef: dto.paymentRef || null,
+                      paymentRef,
+                      // Promised, not sent: "I've sent it" is its own step.
+                      sentAt: null,
                       idempotencyKey,
                     },
                   ],
                   { session },
                 );
               } catch (err) {
+                // Two different collisions, two different answers: the same
+                // request again is a no-op, somebody else's transaction ID is
+                // a mistake to tell them about.
+                if (GroupGiftService.isDuplicatePaymentRef(err)) {
+                  throw GroupGiftService.paymentRefDuplicate();
+                }
                 if (GroupGiftService.isDuplicateKey(err)) throw new DuplicateContributionSignal();
                 throw err;
               }
@@ -640,6 +714,7 @@ export class GroupGiftService {
                   effectiveAmount: amount,
                   newCollected: gg.collectedAmountMinor,
                   funded: false,
+                  fundedCount: gg.fundedCount ?? 0,
                   pledged: true,
                 };
                 return;
@@ -658,23 +733,12 @@ export class GroupGiftService {
               const newCollected = gg.collectedAmountMinor + amount;
               const funded = newCollected >= gg.targetAmountMinor;
 
-              const update: Record<string, unknown> = { $inc: { collectedAmountMinor: amount } };
-              const inc = update.$inc as Record<string, number>;
-              if (prior === 0) inc.contributorCount = 1;
+              let update: GroupGiftUpdate = { $inc: { collectedAmountMinor: amount } };
+              if (prior === 0) update.$inc.contributorCount = 1;
               if (!(dto.anonymous ?? false)) {
                 update.$addToSet = { participantIds: new Types.ObjectId(userId) };
               }
-              if (funded) {
-                update.$set = { status: GroupGiftStatus.FUNDED };
-                update.$push = {
-                  history: {
-                    status: GroupGiftStatus.FUNDED,
-                    at: now,
-                    by: 'system:funded',
-                    note: null,
-                  },
-                };
-              }
+              if (funded) update = withFunded(update, { at: now, by: 'system:funded' });
               await this.groupGiftModel.updateOne({ _id: gg._id }, update, { session }).exec();
 
               captured = {
@@ -682,6 +746,7 @@ export class GroupGiftService {
                 effectiveAmount: amount,
                 newCollected,
                 funded,
+                fundedCount: (gg.fundedCount ?? 0) + (funded ? 1 : 0),
                 pledged: false,
               };
             });
@@ -699,15 +764,14 @@ export class GroupGiftService {
     }
 
     if (outcome?.pledged) {
-      this.emitter.emit(GROUP_GIFT_PAYMENT_CLAIMED, {
+      // A promise, and nothing has moved: the host is asked about it only
+      // once the member says they sent it ([markSent]). Until then the jobs
+      // registrar chases the member if a day goes by.
+      this.emitter.emit(GROUP_GIFT_PLEDGED, {
         groupGiftId,
         contributionId: outcome.contributionId,
         contributorId: userId,
-        hostId: gift.initiatorId.toString(),
-        title: gift.title,
-        amountMinor: outcome.effectiveAmount,
-        currency: gift.currency,
-      } satisfies GroupGiftPaymentClaimedEvent);
+      } satisfies GroupGiftPledgedEvent);
     } else if (outcome) {
       // Announce, outside the transaction. Subscribers (Sprint 8/9) redact anonymity.
       this.emitter.emit(GROUP_GIFT_CONTRIBUTION_RECEIVED, {
@@ -730,6 +794,7 @@ export class GroupGiftService {
           collectedAmountMinor: outcome.newCollected,
           currency: gift.currency,
           contributorCount: 0,
+          fundedCount: outcome.fundedCount,
         } satisfies GroupGiftFundedEvent);
         this.logger.log(
           `Group gift ${groupGiftId} funded (${outcome.newCollected}/${gift.targetAmountMinor})`,
@@ -785,6 +850,11 @@ export class GroupGiftService {
       throw new AppException(ErrorCode.CONTRIBUTION_NOT_FOUND, 'Contribution not found', 404);
     }
     const gift = await this.loadOrFail(groupGiftId);
+    // The contributor's own path; an admin recording a refund is not held to
+    // the rules below — they deal with money already counted.
+    const byContributor = opts.ownerId !== null;
+    // A pledge they had said was on its way: the host may be looking for it.
+    let wasSent: ContributionDocument | null = null;
 
     await this.locks.withBestEffortLock(
       `group-gift:${groupGiftId}`,
@@ -792,6 +862,7 @@ export class GroupGiftService {
         const session = await this.connection.startSession();
         try {
           await session.withTransaction(async () => {
+            wasSent = null;
             const contribution = await this.contributionModel
               .findById(contributionId)
               .session(session)
@@ -814,14 +885,30 @@ export class GroupGiftService {
                 403,
               );
             }
+            // Only a promise can be taken back. Money the host has said
+            // arrived is in their hands, and comes back through Settle up.
+            if (byContributor && contribution.status !== ContributionStatus.PLEDGED) {
+              throw new AppException(
+                ErrorCode.CONTRIBUTION_NOT_WITHDRAWABLE,
+                'The host has already answered this payment — ask them to settle up instead',
+                409,
+                { status: contribution.status },
+              );
+            }
             const gg = await this.groupGiftModel.findById(gift._id).session(session).exec();
-            if (!gg || gg.status !== GroupGiftStatus.OPEN) {
+            // Open, or closed by its deadline and waiting on the host: either
+            // way the pledge is still only a pledge.
+            const withdrawable = byContributor
+              ? DECIDABLE_GROUP_GIFT_STATUSES
+              : [GroupGiftStatus.OPEN];
+            if (!gg || !withdrawable.includes(gg.status)) {
               throw new AppException(
                 ErrorCode.GROUP_GIFT_NOT_OPEN,
                 'Contributions can only be withdrawn while the gift is still open',
                 409,
               );
             }
+            if (byContributor && contribution.sentAt) wasSent = contribution;
 
             const now = new Date();
             // Only confirmed money is in the total; a claim never was.
@@ -854,7 +941,240 @@ export class GroupGiftService {
       { ttlMs: 5_000, retries: 10, retryDelayMs: 40 },
     );
 
+    const sent = wasSent as ContributionDocument | null;
+    if (sent) {
+      this.emitter.emit(GROUP_GIFT_CONTRIBUTION_WITHDRAWN, {
+        groupGiftId,
+        contributionId,
+        contributorId: sent.userId.toString(),
+        hostId: gift.initiatorId.toString(),
+        title: gift.title,
+        amountMinor: sent.claimedMinor ?? sent.amountMinor,
+        currency: gift.currency,
+        paymentRef: sent.paymentRef ?? null,
+      } satisfies GroupGiftContributionWithdrawnEvent);
+    }
+
     await this.shares.sync(groupGiftId);
+  }
+
+  // ── Saying it was sent ──────────────────────────────────────────────────────
+
+  /**
+   * "I've sent it": the contributor saying the money they pledged is on its
+   * way to the host, with the UPI transaction ID if they have it.
+   *
+   * Only now is the host asked whether it arrived — before, there was
+   * nothing for them to look for. Pledges only: a payment the host has
+   * already answered has nothing left to send. Saying it twice is not an
+   * error, and asks the host once.
+   */
+  async markSent(
+    groupGiftId: string,
+    contributionId: string,
+    userId: string,
+    dto: MarkSentDto,
+  ): Promise<GroupGiftView> {
+    const paymentRef = GroupGiftService.paymentRefOf(dto.paymentRef);
+    const c = await this.ownPayment(groupGiftId, contributionId, userId);
+    if (c.status !== ContributionStatus.PLEDGED) {
+      throw new AppException(
+        ErrorCode.CONFLICT,
+        'The host has already answered this payment',
+        409,
+        { status: c.status },
+      );
+    }
+    if (paymentRef && paymentRef !== c.paymentRef) {
+      await this.assertPaymentRefFree(c.groupGiftId, paymentRef, c._id);
+    }
+
+    const sentAt = new Date();
+    const set: Record<string, unknown> = {};
+    if (paymentRef) set.paymentRef = paymentRef;
+    // Claimed in the filter, so two taps racing ask the host once.
+    let first = false;
+    try {
+      if (!c.sentAt) {
+        const res = await this.contributionModel
+          .updateOne(
+            { _id: c._id, status: ContributionStatus.PLEDGED, sentAt: null },
+            { $set: { ...set, sentAt } },
+          )
+          .exec();
+        first = res.modifiedCount === 1;
+      }
+      if (!first && Object.keys(set).length > 0) {
+        await this.contributionModel.updateOne({ _id: c._id }, { $set: set }).exec();
+      }
+    } catch (err) {
+      if (GroupGiftService.isDuplicatePaymentRef(err)) throw GroupGiftService.paymentRefDuplicate();
+      throw err;
+    }
+
+    const gift = await this.loadOrFail(groupGiftId);
+    if (first) {
+      this.emitter.emit(GROUP_GIFT_PAYMENT_CLAIMED, {
+        groupGiftId,
+        contributionId,
+        contributorId: userId,
+        hostId: gift.initiatorId.toString(),
+        title: gift.title,
+        amountMinor: c.claimedMinor ?? c.amountMinor,
+        currency: gift.currency,
+        anonymous: c.anonymous,
+        sentAt,
+      } satisfies GroupGiftPaymentClaimedEvent);
+    }
+    return this.assembleView(gift, userId);
+  }
+
+  // ── Delayed reminders (run by the jobs registrar) ───────────────────────────
+
+  /**
+   * A day after a pledge: if it has still not been marked as sent, its
+   * contributor is reminded where to send it. Nothing when it was sent,
+   * answered, withdrawn, or the gift has finished. True when a reminder went.
+   */
+  async remindUnsentPledge(contributionId: string): Promise<boolean> {
+    if (!Types.ObjectId.isValid(contributionId)) return false;
+    const c = await this.contributionModel.findById(contributionId).exec();
+    if (!c || c.status !== ContributionStatus.PLEDGED || c.sentAt) return false;
+    const gift = await this.groupGiftModel.findById(c.groupGiftId).exec();
+    if (!gift || CLOSED_GROUP_GIFT_STATUSES.includes(gift.status)) return false;
+    this.emitter.emit(GROUP_GIFT_UNSENT_PLEDGE_DUE, {
+      groupGiftId: gift._id.toString(),
+      contributionId,
+      contributorId: c.userId.toString(),
+      hostId: gift.initiatorId.toString(),
+      title: gift.title,
+      amountMinor: c.claimedMinor ?? c.amountMinor,
+      currency: gift.currency,
+      hostUpiId: gift.hostUpiId ?? null,
+    } satisfies GroupGiftUnsentPledgeDueEvent);
+    return true;
+  }
+
+  /**
+   * Two days after the goal was reached: if the host has not said they
+   * bought it, they are reminded. Only for the funding the job was scheduled
+   * on — a gift that fell short and was funded again has its own job.
+   */
+  async remindToBuy(groupGiftId: string, fundedCount: number): Promise<boolean> {
+    if (!Types.ObjectId.isValid(groupGiftId)) return false;
+    const gift = await this.groupGiftModel.findById(groupGiftId).exec();
+    if (!gift || gift.status !== GroupGiftStatus.FUNDED) return false;
+    if ((gift.fundedCount ?? 0) !== fundedCount) return false;
+    this.emitter.emit(GROUP_GIFT_BUY_REMINDER_DUE, {
+      groupGiftId,
+      hostId: gift.initiatorId.toString(),
+      title: gift.title,
+      collectedAmountMinor: gift.collectedAmountMinor,
+      currency: gift.currency,
+      fundedCount,
+    } satisfies GroupGiftBuyReminderDueEvent);
+    return true;
+  }
+
+  /**
+   * A day after delivery: a recipient who has not written a thank-you is
+   * nudged to. Never for a gift kept for somebody off Wishtick, nor one the
+   * host made for themselves — there is nobody else to thank.
+   */
+  async promptThankYou(groupGiftId: string): Promise<boolean> {
+    if (!Types.ObjectId.isValid(groupGiftId)) return false;
+    const gift = await this.groupGiftModel.findById(groupGiftId).exec();
+    if (!gift || gift.status !== GroupGiftStatus.FULFILLED) return false;
+    if (gift.thankYouNote || gift.forName || gift.recipientId.equals(gift.initiatorId)) {
+      return false;
+    }
+    this.emitter.emit(GROUP_GIFT_THANK_YOU_PROMPT_DUE, {
+      groupGiftId,
+      recipientId: gift.recipientId.toString(),
+      title: gift.title,
+    } satisfies GroupGiftThankYouPromptDueEvent);
+    return true;
+  }
+
+  // ── Nudge (host) ────────────────────────────────────────────────────────────
+
+  /**
+   * "Remind everyone": the host asking the people who have not paid to chip
+   * in — everybody in the group with nothing confirmed and nothing marked
+   * sent, and on an even split only those who still owe. Once a day at most,
+   * so it stays a reminder and does not become noise.
+   */
+  async nudge(
+    groupGiftId: string,
+    hostId: string,
+  ): Promise<{ nudged: number; nextAllowedAt: Date }> {
+    const gift = await this.loadOrFail(groupGiftId);
+    if (gift.initiatorId.toString() !== hostId) {
+      throw new AppException(ErrorCode.NOT_THE_INITIATOR, 'Only the host can remind everyone', 403);
+    }
+    if (!DECIDABLE_GROUP_GIFT_STATUSES.includes(gift.status)) {
+      throw new AppException(
+        ErrorCode.GROUP_GIFT_NOT_OPEN,
+        'Only a group gift that is still collecting has anybody to remind',
+        409,
+        { status: gift.status },
+      );
+    }
+    const now = new Date();
+    const cooldown = (last: Date) => {
+      const nextAllowedAt = new Date(last.getTime() + NUDGE_COOLDOWN_MS);
+      return new AppException(
+        ErrorCode.GROUP_GIFT_NUDGE_COOLDOWN,
+        'You can remind everyone once a day',
+        429,
+        { nextAllowedAt: nextAllowedAt.toISOString() },
+      );
+    };
+    if (gift.lastNudgeAt && gift.lastNudgeAt.getTime() + NUDGE_COOLDOWN_MS > now.getTime()) {
+      throw cooldown(gift.lastNudgeAt);
+    }
+
+    const [others, paidUp, split] = await Promise.all([
+      this.shares.othersIn(gift),
+      this.shares.settledUpUsers(gift._id),
+      this.shares.splitOf(gift),
+    ]);
+    const owes = new Map(split?.others.map((m) => [m.userId, m.owesMinor]) ?? []);
+    const members = others
+      .filter((id) => !paidUp.has(id))
+      .filter((id) => !split || (owes.get(id) ?? 0) > 0)
+      .map((userId) => ({ userId, owesMinor: split ? (owes.get(userId) ?? null) : null }));
+    // Nobody to ask: the day's reminder is not spent on nothing.
+    if (members.length === 0) return { nudged: 0, nextAllowedAt: now };
+
+    // Claimed before anybody is told, so two taps racing remind them once.
+    const claimed = await this.groupGiftModel
+      .updateOne(
+        {
+          _id: gift._id,
+          $or: [
+            { lastNudgeAt: null },
+            { lastNudgeAt: { $lte: new Date(now.getTime() - NUDGE_COOLDOWN_MS) } },
+          ],
+        },
+        { $set: { lastNudgeAt: now } },
+      )
+      .exec();
+    if (claimed.modifiedCount !== 1) {
+      const fresh = await this.loadOrFail(groupGiftId);
+      throw cooldown(fresh.lastNudgeAt ?? now);
+    }
+
+    this.emitter.emit(GROUP_GIFT_NUDGED, {
+      groupGiftId,
+      hostId,
+      title: gift.title,
+      currency: gift.currency,
+      deadline: gift.deadline,
+      nudgedAt: now,
+      members,
+    } satisfies GroupGiftNudgedEvent);
+    return { nudged: members.length, nextAllowedAt: new Date(now.getTime() + NUDGE_COOLDOWN_MS) };
   }
 
   // ── Confirming payments (host) ──────────────────────────────────────────────
@@ -905,7 +1225,12 @@ export class GroupGiftService {
               throw new AppException(ErrorCode.CONTRIBUTION_NOT_FOUND, 'Payment not found', 404);
             }
             const gg = await this.groupGiftModel.findById(gift._id).session(session).exec();
-            if (!gg || ![GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED].includes(gg.status)) {
+            if (
+              !gg ||
+              ![GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED, GroupGiftStatus.CLOSED].includes(
+                gg.status,
+              )
+            ) {
               throw new AppException(
                 ErrorCode.GROUP_GIFT_NOT_OPEN,
                 'Payments can be confirmed until the gift is bought — after that, use Settle up',
@@ -915,6 +1240,17 @@ export class GroupGiftService {
             }
 
             const claimed = c.claimedMinor ?? c.amountMinor;
+            // More than they said they sent is not a confirmation — it is
+            // money from somewhere else, and would overstate what this person
+            // has put in. Recorded as what was claimed, or as a new payment.
+            if (receivedMinor > claimed) {
+              throw new AppException(
+                ErrorCode.RECEIVED_EXCEEDS_CLAIM,
+                `They said they sent ${rupees(claimed)} — you cannot record more than that`,
+                400,
+                { claimedMinor: claimed },
+              );
+            }
             const before = c.status === ContributionStatus.CONFIRMED ? c.amountMinor : 0;
             const otherConfirmed = await this.contributionModel
               .countDocuments({
@@ -942,23 +1278,17 @@ export class GroupGiftService {
             if (was && !is) inc.contributorCount = -1;
 
             const collected = gg.collectedAmountMinor + delta;
-            const update: Record<string, unknown> = {};
+            let update: GroupGiftUpdate = {};
             if (Object.keys(inc).length > 0) update.$inc = inc;
             let funded = false;
+            // Open, or closed by its deadline with this payment still to
+            // answer: either way, the goal reached is the goal reached.
             if (
-              gg.status === GroupGiftStatus.OPEN &&
+              DECIDABLE_GROUP_GIFT_STATUSES.includes(gg.status) &&
               gg.targetAmountMinor > 0 &&
               collected >= gg.targetAmountMinor
             ) {
-              update.$set = { status: GroupGiftStatus.FUNDED };
-              update.$push = {
-                history: {
-                  status: GroupGiftStatus.FUNDED,
-                  at: now,
-                  by: 'system:funded',
-                  note: null,
-                },
-              };
+              update = withFunded(update, { at: now, by: 'system:funded' });
               funded = true;
             } else if (gg.status === GroupGiftStatus.FUNDED && collected < gg.targetAmountMinor) {
               // Funded on money that did not all come: open again for the rest.
@@ -981,6 +1311,7 @@ export class GroupGiftService {
               claimed,
               collected,
               funded,
+              fundedCount: (gg.fundedCount ?? 0) + (funded ? 1 : 0),
               at: now,
             };
           });
@@ -997,6 +1328,7 @@ export class GroupGiftService {
       claimed: number;
       collected: number;
       funded: boolean;
+      fundedCount: number;
       at: Date;
     };
     this.emitter.emit(GROUP_GIFT_PAYMENT_REVIEWED, {
@@ -1009,6 +1341,9 @@ export class GroupGiftService {
       receivedMinor,
       currency: gift.currency,
       reviewedAt: done.at.toISOString(),
+      anonymous: done.anonymous,
+      state:
+        receivedMinor >= done.claimed ? 'received' : receivedMinor > 0 ? 'partial' : 'not_received',
     } satisfies GroupGiftPaymentReviewedEvent);
     if (receivedMinor > 0) {
       // Into the group chat as money in, once — keyed on the payment.
@@ -1033,6 +1368,7 @@ export class GroupGiftService {
         collectedAmountMinor: done.collected,
         currency: gift.currency,
         contributorCount: 0,
+        fundedCount: done.fundedCount,
       } satisfies GroupGiftFundedEvent);
     }
 
@@ -1047,10 +1383,66 @@ export class GroupGiftService {
     userId: string,
     paymentRef: string,
   ): Promise<GroupGiftView> {
+    // Empty clears it; anything else must be a transaction ID nobody else
+    // in this group has already given.
+    const ref = GroupGiftService.paymentRefOf(paymentRef);
     const c = await this.ownPayment(groupGiftId, contributionId, userId);
-    c.paymentRef = paymentRef || null;
-    await c.save();
+    if (ref && ref !== c.paymentRef) await this.assertPaymentRefFree(c.groupGiftId, ref, c._id);
+    c.paymentRef = ref;
+    try {
+      await c.save();
+    } catch (err) {
+      if (GroupGiftService.isDuplicatePaymentRef(err)) throw GroupGiftService.paymentRefDuplicate();
+      throw err;
+    }
     return this.assembleView(await this.loadOrFail(groupGiftId), userId);
+  }
+
+  /**
+   * A UPI transaction ID as given, or null for none. Twelve digits or it is
+   * refused here, by the service, so the code is `PAYMENT_REF_INVALID` —
+   * what both apps key their inline error on — and not a generic validation
+   * failure. See [IsPaymentRef].
+   */
+  private static paymentRefOf(raw: string | null | undefined): string | null {
+    const ref = typeof raw === 'string' ? raw.trim() : '';
+    if (!ref) return null;
+    if (!isValidPaymentRef(ref)) {
+      throw new AppException(
+        ErrorCode.PAYMENT_REF_INVALID,
+        'A UPI transaction ID is the 12-digit number your payment app shows',
+        400,
+      );
+    }
+    return ref;
+  }
+
+  /**
+   * The same transaction ID twice in one group is one payment claimed twice
+   * — a slip, or worse. Asked before writing for a clear answer; the partial
+   * unique index on `(groupGiftId, paymentRef)` is what actually holds.
+   */
+  private async assertPaymentRefFree(
+    groupGiftId: Types.ObjectId,
+    paymentRef: string,
+    exceptId?: Types.ObjectId,
+  ): Promise<void> {
+    const taken = await this.contributionModel
+      .exists({
+        groupGiftId,
+        paymentRef,
+        ...(exceptId ? { _id: { $ne: exceptId } } : {}),
+      })
+      .exec();
+    if (taken) throw GroupGiftService.paymentRefDuplicate();
+  }
+
+  private static paymentRefDuplicate(): AppException {
+    return new AppException(
+      ErrorCode.PAYMENT_REF_DUPLICATE,
+      'That transaction ID has already been used for a payment to this gift',
+      409,
+    );
   }
 
   /**
@@ -1065,6 +1457,7 @@ export class GroupGiftService {
     userId: string,
     dto: DisputePaymentDto,
   ): Promise<GroupGiftView> {
+    const paymentRef = GroupGiftService.paymentRefOf(dto.paymentRef);
     const c = await this.ownPayment(groupGiftId, contributionId, userId);
     const state = GroupGiftService.paymentState(c);
     if (state !== 'partial' && state !== 'not_received') {
@@ -1073,10 +1466,18 @@ export class GroupGiftService {
     if (c.disputedAt && c.reviewedAt && c.disputedAt > c.reviewedAt) {
       throw new AppException(ErrorCode.CONFLICT, 'The host has already been told', 409);
     }
+    if (paymentRef && paymentRef !== c.paymentRef) {
+      await this.assertPaymentRefFree(c.groupGiftId, paymentRef, c._id);
+    }
     const now = new Date();
     c.disputedAt = now;
-    if (dto.paymentRef) c.paymentRef = dto.paymentRef;
-    await c.save();
+    if (paymentRef) c.paymentRef = paymentRef;
+    try {
+      await c.save();
+    } catch (err) {
+      if (GroupGiftService.isDuplicatePaymentRef(err)) throw GroupGiftService.paymentRefDuplicate();
+      throw err;
+    }
 
     const gift = await this.loadOrFail(groupGiftId);
     this.emitter.emit(GROUP_GIFT_PAYMENT_DISPUTED, {
@@ -1161,9 +1562,13 @@ export class GroupGiftService {
       note: dto.note ?? null,
       by,
     });
+    const delivered = await this.loadOrFail(groupGiftId);
     this.emitter.emit(GROUP_GIFT_FULFILLED, {
       groupGiftId,
       itemId: view.itemId,
+      recipientId: delivered.recipientId.toString(),
+      hostId: delivered.initiatorId.toString(),
+      forName: delivered.forName,
     } satisfies GroupGiftFulfilledEvent);
     return view;
   }
@@ -1299,7 +1704,9 @@ export class GroupGiftService {
     if (gift.initiatorId.toString() !== userId) {
       throw new AppException(ErrorCode.FORBIDDEN, 'Only the initiator can add a charge', 403);
     }
-    if (![GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED].includes(gift.status)) {
+    if (
+      ![GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED, GroupGiftStatus.CLOSED].includes(gift.status)
+    ) {
       throw new AppException(
         ErrorCode.GROUP_GIFT_NOT_OPEN,
         'Charges can only be added until the gift is bought',
@@ -1328,6 +1735,8 @@ export class GroupGiftService {
       reason,
     });
     GroupGiftService.recomputeTarget(gift, primary);
+    // The ceiling holds for a goal reached by adding to it, not only for one set.
+    this.assertWithinMaxTarget(gift.targetAmountMinor);
     if (
       gift.status === GroupGiftStatus.FUNDED &&
       gift.collectedAmountMinor < gift.targetAmountMinor
@@ -1427,15 +1836,29 @@ export class GroupGiftService {
       // Short again: open for the difference, so it can be paid the usual way.
       this.pushStatus(settled, GroupGiftStatus.OPEN, `user:${hostId}`, note);
     } else if (
-      settled.status === GroupGiftStatus.OPEN &&
+      DECIDABLE_GROUP_GIFT_STATUSES.includes(settled.status) &&
       settled.targetAmountMinor > 0 &&
       money.shortfallMinor === 0
     ) {
       // Cheaper than what is already in: nothing more is needed from anyone.
       this.pushStatus(settled, GroupGiftStatus.FUNDED, `user:${hostId}`, note);
+      settled.fundedAt = settled.history[settled.history.length - 1].at;
       nowFunded = true;
     }
     await settled.save();
+    // Counted atomically, as every other funding site counts it: the
+    // document save above sets the status, this says which funding it was.
+    let fundedCount = settled.fundedCount ?? 0;
+    if (nowFunded) {
+      const counted = await this.groupGiftModel
+        .findOneAndUpdate(
+          { _id: settled._id },
+          { $inc: { fundedCount: 1 } },
+          { new: true, projection: { fundedCount: 1 } },
+        )
+        .exec();
+      fundedCount = counted?.fundedCount ?? fundedCount + 1;
+    }
 
     // An even split's shares follow the new goal before anyone is told what
     // they owe — the host's share included.
@@ -1451,6 +1874,7 @@ export class GroupGiftService {
       groupGiftId,
       hostId,
       title: after.title,
+      itemId,
       itemTitle: alert.title,
       fromMinor: from,
       toMinor: to,
@@ -1472,6 +1896,7 @@ export class GroupGiftService {
         collectedAmountMinor: after.collectedAmountMinor,
         currency: after.currency,
         contributorCount: after.contributorCount,
+        fundedCount,
       } satisfies GroupGiftFundedEvent);
     }
     return view;
@@ -1533,7 +1958,9 @@ export class GroupGiftService {
     if (gift.initiatorId.toString() !== hostId) {
       throw new AppException(ErrorCode.NOT_THE_INITIATOR, 'Only the host can settle up', 403);
     }
-    if (gift.status !== GroupGiftStatus.OPEN) {
+    // Open, or closed by its deadline: settling the shortfall is one of the
+    // three things a host does about a closed collection.
+    if (!DECIDABLE_GROUP_GIFT_STATUSES.includes(gift.status)) {
       throw new AppException(
         ErrorCode.GROUP_GIFT_NOT_OPEN,
         gift.status === GroupGiftStatus.FUNDED
@@ -1557,6 +1984,7 @@ export class GroupGiftService {
 
     let paid = 0;
     let collected = 0;
+    let fundedCount = 0;
     await this.locks.withBestEffortLock(
       `group-gift:${groupGiftId}`,
       async () => {
@@ -1564,7 +1992,7 @@ export class GroupGiftService {
         try {
           await session.withTransaction(async () => {
             const gg = await this.groupGiftModel.findById(gift._id).session(session).exec();
-            if (!gg || gg.status !== GroupGiftStatus.OPEN) {
+            if (!gg || !DECIDABLE_GROUP_GIFT_STATUSES.includes(gg.status)) {
               throw new AppException(
                 ErrorCode.GROUP_GIFT_NOT_OPEN,
                 'Only a group gift that is still collecting can be settled',
@@ -1607,23 +2035,16 @@ export class GroupGiftService {
             await this.groupGiftModel
               .updateOne(
                 { _id: gg._id },
-                {
-                  $inc: inc,
-                  $set: { status: GroupGiftStatus.FUNDED },
-                  $push: {
-                    history: {
-                      status: GroupGiftStatus.FUNDED,
-                      at: now,
-                      by: `user:${hostId}`,
-                      note: 'settled: the host paid what was left',
-                    },
-                  },
-                },
+                withFunded(
+                  { $inc: inc },
+                  { at: now, by: `user:${hostId}`, note: 'settled: the host paid what was left' },
+                ),
                 { session },
               )
               .exec();
             paid = left;
             collected = gg.collectedAmountMinor + left;
+            fundedCount = (gg.fundedCount ?? 0) + 1;
           });
         } catch (err) {
           if (GroupGiftService.isDuplicateKey(err)) {
@@ -1642,6 +2063,7 @@ export class GroupGiftService {
       hostId,
       title: gift.title,
       amountMinor: paid,
+      targetAmountMinor: gift.targetAmountMinor,
       currency: gift.currency,
       memberIds: await this.membersToTell(gift),
     } satisfies GroupGiftSettledEvent);
@@ -1654,8 +2076,294 @@ export class GroupGiftService {
       collectedAmountMinor: collected,
       currency: gift.currency,
       contributorCount: 0,
+      fundedCount,
     } satisfies GroupGiftFundedEvent);
     return this.assembleView(await this.loadOrFail(groupGiftId), hostId);
+  }
+
+  // ── The host editing the details ────────────────────────────────────────────
+
+  /**
+   * The host changing what they set when they started it: the name, the note,
+   * where the money goes, when it closes — and, until anybody has paid, how
+   * much and how it is split.
+   *
+   * A new deadline on a closed collection opens it again: that is what
+   * "extend the deadline" means, and the week the host had to decide starts
+   * over if it closes a second time. Whoever has pledged and not yet sent is
+   * told about a new UPI ID, since the one they were given is wrong now;
+   * everybody hears about a new deadline.
+   */
+  async update(
+    groupGiftId: string,
+    hostId: string,
+    dto: UpdateGroupGiftDto,
+  ): Promise<GroupGiftView> {
+    const gift = await this.loadOrFail(groupGiftId);
+    if (gift.initiatorId.toString() !== hostId) {
+      throw new AppException(ErrorCode.NOT_THE_INITIATOR, 'Only the host can edit this', 403);
+    }
+    if (CLOSED_GROUP_GIFT_STATUSES.includes(gift.status)) {
+      throw new AppException(
+        ErrorCode.GROUP_GIFT_NOT_OPEN,
+        'This group gift has finished and cannot be changed',
+        409,
+        { status: gift.status },
+      );
+    }
+    const deadline = dto.deadline !== undefined ? this.parseDeadline(dto.deadline) : undefined;
+    if (dto.targetAmountMinor !== undefined || dto.contributionMode !== undefined) {
+      await this.assertBillEditable(gift);
+    }
+    if (dto.targetAmountMinor !== undefined) {
+      this.assertWithinMaxTarget(dto.targetAmountMinor);
+      const itemised =
+        gift.lines.reduce((sum, line) => sum + (line.amountMinor ?? 0), 0) +
+        gift.charges.reduce((sum, charge) => sum + charge.amountMinor, 0);
+      if (dto.targetAmountMinor <= itemised) {
+        throw new AppException(
+          ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
+          'The goal has to cover the charges and extra gifts already on the bill',
+          400,
+          { itemisedMinor: itemised },
+        );
+      }
+    }
+
+    const changed: string[] = [];
+    let reopened = false;
+    let updated = gift;
+    await this.locks.withBestEffortLock(
+      `group-gift:${groupGiftId}`,
+      async () => {
+        const gg = await this.groupGiftModel.findById(gift._id).exec();
+        if (!gg)
+          throw new AppException(ErrorCode.GROUP_GIFT_NOT_FOUND, 'Group gift not found', 404);
+        if (dto.title !== undefined && dto.title !== gg.title) {
+          gg.title = dto.title;
+          changed.push('title');
+        }
+        if (dto.message !== undefined && (dto.message || null) !== gg.message) {
+          gg.message = dto.message || null;
+          changed.push('message');
+        }
+        if (dto.hostUpiId !== undefined && (dto.hostUpiId || null) !== (gg.hostUpiId ?? null)) {
+          gg.hostUpiId = dto.hostUpiId || null;
+          changed.push('hostUpiId');
+        }
+        if (deadline) {
+          if (gg.deadline?.getTime() !== deadline.getTime()) {
+            gg.deadline = deadline;
+            // A new date is a new countdown: the "3 days left" of the old one
+            // says nothing about this one.
+            gg.deadlineRemindersSent = [];
+            changed.push('deadline');
+          }
+          if (gg.status === GroupGiftStatus.CLOSED) {
+            this.pushStatus(gg, GroupGiftStatus.OPEN, `user:${hostId}`, 'deadline extended');
+            gg.closedAt = null;
+            gg.closeRemindersSent = [];
+            reopened = true;
+          }
+        }
+        if (dto.targetAmountMinor !== undefined && dto.targetAmountMinor !== gg.targetAmountMinor) {
+          gg.targetAmountMinor = dto.targetAmountMinor;
+          changed.push('targetAmountMinor');
+        }
+        if (dto.contributionMode !== undefined && dto.contributionMode !== gg.contributionMode) {
+          gg.contributionMode = dto.contributionMode;
+          changed.push('contributionMode');
+        }
+        if (changed.length > 0 || reopened) await gg.save();
+        updated = gg;
+      },
+      { ttlMs: 5_000, retries: 10, retryDelayMs: 40 },
+    );
+
+    if (changed.length > 0 || reopened) {
+      // A new total or a new split is a new share for everybody.
+      await this.shares.sync(groupGiftId);
+      const pledgers = await this.contributionModel
+        .distinct('userId', {
+          groupGiftId: gift._id,
+          status: ContributionStatus.PLEDGED,
+          userId: { $ne: gift.initiatorId },
+        })
+        .exec();
+      this.emitter.emit(GROUP_GIFT_UPDATED, {
+        groupGiftId,
+        hostId,
+        title: updated.title,
+        changed,
+        deadline: changed.includes('deadline') ? updated.deadline : undefined,
+        hostUpiId: changed.includes('hostUpiId') ? updated.hostUpiId : undefined,
+        memberIds: await this.membersToTell(updated),
+        upiChangedUserIds: pledgers.map((id) => id.toString()),
+        currency: updated.currency,
+        reopened,
+        updatedAt: new Date(),
+      } satisfies GroupGiftUpdatedEvent);
+    }
+    return this.assembleView(await this.loadOrFail(groupGiftId), hostId);
+  }
+
+  /** The ceiling on a goal, whether set at the start or changed later. */
+  private assertWithinMaxTarget(targetMinor: number): void {
+    const maxTarget = this.config.get('groupGifting.maxTargetMinor', { infer: true });
+    if (targetMinor > maxTarget) {
+      throw new AppException(
+        ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
+        `Target exceeds the maximum of ${maxTarget} minor units`,
+        400,
+        { maxTargetMinor: maxTarget },
+      );
+    }
+  }
+
+  // ── The deadline, kept ───────────────────────────────────────────────────────
+
+  /**
+   * What time does to a collection, run every quarter-hour.
+   *
+   *  1. Open and past its deadline: closed. Nothing more comes in; the host
+   *     is asked to settle up, extend the deadline or cancel, and the members
+   *     hear that it has closed.
+   *  2. Closed and undecided for three days, then six: the host is reminded.
+   *     Each reminder once, recorded on the gift.
+   *  3. Closed and undecided for a week: cancelled for them, which frees the
+   *     item and tells everybody, as any cancellation does.
+   *
+   * Each gift on its own: one that cannot be moved is logged and left for
+   * the next run, never the reason the rest are not.
+   */
+  async sweepDeadlines(
+    now = new Date(),
+  ): Promise<{ closed: number; reminded: number; cancelled: number }> {
+    let closed = 0;
+    let reminded = 0;
+    let cancelled = 0;
+
+    const due = await this.groupGiftModel
+      .find({ status: GroupGiftStatus.OPEN, deadline: { $ne: null, $lte: now } })
+      .exec();
+    for (const gift of due) {
+      try {
+        if (await this.closeByDeadline(gift, now)) closed += 1;
+      } catch (err) {
+        this.logger.error(
+          `Group gift ${gift._id.toString()} not closed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    const undecided = await this.groupGiftModel
+      .find({
+        status: GroupGiftStatus.CLOSED,
+        closedAt: { $ne: null, $lte: new Date(now.getTime() - CLOSE_AUTO_CANCEL_DAYS * DAY_MS) },
+      })
+      .exec();
+    for (const gift of undecided) {
+      try {
+        await this.cancelGroup(gift, 'system:deadline', {
+          note: 'No decision was made after the deadline passed',
+        });
+        cancelled += 1;
+      } catch (err) {
+        this.logger.error(
+          `Group gift ${gift._id.toString()} not cancelled after its week: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    const waiting = await this.groupGiftModel
+      .find({
+        status: GroupGiftStatus.CLOSED,
+        closedAt: { $ne: null, $lte: new Date(now.getTime() - CLOSE_REMINDER_DAYS[0] * DAY_MS) },
+      })
+      .exec();
+    for (const gift of waiting) {
+      const closedAt = gift.closedAt!;
+      for (const day of CLOSE_REMINDER_DAYS) {
+        if (closedAt.getTime() + day * DAY_MS > now.getTime()) continue;
+        if ((gift.closeRemindersSent ?? []).includes(day)) continue;
+        // Claimed before it is sent, so two sweeps overlapping send it once.
+        const res = await this.groupGiftModel
+          .updateOne(
+            { _id: gift._id, status: GroupGiftStatus.CLOSED, closeRemindersSent: { $ne: day } },
+            { $addToSet: { closeRemindersSent: day } },
+          )
+          .exec();
+        if (res.modifiedCount !== 1) continue;
+        this.emitter.emit(GROUP_GIFT_CLOSE_REMINDER_DUE, {
+          groupGiftId: gift._id.toString(),
+          hostId: gift.initiatorId.toString(),
+          title: gift.title,
+          day,
+          shortMinor: Math.max(0, gift.targetAmountMinor - gift.collectedAmountMinor),
+          currency: gift.currency,
+        } satisfies GroupGiftCloseReminderDueEvent);
+        reminded += 1;
+      }
+    }
+
+    if (closed || reminded || cancelled) {
+      this.logger.log(
+        `Deadline sweep: ${closed} closed, ${reminded} hosts reminded, ${cancelled} cancelled`,
+      );
+    }
+    return { closed, reminded, cancelled };
+  }
+
+  /**
+   * One collection past its deadline, closed — under the gift's lock, in a
+   * transaction, against the row as it is now: a payment the host confirmed
+   * a moment ago may have funded it, and a funded gift has not closed short.
+   * True when this call closed it.
+   */
+  private async closeByDeadline(gift: GroupGiftDocument, now: Date): Promise<boolean> {
+    const groupGiftId = gift._id.toString();
+    let closedAt: Date | null = null;
+    let short = 0;
+    await this.locks.withBestEffortLock(
+      `group-gift:${groupGiftId}`,
+      async () => {
+        const session = await this.connection.startSession();
+        try {
+          await session.withTransaction(async () => {
+            closedAt = null;
+            const gg = await this.groupGiftModel.findById(gift._id).session(session).exec();
+            if (!gg || gg.status !== GroupGiftStatus.OPEN) return;
+            if (!gg.deadline || gg.deadline.getTime() > now.getTime()) return;
+            this.pushStatus(gg, GroupGiftStatus.CLOSED, 'system:deadline', 'the deadline passed');
+            gg.closedAt = now;
+            gg.closeRemindersSent = [];
+            await gg.save({ session });
+            closedAt = now;
+            short = Math.max(0, gg.targetAmountMinor - gg.collectedAmountMinor);
+          });
+        } finally {
+          await session.endSession();
+        }
+      },
+      { ttlMs: 5_000, retries: 10, retryDelayMs: 40 },
+    );
+    if (!closedAt) return false;
+
+    this.emitter.emit(GROUP_GIFT_CLOSED, {
+      groupGiftId,
+      hostId: gift.initiatorId.toString(),
+      title: gift.title,
+      memberIds: await this.membersToTell(gift),
+      shortMinor: short,
+      deadline: gift.deadline,
+      currency: gift.currency,
+      closedAt,
+    } satisfies GroupGiftClosedEvent);
+    return true;
   }
 
   /**
@@ -1686,9 +2394,30 @@ export class GroupGiftService {
         409,
       );
     }
+    const thankYouAt = new Date();
     gift.thankYouNote = note;
-    gift.thankYouAt = new Date();
+    gift.thankYouAt = thankYouAt;
     await gift.save();
+
+    // Everybody who put something in — the host, the named members, and
+    // anybody who paid without being named — and never the person writing.
+    const payers = await this.contributionModel
+      .distinct('userId', { groupGiftId: gift._id, status: ContributionStatus.CONFIRMED })
+      .exec();
+    const contributorIds = new Set<string>([
+      gift.initiatorId.toString(),
+      ...gift.participantIds.map((id) => id.toString()),
+      ...payers.map((id) => id.toString()),
+    ]);
+    contributorIds.delete(userId);
+    this.emitter.emit(GROUP_GIFT_THANK_YOU_SET, {
+      groupGiftId,
+      recipientId: userId,
+      title: gift.title,
+      note,
+      thankYouAt,
+      contributorIds: [...contributorIds],
+    } satisfies GroupGiftThankYouSetEvent);
     return this.assembleView(gift, userId);
   }
 
@@ -1720,6 +2449,7 @@ export class GroupGiftService {
     charge.amountMinor = input.amountMinor;
     gift.markModified('charges');
     GroupGiftService.recomputeTarget(gift, primary);
+    this.assertWithinMaxTarget(gift.targetAmountMinor);
     await gift.save();
     return this.afterTargetChange(gift, userId);
   }
@@ -1882,6 +2612,8 @@ export class GroupGiftService {
               addedAt: new Date(),
             });
             GroupGiftService.recomputeTarget(doc, primary);
+            // Inside the transaction, so the holder just created goes with it.
+            this.assertWithinMaxTarget(doc.targetAmountMinor);
             await doc.save({ session });
             result = doc;
           });
@@ -1974,9 +2706,12 @@ export class GroupGiftService {
   ): Promise<void> {
     const groupGiftId = gift._id.toString();
     if (
-      ![GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED, GroupGiftStatus.PURCHASING].includes(
-        gift.status,
-      )
+      ![
+        GroupGiftStatus.OPEN,
+        GroupGiftStatus.CLOSED,
+        GroupGiftStatus.FUNDED,
+        GroupGiftStatus.PURCHASING,
+      ].includes(gift.status)
     ) {
       throw new AppException(
         ErrorCode.INVALID_GROUP_GIFT_TRANSITION,
@@ -2061,6 +2796,11 @@ export class GroupGiftService {
             } else {
               this.pushStatus(gg, GroupGiftStatus.CANCELLED, by, reason);
             }
+            // Every confirmed payment is now refunded, so nothing is held for
+            // the gift: a cancelled gift that still showed its old total read
+            // as money the host was keeping.
+            gg.collectedAmountMinor = 0;
+            gg.contributorCount = 0;
             await gg.save({ session });
           });
         } finally {
@@ -2237,8 +2977,21 @@ export class GroupGiftService {
     };
   }
 
-  /** Resolves a public share link, applying passcode/expiry gates. */
-  async getPublicBySlug(slug: string, passcode?: string): Promise<PublicGroupGiftView> {
+  /**
+   * Resolves a public share link, applying passcode/expiry gates.
+   *
+   * Who is looking decides how much they see. Signed out: the progress and
+   * nothing about anybody — the link is forwarded about, and a stranger has
+   * no business with the names and amounts of the people chipping in, so
+   * they are asked to sign in instead. Signed in: the group, as before. And
+   * the person it is for, while it is still a surprise, gets the same answer
+   * as a link that does not exist: the link must not be how they find out.
+   */
+  async getPublicBySlug(
+    slug: string,
+    passcode?: string,
+    viewerId?: string,
+  ): Promise<PublicGroupGiftView> {
     const gift = await this.groupGiftModel.findOne({ 'share.slug': slug }).exec();
     if (!gift) throw new AppException(ErrorCode.SHARE_LINK_INVALID, 'Link not found', 404);
     if (gift.share.expiresAt && gift.share.expiresAt.getTime() <= Date.now()) {
@@ -2256,8 +3009,23 @@ export class GroupGiftService {
         throw new AppException(ErrorCode.SHARE_PASSCODE_INVALID, 'Incorrect passcode', 403);
       }
     }
-    const { names, recentContributions } = await this.resolveViewData(gift);
-    return toPublicGroupGiftView({ gift, names, recentContributions });
+    if (
+      viewerId &&
+      gift.recipientId.toString() === viewerId &&
+      gift.initiatorId.toString() !== viewerId &&
+      gift.visibility === GroupGiftVisibility.HIDDEN_FROM_OWNER &&
+      !(await this.surpriseIsOver(gift))
+    ) {
+      throw new AppException(ErrorCode.SHARE_LINK_INVALID, 'Link not found', 404);
+    }
+    const { names, items, recentContributions } = await this.resolveViewData(gift);
+    return toPublicGroupGiftView({
+      gift,
+      names,
+      recentContributions,
+      primaryItem: items.get(gift.itemId.toString()) ?? null,
+      signedIn: Boolean(viewerId),
+    });
   }
 
   /**
@@ -2383,29 +3151,23 @@ export class GroupGiftService {
   }
 
   /**
-   * Who may take part in a group gift, and whether its deadline binds them.
+   * Who may take part in a group gift.
    *
-   * Everyone else must be able to gift from the wishlist and is held to the
-   * deadline. Two people are let in by right, and past the deadline:
+   * Everyone must be able to gift from the wishlist, and everyone is held to
+   * the deadline — see [assertCollecting]. Two people are let in by right:
    *
    *  - **the host**, who started it — for a friend, for a WishMate or for
-   *    themselves. It is their collection, and topping it up whenever they
-   *    choose is the organiser's call to make, not a date's. A host who
-   *    started a group gift *for themselves* is also its recipient, which the
-   *    rule below used to refuse outright: they could never add a rupee to
-   *    their own.
+   *    themselves. A host who started a group gift *for themselves* is also
+   *    its recipient, which the rule below used to refuse outright: they
+   *    could never add a rupee to their own.
    *  - **the person it is for, once the event is over** — see
    *    [surpriseIsOver]. Until then they are refused, because the group is a
    *    surprise; afterwards there is nothing left to spoil, and chipping in is
-   *    how they get the gift they actually wanted. The deadline was set for
-   *    the party, so it cannot be what keeps them out after it.
+   *    how they get the gift they actually wanted.
    *
    * Any other recipient is refused as before.
    */
-  private async authorizeParticipation(
-    gift: GroupGiftDocument,
-    userId: string,
-  ): Promise<{ ignoresDeadline: boolean }> {
+  private async authorizeParticipation(gift: GroupGiftDocument, userId: string): Promise<void> {
     const isHost = gift.initiatorId.toString() === userId;
     // Not the owner of a list made for someone off Wishtick: they only hold
     // the gift for that person, and it is no surprise to them.
@@ -2426,7 +3188,7 @@ export class GroupGiftService {
     // of the list at all, which the person a WishMate's list is for need not
     // have. Asked first, so a recipient past their party is not turned away
     // at the list's door.
-    if (isHost || isRecipient) return { ignoresDeadline: true };
+    if (isHost || isRecipient) return;
 
     const wishlist = await this.wishlists.findOrFail(gift.wishlistId.toString());
     const decision = await this.access.resolve(wishlist, { userId });
@@ -2441,35 +3203,23 @@ export class GroupGiftService {
       wishlist.ownerId.toString() === userId &&
       (!gift.recipientId.equals(wishlist.ownerId) || gift.forName)
     ) {
-      return { ignoresDeadline: false };
+      return;
     }
     if (!decision.canGift) {
       throw new AppException(ErrorCode.FORBIDDEN, 'You cannot gift from this wishlist', 403);
     }
-    return { ignoresDeadline: false };
   }
 
   /**
-   * Whether the event a group gift was for has been and gone.
-   *
-   * Over means past its end time when the host gave one, and otherwise a day
-   * after it started — a party with no end time is over by the next day. A
-   * cancelled event counts as over too: there is no longer a party to keep
-   * the gift a secret for.
-   *
-   * A group gift on no event is never "over" in this sense: nothing marks the
-   * moment its surprise ends, so it stays hidden from its recipient.
+   * Whether there is anything left to keep from the person a group gift is
+   * for: delivered, or the event it was for has been and gone. The rule is
+   * [surprise.ts]'s, shared with the chat; this only loads the event.
    */
   private async surpriseIsOver(gift: GroupGiftDocument, now = new Date()): Promise<boolean> {
-    if (!gift.eventId) return false;
-    const event = await this.eventModel
-      .findById(gift.eventId)
-      .select('startsAt endsAt status')
-      .exec();
-    if (!event) return false;
-    if (event.status === EventStatus.CANCELLED) return true;
-    const endsAt = event.endsAt ?? new Date(event.startsAt.getTime() + 24 * 60 * 60_000);
-    return endsAt.getTime() <= now.getTime();
+    const event = gift.eventId
+      ? await this.eventModel.findById(gift.eventId).select('startsAt endsAt status').exec()
+      : null;
+    return isSurpriseOver(gift, event, now);
   }
 
   /**
@@ -2482,13 +3232,18 @@ export class GroupGiftService {
    *
    * Runs *before* the access check because accepting is what grants the
    * access — on a private list the invitee cannot gift until they hold a role
-   * on it. Same two steps `GroupGiftInvitesService.respond` takes, minus the
-   * join: the contribution itself decides membership, and does not add an
-   * anonymous contributor to the visible participant list.
+   * on it. What saying yes does, done here: the list role, the invitation
+   * answered, a place on the participant list — unless they are paying
+   * anonymously, in which case the visible list must not name them — and a
+   * seat in the chat. The group is told somebody joined, and by whose ask.
    *
    * A no-op for anyone without a pending invitation, which is most people.
    */
-  private async acceptPendingInvite(gift: GroupGiftDocument, userId: string): Promise<void> {
+  private async acceptPendingInvite(
+    gift: GroupGiftDocument,
+    userId: string,
+    opts: { anonymous: boolean },
+  ): Promise<void> {
     const invite = await this.inviteModel
       .findOne({
         groupGiftId: gift._id,
@@ -2506,6 +3261,17 @@ export class GroupGiftService {
     invite.status = GroupGiftInviteStatus.ACCEPTED;
     invite.respondedAt = new Date();
     await invite.save();
+    if (!opts.anonymous) {
+      await this.groupGiftModel
+        .updateOne({ _id: gift._id }, { $addToSet: { participantIds: new Types.ObjectId(userId) } })
+        .exec();
+    }
+    if (gift.chatId) await this.chat.addParticipant(gift.chatId, userId);
+    this.emitter.emit(GROUP_GIFT_MEMBER_ADDED, {
+      groupGiftId: gift._id.toString(),
+      userId,
+      byUserId: invite.invitedById.toString(),
+    } satisfies GroupGiftMemberAddedEvent);
   }
 
   private parseDeadline(raw?: string): Date | null {
@@ -2682,6 +3448,17 @@ export class GroupGiftService {
     }
     view.split = await this.splitView(gift, userId, names);
     await this.attachPayments(view, gift, userId, names);
+    // An ask still waiting on the viewer: the app opens the invitation, with
+    // its Accept and Decline, rather than the group they are not yet in.
+    const pending = await this.inviteModel
+      .findOne({
+        groupGiftId: gift._id,
+        invitedUserId: new Types.ObjectId(userId),
+        status: GroupGiftInviteStatus.PENDING,
+      })
+      .select('_id')
+      .exec();
+    view.myInviteId = pending ? pending._id.toString() : null;
     return view;
   }
 
@@ -2757,6 +3534,7 @@ export class GroupGiftService {
       paymentRef: c.paymentRef ?? null,
       message: c.message,
       createdAt: c.createdAt,
+      sentAt: c.sentAt ?? null,
       reviewedAt: c.reviewedAt ?? null,
       disputedAt: c.disputedAt ?? null,
     };
@@ -2785,5 +3563,12 @@ export class GroupGiftService {
 
   private static isDuplicateKey(err: unknown): boolean {
     return (err as { code?: number })?.code === 11000;
+  }
+
+  /** A collision on the `(groupGiftId, paymentRef)` index, not the idempotency key's. */
+  private static isDuplicatePaymentRef(err: unknown): boolean {
+    if (!GroupGiftService.isDuplicateKey(err)) return false;
+    const e = err as { keyPattern?: Record<string, unknown>; message?: string };
+    return e.keyPattern ? 'paymentRef' in e.keyPattern : /paymentRef/.test(e.message ?? '');
   }
 }

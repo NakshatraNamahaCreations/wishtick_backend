@@ -1265,12 +1265,55 @@ describe('Events & invites (e2e)', () => {
       return { wishlistId: wishlist.data.id, itemId: item.data.id };
     };
 
-    const startGroupGift = (gifter: Actor, itemId: string, title: string) =>
+    /**
+     * Visible to the person it is for unless a case says otherwise: the
+     * invitation is public, so a gift kept from them is never listed on it —
+     * see "a public invite lists only visible group gifts".
+     */
+    const startGroupGift = (
+      gifter: Actor,
+      itemId: string,
+      title: string,
+      visibility: 'visible' | 'hidden_from_owner' = 'visible',
+    ) =>
       request(app.getHttpServer())
         .post(`${V1}/items/${itemId}/group-gift`)
         .set(auth(gifter.token))
         .set({ 'Idempotency-Key': randomUUID() })
-        .send({ title, targetAmountMinor: 500000 });
+        .send({ title, targetAmountMinor: 500000, visibility });
+
+    it('a public invite lists only visible group gifts', async () => {
+      const host = await newUser();
+      const gifter = await newUser();
+      const guest = await newUser();
+      const event = await createEvent(host);
+      await publish(host, event.id);
+      const { wishlistId, itemId } = await wishlistOn(host, event.id);
+      const second = (
+        await request(app.getHttpServer())
+          .post(`${V1}/wishlists/${wishlistId}/items`)
+          .set(auth(host.token))
+          .send({ title: 'A star chart', price: { amountMinor: 200000 } })
+          .expect(201)
+      ).body as Envelope<{ id: string }>;
+
+      await startGroupGift(gifter, itemId, 'Telescope fund').expect(201);
+      // The host is who it is for, and anyone can open the invitation: a
+      // surprise listed there would be a surprise no more.
+      await startGroupGift(gifter, second.data.id, 'Secret fund', 'hidden_from_owner').expect(201);
+
+      await request(app.getHttpServer())
+        .post(`${V1}/events/${event.id}/invites`)
+        .set(auth(host.token))
+        .send({ recipients: [{ userId: guest.userId }] })
+        .expect(200);
+      const token = await InviteTokenHelper.only(app, host.token, event.id);
+
+      const view = (
+        await request(app.getHttpServer()).get(`${V1}/public/invites/${token}`).expect(200)
+      ).body as Envelope<{ groupGifts: { title: string }[] }>;
+      expect(view.data.groupGifts.map((g) => g.title)).toEqual(['Telescope fund']);
+    });
 
     it('a gift started on the event’s wishlist shows on the invitation', async () => {
       const host = await newUser();

@@ -4,14 +4,17 @@ import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ClientSession, Connection, Model, Types } from 'mongoose';
 import {
   GROUP_GIFT_CONFIRM_REMINDER_DUE,
+  GROUP_GIFT_DEADLINE_REMINDER_DUE,
   GROUP_GIFT_FUNDED,
   GROUP_GIFT_SHARE_REMINDER_DUE,
   type GroupGiftConfirmReminderDueEvent,
+  type GroupGiftDeadlineReminderDueEvent,
   type GroupGiftFundedEvent,
   type GroupGiftShareReminderDueEvent,
 } from 'src/common/events/domain-events';
 import { LockService } from 'src/infra/redis/lock.service';
 import { equalSplit, hostShareOf, type EqualSplit } from './equal-split';
+import { withFunded, type GroupGiftUpdate } from './group-gift-funding';
 import {
   CONTRIBUTABLE_GROUP_GIFT_STATUSES,
   ContributionMode,
@@ -70,15 +73,17 @@ export class GroupGiftShareService {
 
   /**
    * Everybody the total is divided among, but the host: the named members,
-   * everybody invited who has not said no, and anybody who has paid in or
-   * says they have. Never the recipient — the gift is for them.
+   * everybody who said yes to an invitation, and anybody who has paid in or
+   * says they have. Never the recipient — the gift is for them — and never
+   * somebody only asked: an invitation is a question, and a share is not
+   * theirs until they answer it.
    */
   async othersIn(gift: GroupGiftDocument): Promise<string[]> {
     const host = gift.initiatorId.toString();
     const recipient = gift.recipientId.toString();
     const [invites, payers] = await Promise.all([
       this.inviteModel
-        .find({ groupGiftId: gift._id, status: { $ne: GroupGiftInviteStatus.DECLINED } })
+        .find({ groupGiftId: gift._id, status: GroupGiftInviteStatus.ACCEPTED })
         .select('invitedUserId')
         .exec(),
       this.contributionModel
@@ -101,7 +106,7 @@ export class GroupGiftShareService {
    * less any refund the host has sent them. Somebody refunded after a price
    * drop has that much less in, and owes it again if the price comes back up.
    */
-  private async paidByUser(giftId: Types.ObjectId): Promise<Map<string, number>> {
+  async paidByUser(giftId: Types.ObjectId): Promise<Map<string, number>> {
     const [paid, back] = await Promise.all([
       this.sumByUser(giftId, ContributionStatus.CONFIRMED),
       this.settlementModel
@@ -194,6 +199,38 @@ export class GroupGiftShareService {
       hostPaidMinor: paid.get(gift.initiatorId.toString()) ?? 0,
       others: others.map((userId) => ({ userId, paidMinor: paid.get(userId) ?? 0 })),
     });
+  }
+
+  /**
+   * What [userId]'s share would be if they said yes: the split as it stands
+   * with them counted in, paid nothing. What an invitation tells them.
+   * Null for a custom-amount gift.
+   */
+  async shareIfJoined(gift: GroupGiftDocument, userId: string): Promise<number | null> {
+    if (gift.contributionMode !== ContributionMode.EQUAL) return null;
+    const [others, paid] = await Promise.all([this.othersIn(gift), this.paidByUser(gift._id)]);
+    const members = others.includes(userId) ? others : [...others, userId];
+    // The host's part as [sync] would record it with one more in the group —
+    // the share on record now was worked out for a smaller group, so it is
+    // backed out and the bigger group's put in its place.
+    const hostId = gift.initiatorId.toString();
+    const shareRow = await this.contributionModel
+      .findOne({
+        groupGiftId: gift._id,
+        idempotencyKey: HOST_SHARE_KEY,
+        status: ContributionStatus.CONFIRMED,
+      })
+      .select('amountMinor')
+      .exec();
+    const own = (paid.get(hostId) ?? 0) - (shareRow?.amountMinor ?? 0);
+    const hostPaidMinor = Math.max(own, hostShareOf(gift.targetAmountMinor, members.length + 1));
+    const split = equalSplit({
+      targetMinor: gift.targetAmountMinor,
+      hostId,
+      hostPaidMinor,
+      others: members.map((id) => ({ userId: id, paidMinor: paid.get(id) ?? 0 })),
+    });
+    return split.others.find((m) => m.userId === userId)?.shareMinor ?? null;
   }
 
   /**
@@ -302,7 +339,7 @@ export class GroupGiftShareService {
     if (delta === 0) return false;
 
     const session = await this.connection.startSession();
-    let funded: { collected: number } | null = null;
+    let funded: { collected: number; fundedCount: number } | null = null;
     try {
       await session.withTransaction(async () => {
         funded = null;
@@ -345,13 +382,10 @@ export class GroupGiftShareService {
         // unless they already were, having paid in themselves.
         if (own === 0 && current === 0 && wanted > 0) inc.contributorCount = 1;
         if (own === 0 && current > 0 && wanted === 0) inc.contributorCount = -1;
-        const update: Record<string, unknown> = { $inc: inc };
+        let update: GroupGiftUpdate = { $inc: inc };
         if (collected >= fresh.targetAmountMinor && fresh.targetAmountMinor > 0) {
-          update.$set = { status: GroupGiftStatus.FUNDED };
-          update.$push = {
-            history: { status: GroupGiftStatus.FUNDED, at: now, by: 'system:funded', note: null },
-          };
-          funded = { collected };
+          update = withFunded(update, { at: now, by: 'system:funded' });
+          funded = { collected, fundedCount: (fresh.fundedCount ?? 0) + 1 };
         }
         await this.groupGiftModel.updateOne({ _id: giftId }, update, { session }).exec();
       });
@@ -359,7 +393,7 @@ export class GroupGiftShareService {
       await session.endSession();
     }
 
-    const done = funded as { collected: number } | null;
+    const done = funded as { collected: number; fundedCount: number } | null;
     if (done) {
       this.emitter.emit(GROUP_GIFT_FUNDED, {
         groupGiftId: giftId.toString(),
@@ -370,6 +404,7 @@ export class GroupGiftShareService {
         collectedAmountMinor: done.collected,
         currency: gift.currency,
         contributorCount: 0,
+        fundedCount: done.fundedCount,
       } satisfies GroupGiftFundedEvent);
     }
     return true;
@@ -429,6 +464,92 @@ export class GroupGiftShareService {
   }
 
   /**
+   * "Three days left", "last day": to everybody in an open group who has not
+   * paid — nothing confirmed, nothing marked sent — when the deadline is
+   * within three days, and again within one. Whatever the split: on a custom
+   * gift it says only that time is short. The host gets a count instead.
+   *
+   * Each day's reminder goes out once, recorded on the gift, so a job that
+   * runs daily can run twice without asking twice. Returns how many were sent.
+   */
+  async remindDeadlines(now = new Date()): Promise<number> {
+    const gifts = await this.groupGiftModel
+      .find({ status: GroupGiftStatus.OPEN, deadline: { $gt: now } })
+      .exec();
+    let sent = 0;
+    for (const gift of gifts) {
+      const deadline = gift.deadline!;
+      const daysLeft = Math.ceil((deadline.getTime() - now.getTime()) / 86_400_000);
+      const already = gift.deadlineRemindersSent ?? [];
+      // The nearest reminder that is due and not yet sent; a day-3 reminder
+      // never sent is not sent on the last day on top of the last day's.
+      const day = [1, 3].find((d) => daysLeft <= d && !already.includes(d));
+      if (!day) continue;
+
+      const [others, paidUp, split] = await Promise.all([
+        this.othersIn(gift),
+        this.settledUpUsers(gift._id),
+        this.splitOf(gift),
+      ]);
+      const owes = new Map(split?.others.map((m) => [m.userId, m.owesMinor]) ?? []);
+      const stillToPay = others.filter((id) => !paidUp.has(id) && (owes.get(id) ?? 1) > 0);
+
+      await this.groupGiftModel
+        .updateOne(
+          { _id: gift._id },
+          { $addToSet: { deadlineRemindersSent: { $each: [1, 3].filter((d) => d >= day) } } },
+        )
+        .exec();
+
+      for (const userId of stillToPay) {
+        this.emitter.emit(GROUP_GIFT_DEADLINE_REMINDER_DUE, {
+          groupGiftId: gift._id.toString(),
+          userId,
+          day,
+          owesMinor: split ? (owes.get(userId) ?? null) : null,
+          title: gift.title,
+          deadline,
+          currency: gift.currency,
+          isHost: false,
+        } satisfies GroupGiftDeadlineReminderDueEvent);
+        sent += 1;
+      }
+      if (stillToPay.length > 0) {
+        this.emitter.emit(GROUP_GIFT_DEADLINE_REMINDER_DUE, {
+          groupGiftId: gift._id.toString(),
+          userId: gift.initiatorId.toString(),
+          day,
+          owesMinor: null,
+          title: gift.title,
+          deadline,
+          currency: gift.currency,
+          isHost: true,
+          stillToPay: stillToPay.length,
+        } satisfies GroupGiftDeadlineReminderDueEvent);
+        sent += 1;
+      }
+    }
+    return sent;
+  }
+
+  /**
+   * Everybody who has paid, or says they have: a confirmed contribution, or
+   * a pledge marked as sent. Nobody to chase about the deadline.
+   */
+  async settledUpUsers(giftId: Types.ObjectId): Promise<Set<string>> {
+    const ids = await this.contributionModel
+      .distinct('userId', {
+        groupGiftId: giftId,
+        $or: [
+          { status: ContributionStatus.CONFIRMED },
+          { status: ContributionStatus.PLEDGED, sentAt: { $ne: null } },
+        ],
+      })
+      .exec();
+    return new Set(ids.map((id) => id.toString()));
+  }
+
+  /**
    * One reminder a day to every host with payments still waiting for them to
    * confirm — until they have, since nothing counts until they do.
    */
@@ -436,7 +557,9 @@ export class GroupGiftShareService {
     const day = now.toISOString().slice(0, 10);
     const waiting = await this.contributionModel
       .aggregate<{ _id: Types.ObjectId; count: number; total: number }>([
-        { $match: { status: ContributionStatus.PLEDGED } },
+        // Marked as sent: a pledge nobody has sent yet is nothing the host
+        // can look for, and they are asked about it once it is.
+        { $match: { status: ContributionStatus.PLEDGED, sentAt: { $ne: null } } },
         { $group: { _id: '$groupGiftId', count: { $sum: 1 }, total: { $sum: '$amountMinor' } } },
       ])
       .exec();
@@ -444,7 +567,7 @@ export class GroupGiftShareService {
     const gifts = await this.groupGiftModel
       .find({
         _id: { $in: waiting.map((w) => w._id) },
-        status: { $in: [GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED] },
+        status: { $in: [GroupGiftStatus.OPEN, GroupGiftStatus.CLOSED, GroupGiftStatus.FUNDED] },
       })
       .exec();
     const byId = new Map(waiting.map((w) => [w._id.toString(), w]));

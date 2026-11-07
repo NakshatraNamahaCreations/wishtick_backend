@@ -22,6 +22,7 @@ import {
 } from 'src/modules/notifications/notification.types';
 import { SchedulerRegistry } from 'src/infra/queue/scheduler-registry';
 import { BlogService } from 'src/modules/blog/blog.service';
+import { STORAGE, type IStorageProvider } from 'src/infra/storage/storage.port';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
 const PASSWORD = 'correct-horse-battery-staple';
@@ -1551,7 +1552,7 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
             .post(`${V1}/items/${itemId}/group-gift`)
             .set(auth(host.token))
             .set(idem())
-            .send({ title: 'Payments check', contributionMode: 'custom' })
+            .send({ title: 'Payments check', contributionMode: 'custom', hostUpiId: 'host@okaxis' })
             .expect(201)
         ).body as Envelope<{ id: string }>
       ).data.id;
@@ -1571,7 +1572,7 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
           });
         return String(row!._id);
       };
-      await claimOf(waits, 'UTR111');
+      await claimOf(waits, '111111111111');
       const shortId = await claimOf(short);
       const missingId = await claimOf(missing);
       const paidId = await claimOf(paid);
@@ -1588,7 +1589,7 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       await request(server())
         .post(`${V1}/group-gifts/${gg}/contributions/${missingId}/dispute`)
         .set(auth(missing.token))
-        .send({ paymentRef: 'UTR222', note: 'Sent on Monday' })
+        .send({ paymentRef: '222222222222', note: 'Sent on Monday' })
         .expect(200);
 
       type Payment = {
@@ -1661,7 +1662,7 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       const rows = detail.data.sections.find((s) => s.key === 'contributions')!.items;
       expect(rows.find((r) => r.id === missingId)).toMatchObject({
         payment: 'disputed',
-        paymentRef: 'UTR222',
+        paymentRef: '222222222222',
       });
 
       // Refund only gives back money that arrived.
@@ -1715,7 +1716,11 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
             .post(`${V1}/items/${await itemFor(owner, 300000)}/group-gift`)
             .set(auth(host.token))
             .set(idem())
-            .send({ title: 'Cancelled with a claim', contributionMode: 'custom' })
+            .send({
+              title: 'Cancelled with a claim',
+              contributionMode: 'custom',
+              hostUpiId: 'host@okaxis',
+            })
             .expect(201)
         ).body as Envelope<{ id: string }>
       ).data.id;
@@ -2855,6 +2860,9 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       const url = set.data.meta.imageUrl;
       expect(url).toMatch(/taxonomy\/interest_category\/.+\.webp/);
       expect(await optionsText()).toContain(url);
+      const storage = app.get<IStorageProvider>(STORAGE);
+      const stored = async (u: string) => (await storage.head(storage.keyFromPublicUrl(u)!)).exists;
+      expect(await stored(url)).toBe(true);
 
       // Relabelling keeps the picture.
       await request(server())
@@ -2870,6 +2878,30 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
         .send({ reason: 'Wrong picture' })
         .expect(200);
       expect(await optionsText()).not.toContain(url);
+      // Taken out of storage with it.
+      expect(await stored(url)).toBe(false);
+
+      // A second picture replaces the first, which leaves storage.
+      const pictureUrl = async () =>
+        (
+          (
+            await request(server())
+              .post(path)
+              .set(auth(token))
+              .set('Content-Type', 'image/webp')
+              .send(webp)
+              .expect(200)
+          ).body as Envelope<{ meta: Record<string, string> }>
+        ).data.meta.imageUrl;
+      const first = await pictureUrl();
+      const second = await pictureUrl();
+      expect(await stored(first)).toBe(false);
+      expect(await stored(second)).toBe(true);
+      await request(server())
+        .post(`${path}/remove`)
+        .set(auth(token))
+        .send({ reason: 'Tidy' })
+        .expect(200);
 
       // Colours have no pictures.
       const colour = (
@@ -3207,6 +3239,61 @@ describe('Admin panel, moderation & analytics (e2e)', () => {
       });
       expect(post.coverUrl).toBe(url);
       expect(post.contentHtml).toContain(`<img src="${url}" alt="a gift" />`);
+    });
+
+    it('a picture leaves storage once no post shows it', async () => {
+      const token = await adminToken();
+      const storage = app.get<IStorageProvider>(STORAGE);
+      const stored = async (url: string) =>
+        (await storage.head(storage.keyFromPublicUrl(url)!)).exists;
+      const image = async () =>
+        (
+          (
+            await request(server())
+              .post(`${V1}/admin/blog/images`)
+              .set(auth(token))
+              .set('Content-Type', 'image/webp')
+              .send(webp)
+              .expect(200)
+          ).body as Envelope<{ url: string }>
+        ).data.url;
+      const cover = await image();
+      const inside = await image();
+      const post = await create(token, {
+        title: `Pictures ${seq}`,
+        coverUrl: cover,
+        contentHtml: `<p>Hi</p><img src="${inside}" alt="x">`,
+      });
+      // Another post shows the same cover in its body.
+      const other = await create(token, {
+        title: `Borrowing ${seq}`,
+        contentHtml: `<img src="${cover}" alt="y">`,
+      });
+
+      // Taken out of the body: gone. The cover stays.
+      await request(server())
+        .patch(`${V1}/admin/blog/posts/${post.id}`)
+        .set(auth(token))
+        .send({ contentHtml: '<p>Hi</p>' })
+        .expect(200);
+      expect(await stored(inside)).toBe(false);
+      expect(await stored(cover)).toBe(true);
+
+      // The post deleted: its cover is still in the other post, so it stays...
+      await request(server())
+        .post(`${V1}/admin/blog/posts/${post.id}/remove`)
+        .set(auth(token))
+        .send({ reason: 'Test' })
+        .expect(200);
+      expect(await stored(cover)).toBe(true);
+
+      // ...until that one goes too.
+      await request(server())
+        .post(`${V1}/admin/blog/posts/${other.id}/remove`)
+        .set(auth(token))
+        .send({ reason: 'Test' })
+        .expect(200);
+      expect(await stored(cover)).toBe(false);
     });
 
     it('keeps addresses unique: a chosen one must be free, a made one gets a number', async () => {

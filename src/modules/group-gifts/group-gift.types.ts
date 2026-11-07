@@ -10,6 +10,12 @@
 export enum GroupGiftStatus {
   /** Collecting contributions. The only status that accepts new money. */
   OPEN = 'open',
+  /**
+   * The deadline passed before the target was reached. Nothing more comes
+   * in; the host settles the shortfall, extends the deadline (which reopens
+   * it) or cancels. Left alone for a week, it is cancelled for them.
+   */
+  CLOSED = 'closed',
   /** Target reached; contributions closed. Awaiting purchase. */
   FUNDED = 'funded',
   /** The initiator is buying it (transient). */
@@ -118,7 +124,12 @@ export enum GroupGiftVisibility {
  * The funding state machine, as an allow-list — read by GroupGiftService and
  * nothing else decides a legal move. Mirrors the GIFT_TRANSITIONS pattern.
  *
- *   open       → funded | cancelled | refunding
+ *   open       → funded | closed | cancelled | refunding
+ *                (closed = the deadline passed short of the target)
+ *   closed     → open | funded | cancelled | refunding
+ *                (open = the host extended the deadline; funded = the host
+ *                settled the shortfall; a cancel with money collected goes
+ *                through refunding, as from open)
  *   funded     → open | purchasing | purchased | cancelled | refunding
  *                (open = a payment the host confirmed turned out short)
  *   purchasing → purchased | funded            (funded = purchase aborted)
@@ -128,6 +139,13 @@ export enum GroupGiftVisibility {
  */
 export const GROUP_GIFT_TRANSITIONS: Record<GroupGiftStatus, GroupGiftStatus[]> = {
   [GroupGiftStatus.OPEN]: [
+    GroupGiftStatus.FUNDED,
+    GroupGiftStatus.CLOSED,
+    GroupGiftStatus.CANCELLED,
+    GroupGiftStatus.REFUNDING,
+  ],
+  [GroupGiftStatus.CLOSED]: [
+    GroupGiftStatus.OPEN,
     GroupGiftStatus.FUNDED,
     GroupGiftStatus.CANCELLED,
     GroupGiftStatus.REFUNDING,
@@ -168,3 +186,15 @@ export const CLOSED_GROUP_GIFT_STATUSES: GroupGiftStatus[] = [
 
 /** Statuses in which the group gift still accepts new contributions. */
 export const CONTRIBUTABLE_GROUP_GIFT_STATUSES: GroupGiftStatus[] = [GroupGiftStatus.OPEN];
+
+/**
+ * Statuses in which the host still has a decision to make about the money:
+ * settle the shortfall, move the deadline, chase the group, or call it off.
+ *
+ * Open and closed only. A funded gift has nothing left to decide about the
+ * collection, and anything past that is about the item, not the money.
+ */
+export const DECIDABLE_GROUP_GIFT_STATUSES: GroupGiftStatus[] = [
+  GroupGiftStatus.OPEN,
+  GroupGiftStatus.CLOSED,
+];

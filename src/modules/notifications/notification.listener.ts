@@ -17,9 +17,15 @@ import {
   GIFT_FULFILLED,
   GIFT_PURCHASED,
   GIFT_RESERVED,
+  GROUP_GIFT_BUY_REMINDER_DUE,
   GROUP_GIFT_CANCELLED,
   GROUP_GIFT_CHARGE_ADDED,
+  GROUP_GIFT_CLOSE_REMINDER_DUE,
+  GROUP_GIFT_CLOSED,
   GROUP_GIFT_CONFIRM_REMINDER_DUE,
+  GROUP_GIFT_CONTRIBUTION_WITHDRAWN,
+  GROUP_GIFT_DEADLINE_REMINDER_DUE,
+  GROUP_GIFT_NUDGED,
   GROUP_GIFT_SETTLED,
   GROUP_GIFT_PRICE_CHANGED,
   GROUP_GIFT_PRICE_UPDATED,
@@ -33,12 +39,20 @@ import {
   GROUP_GIFT_SHARE_REMINDER_DUE,
   GROUP_GIFT_JOINED,
   GROUP_GIFT_PURCHASED,
+  GROUP_GIFT_THANK_YOU_PROMPT_DUE,
+  GROUP_GIFT_THANK_YOU_SET,
+  GROUP_GIFT_UNSENT_PLEDGE_DUE,
+  GROUP_GIFT_UPDATED,
   MEMORY_REPLY_SENT,
   MEMORY_SHARED,
   MEMORY_UNLOCKED,
   MEMORY_WISH_INVITED,
   MEMORY_WISH_LOVED,
   REEL_RELEASED,
+  SETTLEMENT_CONFIRMED,
+  SETTLEMENT_RAISED,
+  SETTLEMENT_SENT,
+  SETTLEMENT_UPI_SHARED,
   USER_REGISTERED,
   WISHMATE_ACCEPTED,
   WISHMATE_REQUESTED,
@@ -53,9 +67,15 @@ import {
   type EventWishlistAnsweredEvent,
   type EventWishlistOfferedEvent,
   type GiftLifecycleEvent,
+  type GroupGiftBuyReminderDueEvent,
   type GroupGiftCancelledEvent,
   type GroupGiftChargeAddedEvent,
+  type GroupGiftCloseReminderDueEvent,
+  type GroupGiftClosedEvent,
   type GroupGiftConfirmReminderDueEvent,
+  type GroupGiftContributionWithdrawnEvent,
+  type GroupGiftDeadlineReminderDueEvent,
+  type GroupGiftNudgedEvent,
   type GroupGiftSettledEvent,
   type GroupGiftPriceChangedEvent,
   type GroupGiftPriceUpdatedEvent,
@@ -69,12 +89,21 @@ import {
   type GroupGiftShareReminderDueEvent,
   type GroupGiftJoinedEvent,
   type GroupGiftPurchasedEvent,
+  type GroupGiftThankYouPromptDueEvent,
+  type GroupGiftThankYouSetEvent,
+  type GroupGiftUnsentPledgeDueEvent,
+  type GroupGiftUpdatedEvent,
   type MemoryReplySentEvent,
   type MemorySharedEvent,
   type MemoryUnlockedEvent,
   type MemoryWishInvitedEvent,
   type MemoryWishLovedEvent,
   type ReelReleasedEvent,
+  type SettlementConfirmedEvent,
+  type SettlementRaisedEvent,
+  type SettlementRowEvent,
+  type SettlementSentEvent,
+  type SettlementUpiSharedEvent,
   type UserRegisteredEvent,
   type WishmateAcceptedEvent,
   type WishmateRequestedEvent,
@@ -113,6 +142,18 @@ import { ThankYouService } from './thank-you.service';
 
 /** How much of a message a notification shows before trailing off. */
 const PREVIEW_LIMIT = 140;
+
+/**
+ * A group gift's deadline as its copy says it — "24 Oct".
+ *
+ * The day alone: a deadline is picked from a calendar, and the instant it
+ * lands on is whatever midnight the picker chose. India's clock, since a
+ * group gift carries no zone of its own and that is where the groups are.
+ */
+export const deadlineText = (at: Date): string =>
+  new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short' })
+    .format(at)
+    .replace(/,/g, '');
 
 /**
  * The line a notification shows under the sender's name.
@@ -212,7 +253,10 @@ export class NotificationListener {
         await this.notifications.enqueue({
           userId,
           type: NotificationType.GROUP_GIFT_FUNDED,
-          refId: e.groupGiftId,
+          // Which funding: a gift can fall short again and be funded a
+          // second time, and keyed on the gift alone the second would be
+          // dropped as a repeat of the first.
+          refId: `${e.groupGiftId}:${e.fundedCount}`,
           payload: {
             itemTitle,
             targetAmountMinor: e.targetAmountMinor,
@@ -243,6 +287,7 @@ export class NotificationListener {
           amountMinor: e.amountMinor,
           collectedAmountMinor: e.collectedAmountMinor,
           targetAmountMinor: e.targetAmountMinor,
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
         },
       });
     });
@@ -268,6 +313,7 @@ export class NotificationListener {
           shareMinor: e.shareMinor,
           paidMinor: e.paidMinor,
           currency: e.currency,
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
         },
       });
     });
@@ -486,14 +532,19 @@ export class NotificationListener {
       await this.notifications.enqueue({
         userId: e.invitedUserId,
         type: NotificationType.GROUP_GIFT_INVITE,
-        // Keyed on the pair, so two members asking the same friend produces
-        // one notification rather than two.
-        refId: `${e.groupGiftId}:${e.invitedUserId}`,
+        // The gift first, as every group-gift refId; then the invitation,
+        // which is what the app opens. Not the person: somebody who declined
+        // and is asked again has the same row reset in place, and keyed on
+        // the pair the second ask would be dropped as a repeat of the first.
+        refId: `${e.groupGiftId}:${e.inviteId}`,
         payload: {
           itemTitle: await this.itemTitle(gg.itemId.toString()),
           inviterName: await this.userName(e.invitedById),
           shareMinor: e.shareMinor ?? null,
           currency: gg.currency,
+          // Routed into the push's data too — see NotificationService.routingData.
+          inviteId: e.inviteId,
+          url: `${this.web}/group-gifts/invites/${e.inviteId}`,
         },
       });
     });
@@ -839,6 +890,7 @@ export class NotificationListener {
         payload: {
           itemTitle: await this.itemTitle(gg.itemId.toString()),
           joinerName: await this.userName(e.userId),
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
         },
       });
     });
@@ -849,9 +901,318 @@ export class NotificationListener {
     await this.notifyMembers(e.groupGiftId, e.itemId, NotificationType.GROUP_GIFT_PURCHASED);
   }
 
+  /**
+   * Delivered: the group is told, and so — separately, and for the first
+   * time — is the person it was for. Not when that person is a name off
+   * Wishtick (nobody to tell), nor when the host made it for themselves
+   * (they just pressed the button).
+   */
   @OnEvent(GROUP_GIFT_FULFILLED)
   async onGroupFulfilled(e: GroupGiftFulfilledEvent): Promise<void> {
     await this.notifyMembers(e.groupGiftId, e.itemId, NotificationType.GROUP_GIFT_FULFILLED);
+    if (e.forName || e.recipientId === e.hostId) return;
+    await this.guard('group-gift-delivered-recipient', async () => {
+      await this.notifications.enqueue({
+        userId: e.recipientId,
+        type: NotificationType.GROUP_GIFT_DELIVERED_RECIPIENT,
+        refId: e.groupGiftId,
+        payload: {
+          itemTitle: await this.itemTitle(e.itemId),
+          hostName: await this.userName(e.hostId),
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
+        },
+      });
+    });
+  }
+
+  // ── The collection's deadline, and what the host does about it ──────────────
+
+  /** Closed short of the goal: the host is asked to decide, the members told. */
+  @OnEvent(GROUP_GIFT_CLOSED)
+  async onGroupGiftClosed(e: GroupGiftClosedEvent): Promise<void> {
+    await this.guard('group-gift-closed', async () => {
+      const hostName = await this.userName(e.hostId);
+      // When it closed, in the ref: a gift reopened by a new deadline can
+      // close again, and that is news again.
+      const refId = `${e.groupGiftId}:${e.closedAt.toISOString()}`;
+      const common = {
+        title: e.title,
+        hostName,
+        shortMinor: e.shortMinor,
+        deadlineText: e.deadline ? deadlineText(e.deadline) : null,
+        currency: e.currency,
+        url: `${this.web}/group-gifts/${e.groupGiftId}`,
+      };
+      await this.notifications.enqueue({
+        userId: e.hostId,
+        type: NotificationType.GROUP_GIFT_CLOSED,
+        refId,
+        payload: { ...common, isHost: true },
+      });
+      for (const userId of e.memberIds) {
+        await this.notifications.enqueue({
+          userId,
+          type: NotificationType.GROUP_GIFT_CLOSED,
+          refId,
+          payload: { ...common, isHost: false },
+        });
+      }
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_CLOSE_REMINDER_DUE)
+  async onCloseReminderDue(e: GroupGiftCloseReminderDueEvent): Promise<void> {
+    await this.guard('group-gift-close-reminder', async () => {
+      await this.notifications.enqueue({
+        userId: e.hostId,
+        type: NotificationType.GROUP_GIFT_CLOSE_REMINDER,
+        // The day in the ref: day 3's and day 6's are two reminders.
+        refId: `${e.groupGiftId}:${e.day}`,
+        payload: {
+          title: e.title,
+          day: e.day,
+          shortMinor: e.shortMinor,
+          currency: e.currency,
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
+        },
+      });
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_DEADLINE_REMINDER_DUE)
+  async onDeadlineReminderDue(e: GroupGiftDeadlineReminderDueEvent): Promise<void> {
+    await this.guard('group-gift-deadline-reminder', async () => {
+      await this.notifications.enqueue({
+        userId: e.userId,
+        type: NotificationType.GROUP_GIFT_DEADLINE_REMINDER,
+        // The person and the day: three days out and one day out are two
+        // reminders, and the host's summary is not a member's.
+        refId: `${e.groupGiftId}:${e.userId}:${e.day}`,
+        payload: {
+          title: e.title,
+          day: e.day,
+          isHost: e.isHost,
+          stillToPay: e.stillToPay ?? null,
+          owesMinor: e.owesMinor,
+          deadlineText: deadlineText(e.deadline),
+          currency: e.currency,
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
+        },
+      });
+    });
+  }
+
+  /**
+   * The host changed the details. A new deadline is everybody's news; a new
+   * UPI ID is news only to somebody with a pledge still to send to it.
+   */
+  @OnEvent(GROUP_GIFT_UPDATED)
+  async onGroupGiftUpdated(e: GroupGiftUpdatedEvent): Promise<void> {
+    await this.guard('group-gift-updated', async () => {
+      const hostName = await this.userName(e.hostId);
+      const url = `${this.web}/group-gifts/${e.groupGiftId}`;
+      if (e.changed.includes('deadline') && e.deadline) {
+        const deadline = e.deadline;
+        for (const userId of e.memberIds) {
+          await this.notifications.enqueue({
+            userId,
+            type: NotificationType.GROUP_GIFT_DEADLINE_EXTENDED,
+            // The new date in the ref: moved twice is two notices.
+            refId: `${e.groupGiftId}:${deadline.toISOString()}`,
+            payload: {
+              title: e.title,
+              hostName,
+              deadlineText: deadlineText(deadline),
+              reopened: e.reopened,
+              url,
+            },
+          });
+        }
+      }
+      if (e.changed.includes('hostUpiId') && e.hostUpiId) {
+        for (const userId of e.upiChangedUserIds) {
+          await this.notifications.enqueue({
+            userId,
+            type: NotificationType.GROUP_GIFT_UPI_CHANGED,
+            refId: `${e.groupGiftId}:${userId}:${e.updatedAt.toISOString()}`,
+            payload: { title: e.title, hostName, hostUpiId: e.hostUpiId, url },
+          });
+        }
+      }
+    });
+  }
+
+  // ── Money that was promised and has not moved ───────────────────────────────
+
+  @OnEvent(GROUP_GIFT_UNSENT_PLEDGE_DUE)
+  async onUnsentPledgeDue(e: GroupGiftUnsentPledgeDueEvent): Promise<void> {
+    await this.guard('group-gift-unsent-pledge', async () => {
+      await this.notifications.enqueue({
+        userId: e.contributorId,
+        type: NotificationType.GROUP_GIFT_UNSENT_PLEDGE,
+        // One chase per pledge.
+        refId: `${e.groupGiftId}:${e.contributionId}`,
+        payload: {
+          title: e.title,
+          hostName: await this.userName(e.hostId),
+          amountMinor: e.amountMinor,
+          hostUpiId: e.hostUpiId,
+          currency: e.currency,
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
+        },
+      });
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_BUY_REMINDER_DUE)
+  async onBuyReminderDue(e: GroupGiftBuyReminderDueEvent): Promise<void> {
+    await this.guard('group-gift-buy-reminder', async () => {
+      await this.notifications.enqueue({
+        userId: e.hostId,
+        type: NotificationType.GROUP_GIFT_BUY_REMINDER,
+        // One per funding, as the funding notice itself is.
+        refId: `${e.groupGiftId}:${e.fundedCount}`,
+        payload: {
+          title: e.title,
+          collectedAmountMinor: e.collectedAmountMinor,
+          currency: e.currency,
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
+        },
+      });
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_NUDGED)
+  async onNudged(e: GroupGiftNudgedEvent): Promise<void> {
+    await this.guard('group-gift-nudge', async () => {
+      const hostName = await this.userName(e.hostId);
+      for (const member of e.members) {
+        await this.notifications.enqueue({
+          userId: member.userId,
+          type: NotificationType.GROUP_GIFT_NUDGE,
+          // When: a host may nudge again tomorrow, and that one is new.
+          refId: `${e.groupGiftId}:${member.userId}:${e.nudgedAt.toISOString()}`,
+          payload: {
+            title: e.title,
+            hostName,
+            owesMinor: member.owesMinor,
+            deadlineText: e.deadline ? deadlineText(e.deadline) : null,
+            currency: e.currency,
+            url: `${this.web}/group-gifts/${e.groupGiftId}`,
+          },
+        });
+      }
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_CONTRIBUTION_WITHDRAWN)
+  async onContributionWithdrawn(e: GroupGiftContributionWithdrawnEvent): Promise<void> {
+    await this.guard('group-gift-withdrawn', async () => {
+      await this.notifications.enqueue({
+        userId: e.hostId,
+        type: NotificationType.GROUP_GIFT_WITHDRAWN,
+        refId: `${e.groupGiftId}:${e.contributionId}`,
+        payload: {
+          title: e.title,
+          contributorName: await this.userName(e.contributorId),
+          amountMinor: e.amountMinor,
+          paymentRef: e.paymentRef,
+          currency: e.currency,
+          url: `${this.web}/group-gifts/${e.groupGiftId}`,
+        },
+      });
+    });
+  }
+
+  // ── After delivery ──────────────────────────────────────────────────────────
+
+  @OnEvent(GROUP_GIFT_THANK_YOU_SET)
+  async onThankYouSet(e: GroupGiftThankYouSetEvent): Promise<void> {
+    await this.guard('group-gift-thank-you', async () => {
+      const recipientName = await this.userName(e.recipientId);
+      for (const userId of new Set(e.contributorIds)) {
+        await this.notifications.enqueue({
+          userId,
+          type: NotificationType.GROUP_GIFT_THANK_YOU,
+          // When it was written: a note rewritten is a note to read again.
+          refId: `${e.groupGiftId}:${e.thankYouAt.toISOString()}`,
+          payload: {
+            title: e.title,
+            recipientName,
+            note: e.note,
+            url: `${this.web}/group-gifts/${e.groupGiftId}/thank-you`,
+          },
+        });
+      }
+    });
+  }
+
+  @OnEvent(GROUP_GIFT_THANK_YOU_PROMPT_DUE)
+  async onThankYouPromptDue(e: GroupGiftThankYouPromptDueEvent): Promise<void> {
+    await this.guard('group-gift-thank-you-prompt', async () => {
+      await this.notifications.enqueue({
+        userId: e.recipientId,
+        type: NotificationType.GROUP_GIFT_THANK_YOU_PROMPT,
+        // Once: a gift is delivered once.
+        refId: e.groupGiftId,
+        payload: { title: e.title, url: `${this.web}/group-gifts/${e.groupGiftId}/thank-you` },
+      });
+    });
+  }
+
+  // ── Settling up ─────────────────────────────────────────────────────────────
+
+  /** A balance raised, to whoever pays it. */
+  @OnEvent(SETTLEMENT_RAISED)
+  async onSettlementRaised(e: SettlementRaisedEvent): Promise<void> {
+    await this.guard('settlement-raised', async () => {
+      await this.notifications.enqueue({
+        userId: e.payerId,
+        type: NotificationType.SETTLEMENT_RAISED,
+        refId: `${e.groupGiftId}:${e.settlementId}`,
+        payload: { ...(await this.settlementPayload(e, e.receiverId)), note: e.note },
+      });
+    });
+  }
+
+  /** The receiver's UPI ID, to the payer. */
+  @OnEvent(SETTLEMENT_UPI_SHARED)
+  async onSettlementUpiShared(e: SettlementUpiSharedEvent): Promise<void> {
+    await this.guard('settlement-upi-shared', async () => {
+      await this.notifications.enqueue({
+        userId: e.payerId,
+        type: NotificationType.SETTLEMENT_UPI_SHARED,
+        // The ID in the ref: a corrected one is worth saying again.
+        refId: `${e.groupGiftId}:${e.settlementId}:${e.upiId}`,
+        payload: { ...(await this.settlementPayload(e, e.receiverId)), upiId: e.upiId },
+      });
+    });
+  }
+
+  /** The payer says it went, to the receiver — who is asked to confirm. */
+  @OnEvent(SETTLEMENT_SENT)
+  async onSettlementSent(e: SettlementSentEvent): Promise<void> {
+    await this.guard('settlement-sent', async () => {
+      await this.notifications.enqueue({
+        userId: e.receiverId,
+        type: NotificationType.SETTLEMENT_SENT,
+        refId: `${e.groupGiftId}:${e.settlementId}:${e.sentAt.toISOString()}`,
+        payload: await this.settlementPayload(e, e.payerId),
+      });
+    });
+  }
+
+  /** The receiver says it landed, to the payer. Terminal, so keyed once. */
+  @OnEvent(SETTLEMENT_CONFIRMED)
+  async onSettlementConfirmed(e: SettlementConfirmedEvent): Promise<void> {
+    await this.guard('settlement-confirmed', async () => {
+      await this.notifications.enqueue({
+        userId: e.payerId,
+        type: NotificationType.SETTLEMENT_CONFIRMED,
+        refId: `${e.groupGiftId}:${e.settlementId}:done`,
+        payload: await this.settlementPayload(e, e.receiverId),
+      });
+    });
   }
 
   @OnEvent(EVENT_REMINDER_DUE)
@@ -1063,13 +1424,36 @@ export class NotificationListener {
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
 
+  /**
+   * What every settlement notification says about its row, with the person
+   * on the other side named: the receiver to a payer, the payer to a receiver.
+   */
+  private async settlementPayload(
+    e: SettlementRowEvent,
+    otherId: string,
+  ): Promise<Record<string, unknown>> {
+    return {
+      title: e.title,
+      direction: e.direction,
+      otherName: await this.userName(otherId),
+      amountMinor: e.amountMinor,
+      currency: e.currency,
+      url: `${this.web}/group-gifts/${e.groupGiftId}/settle`,
+    };
+  }
+
+  /**
+   * Bought, or delivered: to the group, minus the person it is for. They
+   * hear of the delivery on their own terms — see [onGroupFulfilled] — and
+   * of the purchase not at all, since the gift is still on its way to them.
+   */
   private async notifyMembers(
     groupGiftId: string,
     itemId: string,
     type: NotificationType,
   ): Promise<void> {
     await this.guard(type, async () => {
-      const members = await this.members(groupGiftId);
+      const members = await this.members(groupGiftId, { withoutRecipient: true });
       const itemTitle = await this.itemTitle(itemId);
       for (const userId of members) {
         await this.notifications.enqueue({
@@ -1082,11 +1466,21 @@ export class NotificationListener {
     });
   }
 
-  private async members(groupGiftId: string): Promise<string[]> {
+  /**
+   * The host and the named members. [withoutRecipient] drops the person the
+   * gift is for — unless that is the host, who made it for themselves and is
+   * not kept from anything.
+   */
+  private async members(
+    groupGiftId: string,
+    opts: { withoutRecipient?: boolean } = {},
+  ): Promise<string[]> {
     const gg = await this.groupGiftModel.findById(groupGiftId).exec();
     if (!gg) return [];
     const ids = new Set<string>([gg.initiatorId.toString()]);
     for (const p of gg.participantIds) ids.add(p.toString());
+    const recipient = gg.recipientId.toString();
+    if (opts.withoutRecipient && recipient !== gg.initiatorId.toString()) ids.delete(recipient);
     return [...ids];
   }
 

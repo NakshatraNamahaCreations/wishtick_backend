@@ -43,6 +43,13 @@ export class Contribution {
   @Prop({ type: Number, default: null })
   claimedMinor!: number | null;
 
+  /**
+   * When the contributor said "I've sent it". Null while the share is only
+   * promised — the host is not asked whether money arrived until it is set.
+   */
+  @Prop({ type: Date, default: null })
+  sentAt!: Date | null;
+
   /** When the host last said what arrived. Null while awaiting them. */
   @Prop({ type: Date, default: null })
   reviewedAt!: Date | null;
@@ -79,7 +86,9 @@ export class Contribution {
 
   /**
    * The UPI transaction ID the contributor gave, so the host can match the
-   * payment in their bank app. Optional.
+   * payment in their bank app. Optional; twelve digits when given (see
+   * is-payment-ref.validator.ts), and no two payments on one gift may carry
+   * the same one — the partial unique index below is what holds that.
    */
   @Prop({ type: String, default: null, trim: true, maxlength: 64 })
   paymentRef!: string | null;
@@ -104,3 +113,10 @@ ContributionSchema.index({ groupGiftId: 1, status: 1 });
 ContributionSchema.index({ groupGiftId: 1, userId: 1 });
 // A user's own contribution history.
 ContributionSchema.index({ userId: 1, createdAt: -1 });
+// One transaction ID proves one payment: the same ref twice on one gift is a
+// retry or a lie, and either way the host would count it twice. Partial so
+// the many rows with no ref do not collide with each other.
+ContributionSchema.index(
+  { groupGiftId: 1, paymentRef: 1 },
+  { unique: true, partialFilterExpression: { paymentRef: { $type: 'string' } } },
+);

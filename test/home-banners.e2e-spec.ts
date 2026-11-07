@@ -3,6 +3,7 @@ import type { Server } from 'node:http';
 import type { INestApplication } from '@nestjs/common';
 import { getConnectionToken } from '@nestjs/mongoose';
 import type { Connection } from 'mongoose';
+import { STORAGE, type IStorageProvider } from 'src/infra/storage/storage.port';
 import { AuthService } from 'src/modules/auth/auth.service';
 import { createTestApp, V1, type TestApp } from './utils/test-app';
 
@@ -285,5 +286,60 @@ describe('Home banners (e2e)', () => {
     await request(server()).get(`${V1}/home/banners`).expect(401);
     const user = await userToken();
     await request(server()).get(`${V1}/admin/banners`).set(auth(user)).expect(401);
+  });
+
+  /** Whether the picture behind [url] is still in storage. */
+  const stored = async (url: string): Promise<boolean> => {
+    const storage = app.get<IStorageProvider>(STORAGE);
+    const key = storage.keyFromPublicUrl(url);
+    expect(key).not.toBeNull();
+    return (await storage.head(key!)).exists;
+  };
+
+  describe('pictures leave storage with their banner', () => {
+    it('deleting a banner deletes its picture', async () => {
+      const admin = await root();
+      const banner = await create(admin, { placement: 'special_offers', title: 'Gone soon' });
+      expect(await stored(banner.imageUrl)).toBe(true);
+
+      await request(server())
+        .post(`${V1}/admin/banners/${banner.id}/remove`)
+        .set(auth(admin))
+        .expect(200);
+
+      expect(await stored(banner.imageUrl)).toBe(false);
+    });
+
+    it('a new picture deletes the one it replaces', async () => {
+      const admin = await root();
+      const banner = await create(admin, { placement: 'special_offers', title: 'Swapped' });
+      const next = await upload(admin);
+
+      await request(server())
+        .patch(`${V1}/admin/banners/${banner.id}`)
+        .set(auth(admin))
+        .send({ imageUrl: next })
+        .expect(200);
+
+      expect(await stored(banner.imageUrl)).toBe(false);
+      expect(await stored(next)).toBe(true);
+    });
+
+    it('a picture another banner still shows is kept', async () => {
+      const admin = await root();
+      const first = await create(admin, { placement: 'special_offers', title: 'First' });
+      await create(admin, {
+        placement: 'exclusive_offers',
+        title: 'Same picture',
+        imageUrl: first.imageUrl,
+      });
+
+      await request(server())
+        .post(`${V1}/admin/banners/${first.id}/remove`)
+        .set(auth(admin))
+        .expect(200);
+
+      expect(await stored(first.imageUrl)).toBe(true);
+    });
   });
 });

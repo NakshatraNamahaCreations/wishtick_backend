@@ -21,6 +21,7 @@ import { SearchPrewarmService } from './search-prewarm.service';
 import { FixtureProductProvider } from './providers/fixture-provider';
 import { PRODUCT_PROVIDER, type IProductProvider } from './providers/product-provider.port';
 import { ProviderGuard } from './providers/provider-guard.service';
+import { SearchApiClient } from './providers/searchapi/searchapi.client';
 import { SerpApiClient } from './providers/serpapi/serpapi.client';
 import { SerpApiProductProvider } from './providers/serpapi/serpapi-provider';
 import { GiftLinkController, RedirectController } from './redirect.controller';
@@ -77,6 +78,7 @@ const logger = new Logger('ProductsModule');
     ProviderGuard,
     SsrfGuard,
     FixtureProductProvider,
+    SearchApiClient,
     SerpApiClient,
     SerpApiProductProvider,
     CuelinksClient,
@@ -104,7 +106,10 @@ const logger = new Logger('ProductsModule');
         }
 
         const network = config.get('affiliate.network', { infer: true });
-        logger.log(`Product provider: ${driver}; affiliate network: ${network}`);
+        const vendor = config.get('products.searchVendor', { infer: true });
+        logger.log(
+          `Product provider: ${driver}${driver === 'serpapi' ? ` via ${vendor}` : ''}; affiliate network: ${network}`,
+        );
         // A real catalogue with no network is a supported state — every click
         // simply goes to the merchant unmonetized — but it is worth saying out
         // loud, because "we shipped and earned nothing" is a silent failure.

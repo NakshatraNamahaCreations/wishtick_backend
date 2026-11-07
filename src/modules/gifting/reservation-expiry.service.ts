@@ -6,7 +6,7 @@ import { LockService } from 'src/infra/redis/lock.service';
 import { ReservationWindowService } from 'src/modules/wishlists/reservation-window.service';
 import { WishlistsService } from 'src/modules/wishlists/wishlists.service';
 import { GiftStatusService } from './gift-status.service';
-import { GiftStatus } from './gift.types';
+import { GiftStatus, GiftType } from './gift.types';
 import { Gift, type GiftDocument } from './schemas/gift.schema';
 
 /** Emitted when a reservation lapses. Sprint 9 turns it into a notification. */
@@ -123,13 +123,22 @@ export class ReservationExpiryService {
    * Only reserved gifts are touched. A purchase is a commitment and stands
    * whatever the clock says — the point is to free what nobody bought, so the
    * recipient still has something to open.
+   *
+   * A group gift's holder is never touched either. It is a reservation only in
+   * shape: the group's own lifecycle (deadline sweep, settle, cancel) decides
+   * when the item is let go, and releasing it from here would free an item
+   * that friends have already paid towards.
    */
   async releasePastEventCutoff(limit = 200): Promise<number> {
     const wishlistIds = await this.windows.wishlistIdsPastCutoff();
     if (wishlistIds.length === 0) return 0;
 
     const held = await this.giftModel
-      .find({ status: GiftStatus.RESERVED, wishlistId: { $in: wishlistIds } })
+      .find({
+        status: GiftStatus.RESERVED,
+        type: { $ne: GiftType.GROUP },
+        wishlistId: { $in: wishlistIds },
+      })
       .limit(limit)
       .exec();
 

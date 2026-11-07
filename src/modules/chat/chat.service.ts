@@ -14,11 +14,13 @@ import {
   type ContentFlaggedEvent,
 } from 'src/common/events/domain-events';
 import { CacheService } from 'src/infra/redis/cache.service';
-import { GroupGiftVisibility } from 'src/modules/group-gifts/group-gift.types';
+import { Event, type EventDocument } from 'src/modules/events/schemas/event.schema';
+import { GroupGiftStatus, GroupGiftVisibility } from 'src/modules/group-gifts/group-gift.types';
 import {
   GroupGift,
   type GroupGiftDocument,
 } from 'src/modules/group-gifts/schemas/group-gift.schema';
+import { surpriseIsOver } from 'src/modules/group-gifts/surprise';
 import { AccessPolicyService } from 'src/modules/wishlists/access/access-policy.service';
 import { WishlistsService } from 'src/modules/wishlists/wishlists.service';
 import { Wishlist, type WishlistDocument } from 'src/modules/wishlists/schemas/wishlist.schema';
@@ -53,6 +55,28 @@ const RATE_MAX_MESSAGES = 20;
 /** A tiny illustrative denylist. Real moderation is Sprint 11; this is the hook. */
 const FLAGGED_WORDS = ['badword'];
 
+/**
+ * Group gifts whose chat is closed to new messages. Called off, being
+ * refunded, or delivered: there is nothing left to coordinate, and the
+ * history stays readable as a record of what the group did.
+ */
+const ENDED_GROUP_GIFT_STATUSES: GroupGiftStatus[] = [
+  GroupGiftStatus.CANCELLED,
+  GroupGiftStatus.REFUNDING,
+  GroupGiftStatus.FULFILLED,
+];
+
+/** What the composer says when a group gift's chat is closed to its reader. */
+const ENDED_REASON = 'This group gift has ended';
+const NOT_A_MEMBER_REASON = 'Only members can post';
+
+/** What the chat list needs of a wishlist or group gift to draw its row. */
+interface ChatSubject {
+  title: string;
+  /** Why the reader cannot post, or null — see [ChatView.readOnlyReason]. */
+  readOnlyReason: string | null;
+}
+
 interface AuthorizedChat {
   chat: ChatDocument;
   /**
@@ -73,6 +97,8 @@ export class ChatService {
     // Read-only, for group-gift chat authorization. The chat module does NOT
     // import the group-gift module (that would be a cycle) — it reads the doc.
     @InjectModel(GroupGift.name) private readonly groupGiftModel: Model<GroupGiftDocument>,
+    // Read-only, for whether a group gift's surprise is over — see [authorize].
+    @InjectModel(Event.name) private readonly eventModel: Model<EventDocument>,
     // Read-only, for a wishlist chat's title — see [titlesOf].
     @InjectModel(Wishlist.name) private readonly wishlistModel: Model<WishlistDocument>,
     private readonly wishlists: WishlistsService,
@@ -196,7 +222,12 @@ export class ChatService {
    * The one place chat access is decided. A wishlist chat defers to
    * AccessPolicyService (canView to read, canComment to post); a group-gift chat
    * defers to the gift's participation, with the recipient excluded whenever the
-   * gift is a surprise — the same masking the group-gift endpoint applies.
+   * gift is a surprise — the same masking the group-gift endpoint applies —
+   * until the surprise is over, when they may read it (never post: the
+   * group's chat is the group's) and see who gave what.
+   *
+   * Posting is also refused once the gift has ended, however it ended: a
+   * delivered gift's chat is a record, a cancelled one's is a wake.
    */
   async authorize(
     chatId: string,
@@ -243,14 +274,19 @@ export class ChatService {
     const gg = await this.groupGiftModel.findById(chat.refId).exec();
     if (!gg) throw new AppException(ErrorCode.CHAT_NOT_FOUND, 'Chat not found', 404);
     const hidden = gg.visibility === GroupGiftVisibility.HIDDEN_FROM_OWNER;
-    // The recipient must never discover a surprise through its chat.
-    if (gg.recipientId.toString() === userId && hidden) {
+    const isRecipient = gg.recipientId.toString() === userId;
+    // The recipient must never discover a surprise through its chat — until
+    // there is no surprise left: the party is over, or the gift is in their
+    // hands. Then the chat is how they learn who chipped in.
+    const revealed = isRecipient && hidden && (await this.surpriseIsOver(gg));
+    if (isRecipient && hidden && !revealed) {
       throw new AppException(ErrorCode.CHAT_NOT_FOUND, 'Chat not found', 404);
     }
-    const isMember =
-      gg.initiatorId.toString() === userId ||
-      gg.participantIds.some((id) => id.toString() === userId);
+    const isMember = ChatService.isGroupMember(gg, userId);
     if (opts.forPost) {
+      if (ENDED_GROUP_GIFT_STATUSES.includes(gg.status)) {
+        throw new AppException(ErrorCode.CANNOT_POST_IN_CHAT, ENDED_REASON, 403);
+      }
       if (!isMember) {
         throw new AppException(
           ErrorCode.CANNOT_POST_IN_CHAT,
@@ -258,13 +294,48 @@ export class ChatService {
           403,
         );
       }
-    } else if (!isMember) {
+    } else if (!isMember && !revealed) {
       // A non-member may read a visible group gift's chat if they can see the list.
       if (hidden) throw new AppException(ErrorCode.CHAT_NOT_FOUND, 'Chat not found', 404);
       const wishlist = await this.wishlists.findOrFail(gg.wishlistId.toString());
       await this.access.assertCanView(wishlist, { userId });
     }
     return { chat, ownerId: gg.recipientId.toString() };
+  }
+
+  /** The host, or anyone named in the group. */
+  private static isGroupMember(
+    gg: Pick<GroupGiftDocument, 'initiatorId' | 'participantIds'>,
+    userId: string,
+  ): boolean {
+    return (
+      gg.initiatorId.toString() === userId ||
+      gg.participantIds.some((id) => id.toString() === userId)
+    );
+  }
+
+  /**
+   * Why [userId] cannot post in a group gift's chat, or null when they can —
+   * the same two refusals [authorize] makes, as words for the composer.
+   */
+  private static groupReadOnlyReason(
+    gg: Pick<GroupGiftDocument, 'status' | 'initiatorId' | 'participantIds'>,
+    userId: string,
+  ): string | null {
+    if (ENDED_GROUP_GIFT_STATUSES.includes(gg.status)) return ENDED_REASON;
+    if (!ChatService.isGroupMember(gg, userId)) return NOT_A_MEMBER_REASON;
+    return null;
+  }
+
+  /**
+   * Whether the surprise a group gift was is over — see [surpriseIsOver].
+   * The rule is the group-gift service's; this only fetches the event for it.
+   */
+  private async surpriseIsOver(gg: GroupGiftDocument): Promise<boolean> {
+    const event = gg.eventId
+      ? await this.eventModel.findById(gg.eventId).select('startsAt endsAt status').exec()
+      : null;
+    return surpriseIsOver(gg, event);
   }
 
   // ── Posting ─────────────────────────────────────────────────────────────────
@@ -655,14 +726,14 @@ export class ChatService {
     // Both decorations are batched across the whole page: the chat list is the
     // one screen that asks for every thread at once, and a per-row lookup would
     // make it two hundred round trips for two hundred names.
-    const [previews, counterparts, cleared, titles] = await Promise.all([
+    const [previews, counterparts, cleared, subjects] = await Promise.all([
       this.lastMessagesOf(chats, userId),
       this.counterpartsOf(chats, userId),
       this.clearedCutoffs(
         chats.map((c) => c._id),
         userId,
       ),
-      this.titlesOf(chats),
+      this.titlesOf(chats, userId),
     ]);
 
     // A direct thread its reader deleted stays off their list until somebody
@@ -681,7 +752,8 @@ export class ChatService {
         toChatView(chat, await this.unreadCount(chat._id, userId), {
           counterpart: counterparts.get(chat._id.toString()) ?? null,
           lastMessage: previews.get(chat._id.toString()) ?? null,
-          title: titles.get(chat._id.toString()) ?? null,
+          title: subjects.get(chat._id.toString())?.title ?? null,
+          readOnlyReason: subjects.get(chat._id.toString())?.readOnlyReason ?? null,
         }),
       ),
     );
@@ -689,16 +761,17 @@ export class ChatService {
 
   /** One chat's full view. The single-row path; [listChats] batches instead. */
   private async decorate(chat: ChatDocument, userId: string): Promise<ChatView> {
-    const [unread, previews, counterparts, titles] = await Promise.all([
+    const [unread, previews, counterparts, subjects] = await Promise.all([
       this.unreadCount(chat._id, userId),
       this.lastMessagesOf([chat], userId),
       this.counterpartsOf([chat], userId),
-      this.titlesOf([chat]),
+      this.titlesOf([chat], userId),
     ]);
     return toChatView(chat, unread, {
       counterpart: counterparts.get(chat._id.toString()) ?? null,
       lastMessage: previews.get(chat._id.toString()) ?? null,
-      title: titles.get(chat._id.toString()) ?? null,
+      title: subjects.get(chat._id.toString())?.title ?? null,
+      readOnlyReason: subjects.get(chat._id.toString())?.readOnlyReason ?? null,
     });
   }
 
@@ -706,8 +779,12 @@ export class ChatService {
    * Each wishlist or group-gift chat's title — its wishlist's or gift's — in
    * two lookups for the whole page, so a list of group chats can name every
    * row. Direct chats are skipped; their counterpart names them.
+   *
+   * The same lookup says whether [userId] may post in a group gift's chat:
+   * the gift's status and members are what decide it, and reading them here
+   * saves the list a third round trip per row.
    */
-  private async titlesOf(chats: ChatDocument[]): Promise<Map<string, string>> {
+  private async titlesOf(chats: ChatDocument[], userId: string): Promise<Map<string, ChatSubject>> {
     const of = (type: ChatType) => chats.filter((c) => c.type === type);
     const wishlistChats = of(ChatType.WISHLIST);
     const giftChats = of(ChatType.GROUP_GIFT);
@@ -723,19 +800,27 @@ export class ChatService {
         ? []
         : this.groupGiftModel
             .find({ _id: { $in: giftChats.map((c) => c.refId) } })
-            .select('title')
+            .select('title status initiatorId participantIds')
             .lean()
             .exec(),
     ]);
-    const byRef = new Map<string, string>();
-    for (const doc of [...wishlists, ...gifts]) byRef.set(doc._id.toString(), doc.title);
-
-    const titles = new Map<string, string>();
-    for (const chat of [...wishlistChats, ...giftChats]) {
-      const title = byRef.get(chat.refId.toString());
-      if (title) titles.set(chat._id.toString(), title);
+    const byRef = new Map<string, ChatSubject>();
+    for (const doc of wishlists) {
+      byRef.set(doc._id.toString(), { title: doc.title, readOnlyReason: null });
     }
-    return titles;
+    for (const doc of gifts) {
+      byRef.set(doc._id.toString(), {
+        title: doc.title,
+        readOnlyReason: ChatService.groupReadOnlyReason(doc, userId),
+      });
+    }
+
+    const subjects = new Map<string, ChatSubject>();
+    for (const chat of [...wishlistChats, ...giftChats]) {
+      const subject = byRef.get(chat.refId.toString());
+      if (subject) subjects.set(chat._id.toString(), subject);
+    }
+    return subjects;
   }
 
   /**
@@ -901,6 +986,27 @@ export class ChatService {
   }
 
   /**
+   * Takes a user out of a chat: off the members set, so they get no further
+   * messages or unread counts, and off its socket room, so a conversation
+   * they have open stops updating. The counterpart of [addParticipant], for
+   * somebody who left a group gift. (REST history re-checks access, so old
+   * messages are out of reach too once the gift no longer counts them.)
+   */
+  async removeParticipant(chatId: Types.ObjectId, userId: string): Promise<void> {
+    const chat = await this.chatModel.findById(chatId).select('type refId').exec();
+    if (!chat) return;
+    await this.chatModel
+      .updateOne({ _id: chat._id }, { $pull: { participantIds: new Types.ObjectId(userId) } })
+      .exec();
+    this.emitter.emit(CHAT_FORCE_LEAVE, {
+      chatType: chat.type,
+      refId: chat.refId.toString(),
+      userId,
+      chatId: chat._id.toString(),
+    } satisfies ChatForceLeave);
+  }
+
+  /**
    * A user lost access to a wishlist — signal the gateway to evict them from its
    * chat and drop them from the members set, so they get no further messages.
    * (REST history re-checks access, so old messages are also out of reach.)
@@ -908,17 +1014,10 @@ export class ChatService {
   async revokeWishlistChatAccess(wishlistId: string, userId: string): Promise<void> {
     const chat = await this.chatModel
       .findOne({ type: ChatType.WISHLIST, refId: new Types.ObjectId(wishlistId) })
+      .select('_id')
       .exec();
     if (!chat) return;
-    await this.chatModel
-      .updateOne({ _id: chat._id }, { $pull: { participantIds: new Types.ObjectId(userId) } })
-      .exec();
-    this.emitter.emit(CHAT_FORCE_LEAVE, {
-      chatType: ChatType.WISHLIST,
-      refId: wishlistId,
-      userId,
-      chatId: chat._id.toString(),
-    } satisfies ChatForceLeave & { chatId: string });
+    await this.removeParticipant(chat._id, userId);
   }
 
   // ── Across a block ───────────────────────────────────────────────────────────

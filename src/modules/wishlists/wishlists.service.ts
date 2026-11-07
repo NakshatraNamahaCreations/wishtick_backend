@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { customAlphabet } from 'nanoid';
@@ -12,6 +12,7 @@ import { WishmateRelationship } from 'src/modules/wishmates/wishmates.views';
 import { MediaPurpose } from 'src/modules/media/schemas/media.schema';
 import { AddressesService, type AddressView } from 'src/modules/profile/addresses.service';
 import { AccessPolicyService } from './access/access-policy.service';
+import { GROUP_GIFT_PRESENCE, type IGroupGiftPresence } from './access/group-gift-presence.port';
 import { ReservationWindowService } from './reservation-window.service';
 import { Relationship, type AccessContext, type AccessDecision } from './access/access.types';
 import type { CreateWishlistDto, ShareWishlistDto, UpdateWishlistDto } from './dto/wishlist.dto';
@@ -55,6 +56,7 @@ export class WishlistsService {
     private readonly addresses: AddressesService,
     private readonly windows: ReservationWindowService,
     private readonly config: ConfigService<AppConfig, true>,
+    @Inject(GROUP_GIFT_PRESENCE) private readonly groupGifts: IGroupGiftPresence,
   ) {}
 
   private get shareBaseUrl(): string {
@@ -358,11 +360,24 @@ export class WishlistsService {
   /**
    * Archive rather than delete: gifts (Sprint 6) and chats (Sprint 8) reference
    * this row, and removing it would strand a gifter's history.
+   *
+   * Refused while a group gift on the list is still running (open, closed
+   * short, funded or being bought): friends have money or promises riding on
+   * an item here, and archiving would hide it from under them while the host
+   * still has to settle, buy or cancel. Finished groups do not stand in the way.
    */
   async archive(wishlistId: string, ctx: AccessContext): Promise<{ archivedAt: Date }> {
     const wishlist = await this.findOrFail(wishlistId);
     await this.access.assertCanManage(wishlist, ctx);
     this.assertNotArchived(wishlist);
+
+    if (await this.groupGifts.hasActiveGroupGift(wishlist._id)) {
+      throw new AppException(
+        ErrorCode.WISHLIST_HAS_OPEN_GROUP_GIFT,
+        'Finish or cancel the group gift on this list first',
+        409,
+      );
+    }
 
     const archivedAt = new Date();
     wishlist.archivedAt = archivedAt;

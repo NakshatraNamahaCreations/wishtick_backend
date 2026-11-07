@@ -248,12 +248,14 @@ export class ItemsService {
       };
     }
 
+    const previousMediaIds = [...(item.mediaIds ?? [])];
     if (dto.mediaIds !== undefined) {
       item.imageUrls = await this.resolveImages(ctx.userId!, dto.mediaIds);
       item.mediaIds = dto.mediaIds.map((id) => new Types.ObjectId(id));
     }
 
     await item.save();
+    if (dto.mediaIds !== undefined) await this.releasePhotos(previousMediaIds, dto.mediaIds);
     return toItemView(item, await this.viewerOf(wishlist, ctx.userId, [item]));
   }
 
@@ -268,7 +270,7 @@ export class ItemsService {
     if (CLAIMED_ITEM_STATUSES.includes(item.status)) {
       throw new AppException(
         ErrorCode.WISHLIST_ITEM_LOCKED,
-        'Someone has already claimed this item, so it cannot be removed',
+        "This item can't be removed right now.",
         409,
         { status: item.status },
       );
@@ -436,6 +438,26 @@ export class ItemsService {
   }
 
   /** Only media the caller owns, confirmed, and uploaded for a wishlist item. */
+  /**
+   * Photos taken off an item when it was edited: nothing shows them now, so
+   * the nightly media sweep takes them out of storage.
+   *
+   * Unless another item still shows one — by its id, or by its URL, which an
+   * item can also be given directly. An archived item counts as showing it
+   * too: archiving can be undone, and its photos must come back with it.
+   */
+  private async releasePhotos(before: Types.ObjectId[], after: string[]): Promise<void> {
+    const kept = new Set(after);
+    for (const mediaId of before) {
+      if (kept.has(mediaId.toString())) continue;
+      const url = await this.media.urlOf(mediaId);
+      const stillShown = await this.model.exists({
+        $or: [{ mediaIds: mediaId }, ...(url ? [{ imageUrls: url }] : [])],
+      });
+      if (!stillShown) await this.media.markOrphaned(mediaId).catch(() => undefined);
+    }
+  }
+
   private async resolveImages(userId: string, mediaIds: string[]): Promise<string[]> {
     if (mediaIds.length === 0) return [];
     const media = await Promise.all(mediaIds.map((id) => this.media.getReadyOwned(userId, id)));

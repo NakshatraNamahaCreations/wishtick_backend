@@ -533,7 +533,13 @@ describe('Chat (e2e)', () => {
           .post(`${V1}/items/${item.data.id}/group-gift`)
           .set(auth(initiator.token))
           .set('Idempotency-Key', randomUUID())
-          .send({ title: 'Chat group gift', targetAmountMinor: 1000, visibility: 'visible' })
+          .send({
+            title: 'Chat group gift',
+            targetAmountMinor: 1000,
+            visibility: 'visible',
+            // Somewhere to send it, or nobody but the host can chip in.
+            hostUpiId: 'host@okaxis',
+          })
           .expect(201)
       ).body as Envelope<{ id: string; chatId?: string }>;
       const ggId = gg.data.id;
@@ -557,7 +563,7 @@ describe('Chat (e2e)', () => {
       expect(
         await messageModel.countDocuments({
           systemType: 'goal_reached',
-          dedupeKey: `gg_funded:${ggId}`,
+          dedupeKey: `gg_funded:${ggId}:1`,
         }),
       ).toBe(1);
 
@@ -571,12 +577,13 @@ describe('Chat (e2e)', () => {
         collectedAmountMinor: 1000,
         currency: 'INR',
         contributorCount: 1,
+        fundedCount: 1,
       } satisfies GroupGiftFundedEvent);
       await delay(300);
 
       const goalMessages = await messageModel.countDocuments({
         systemType: 'goal_reached',
-        dedupeKey: `gg_funded:${ggId}`,
+        dedupeKey: `gg_funded:${ggId}:1`,
       });
       expect(goalMessages).toBe(1);
     });

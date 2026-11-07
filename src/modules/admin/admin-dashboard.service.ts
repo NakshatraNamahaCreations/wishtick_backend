@@ -273,16 +273,22 @@ export class AdminDashboardService {
         status: { $in: purchasedStatuses },
         purchasedAt: { $gte: ago(30) },
       }),
-      this.groupGifts.countDocuments({ status: 'open' }).exec(),
+      // A closed collection is still an open question for its host, so it
+      // counts as open here and in the two sums beneath.
+      this.groupGifts
+        .countDocuments({ status: { $in: [GroupGiftStatus.OPEN, GroupGiftStatus.CLOSED] } })
+        .exec(),
       this.groupGifts.countDocuments({ status: 'funded' }).exec(),
-      this.sum(this.groupGifts, 'collectedAmountMinor', { status: 'open' }),
+      this.sum(this.groupGifts, 'collectedAmountMinor', {
+        status: { $in: [GroupGiftStatus.OPEN, GroupGiftStatus.CLOSED] },
+      }),
       // Beside the open gifts' confirmed money, so only the open gifts' waiting money.
       this.groupGifts.db
         .collection('contributions')
         .aggregate<{ minor: number }>([
           { $match: paymentStateFilter('awaiting') },
           ...withGiftStatus(this.groupGifts.collection.name),
-          { $match: { 'gift.status': GroupGiftStatus.OPEN } },
+          { $match: { 'gift.status': { $in: [GroupGiftStatus.OPEN, GroupGiftStatus.CLOSED] } } },
           {
             $group: { _id: null, minor: { $sum: { $ifNull: ['$claimedMinor', '$amountMinor'] } } },
           },

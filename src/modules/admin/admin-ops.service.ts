@@ -327,7 +327,9 @@ export class AdminOpsService {
     checkedAt: string;
   } | null> {
     const cfg = this.config.get('products', { infer: true });
-    if (cfg.provider !== 'serpapi' || !cfg.serpApiKey) return null;
+    if (cfg.provider !== 'serpapi') return null;
+    if (cfg.searchVendor === 'searchapi') return this.searchApiAccount(cfg.searchApiKey);
+    if (!cfg.serpApiKey) return null;
     return this.cache.wrap(SERPAPI_ACCOUNT_KEY, 300, async () => {
       try {
         const res = await fetch(
@@ -346,6 +348,36 @@ export class AdminOpsService {
         };
       } catch (e) {
         this.logger.warn(`SerpApi account lookup failed: ${errText(e)}`);
+        return null;
+      }
+    });
+  }
+
+  /**
+   * The same numbers from SearchApi.io's `/api/v1/me`, when it is the vendor.
+   * It names no plan, so the panel shows the vendor's name in that slot.
+   */
+  private async searchApiAccount(key: string) {
+    if (!key) return null;
+    return this.cache.wrap(`${SERPAPI_ACCOUNT_KEY}:searchapi`, 300, async () => {
+      try {
+        const res = await fetch('https://www.searchapi.io/api/v1/me', {
+          headers: { accept: 'application/json', authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (!res.ok) return null;
+        const body = (await res.json()) as { account?: Record<string, unknown> };
+        const a = body.account ?? {};
+        const n = (v: unknown) => (typeof v === 'number' ? v : null);
+        return {
+          planSearchesLeft: n(a.remaining_credits),
+          searchesPerMonth: n(a.monthly_allowance),
+          thisMonthUsage: n(a.current_month_usage),
+          plan: 'SearchApi.io',
+          checkedAt: new Date().toISOString(),
+        };
+      } catch (e) {
+        this.logger.warn(`SearchApi account lookup failed: ${errText(e)}`);
         return null;
       }
     });
@@ -853,6 +885,7 @@ export class AdminOpsService {
       },
       'Product search': {
         Provider: products.provider,
+        'Search vendor': products.provider === 'serpapi' ? products.searchVendor : '—',
         Country: products.serpApiCountry,
         'Requests per minute': products.rateLimitPerMinute,
         Retries: products.maxRetries,

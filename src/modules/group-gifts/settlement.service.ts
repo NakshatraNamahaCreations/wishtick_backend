@@ -1,17 +1,39 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import {
+  GROUP_GIFT_FUNDED,
+  SETTLEMENT_CONFIRMED,
+  SETTLEMENT_RAISED,
+  SETTLEMENT_RETURN_RAISED,
+  SETTLEMENT_SENT,
+  SETTLEMENT_TOP_UP_REQUESTED,
+  SETTLEMENT_UPI_SHARED,
+  type GroupGiftFundedEvent,
+  type SettlementConfirmedEvent,
+  type SettlementRaisedEvent,
+  type SettlementReturnRaisedEvent,
+  type SettlementRowEvent,
+  type SettlementSentEvent,
+  type SettlementTopUpRequestedEvent,
+  type SettlementUpiSharedEvent,
+} from 'src/common/events/domain-events';
+import type { AppConfig } from 'src/config/configuration';
+import {
   UserProfile,
   type UserProfileDocument,
 } from 'src/modules/profile/schemas/user-profile.schema';
 import { hostShareOf } from './equal-split';
+import { withFunded } from './group-gift-funding';
 import { GroupGiftShareService, HOST_SHARE_KEY } from './group-gift-share.service';
 import {
   ContributionMode,
   ContributionStatus,
+  DECIDABLE_GROUP_GIFT_STATUSES,
   GroupGiftStatus,
   INACTIVE_GROUP_GIFT_STATUSES,
   SettlementDirection,
@@ -66,6 +88,9 @@ export class SettlementService {
     @InjectModel(Settlement.name) private readonly settlements: Model<SettlementDocument>,
     @InjectModel(UserProfile.name) private readonly profiles: Model<UserProfileDocument>,
     private readonly shares: GroupGiftShareService,
+    // Each step of settling up tells the person on the other side of it.
+    private readonly emitter: EventEmitter2,
+    private readonly config: ConfigService<AppConfig, true>,
   ) {}
 
   /**
@@ -123,7 +148,7 @@ export class SettlementService {
     const { members, hostKeptMinor } = await this.refundPlan(gg, surplus);
 
     if (hostKeptMinor > 0) await this.keepForHost(gg, hostKeptMinor);
-    const raised = await this.raise(
+    const { rows: raised } = await this.raise(
       gg,
       SettlementDirection.RETURN,
       members,
@@ -479,7 +504,10 @@ export class SettlementService {
       }
       // The host naming themselves in a custom split is keeping that much.
       plan = {
-        members: input.custom.filter((c) => c.contributorId !== hostId),
+        members: await this.validCustomReturns(
+          gg,
+          input.custom.filter((c) => c.contributorId !== hostId),
+        ),
         hostKeptMinor: input.custom
           .filter((c) => c.contributorId === hostId)
           .reduce((sum, c) => sum + c.amountMinor, 0),
@@ -496,7 +524,81 @@ export class SettlementService {
     }
 
     if (plan.hostKeptMinor > 0) await this.keepForHost(gg, plan.hostKeptMinor);
-    return this.raise(gg, SettlementDirection.RETURN, plan.members, input.note ?? null);
+    const { rows, fresh } = await this.raise(
+      gg,
+      SettlementDirection.RETURN,
+      plan.members,
+      input.note ?? null,
+    );
+    // One note in the group's chat for the lot, rather than one per person.
+    if (fresh.length > 0) {
+      this.emitter.emit(SETTLEMENT_RETURN_RAISED, {
+        groupGiftId: gg._id.toString(),
+        hostId,
+        title: gg.title,
+        totalMinor: fresh.reduce((sum, s) => sum + s.amountMinor, 0),
+        count: fresh.length,
+        currency: gg.currency,
+        raisedAt: new Date(),
+      } satisfies SettlementReturnRaisedEvent);
+    }
+    return rows;
+  }
+
+  /**
+   * A custom refund split, held to who actually paid: every row a real
+   * contributor, and nobody given back more than they still have in —
+   * what they paid, less refunds already raised, sent or confirmed to them.
+   * Without this a host could raise a "refund" to anybody, for anything,
+   * and the group's balance would show money going to someone who never
+   * put any in.
+   */
+  private async validCustomReturns(
+    gg: GroupGiftDocument,
+    rows: { contributorId: string; amountMinor: number }[],
+  ): Promise<{ contributorId: string; amountMinor: number }[]> {
+    // Sent and confirmed refunds are already out of this; pending ones are not.
+    const [held, pending] = await Promise.all([
+      this.shares.paidByUser(gg._id),
+      this.settlements
+        .aggregate<{ _id: Types.ObjectId; total: number }>([
+          {
+            $match: {
+              groupGiftId: gg._id,
+              direction: SettlementDirection.RETURN,
+              status: SettlementStatus.PENDING,
+            },
+          },
+          { $group: { _id: '$contributorId', total: { $sum: '$amountMinor' } } },
+        ])
+        .exec(),
+    ]);
+    const raised = new Map(pending.map((r) => [r._id.toString(), r.total]));
+    const asked = new Map<string, number>();
+    for (const row of rows) {
+      asked.set(row.contributorId, (asked.get(row.contributorId) ?? 0) + row.amountMinor);
+    }
+    for (const [contributorId, amountMinor] of asked) {
+      const paid = held.get(contributorId) ?? 0;
+      if (paid <= 0) {
+        throw new AppException(
+          ErrorCode.VALIDATION_FAILED,
+          'A refund can only go to somebody who has paid in',
+          400,
+          { contributorId },
+        );
+      }
+      const maxMinor = Math.max(0, paid - (raised.get(contributorId) ?? 0));
+      if (amountMinor > maxMinor) {
+        throw new AppException(
+          ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
+          'Nobody can be given back more than they put in',
+          400,
+          { contributorId, maxMinor },
+        );
+      }
+    }
+    return [...asked].map(([contributorId, amountMinor]) => ({ contributorId, amountMinor }));
   }
 
   /** Every refund raised and not yet answered, oldest first. */
@@ -538,12 +640,34 @@ export class SettlementService {
     const gg = await this.load(groupGiftId);
     this.assertHost(gg, hostId);
     SettlementService.assertActive(gg);
+    // Until it is bought. After that the gift is in the host's hands and the
+    // price is what was paid: a shortfall then is theirs, not a new ask.
+    if (
+      ![GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED, GroupGiftStatus.CLOSED].includes(gg.status)
+    ) {
+      throw new AppException(
+        ErrorCode.GROUP_GIFT_NOT_OPEN,
+        'You can ask for more only until the gift is bought',
+        409,
+        { status: gg.status },
+      );
+    }
 
     if (input.additionalAmountMinor <= 0) {
       throw new AppException(
         ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
         'A contribution request needs a positive amount',
         400,
+      );
+    }
+    // The same ceiling a goal is held to when it is set.
+    const maxTarget = this.config.get('groupGifting.maxTargetMinor', { infer: true });
+    if (gg.targetAmountMinor + input.additionalAmountMinor > maxTarget) {
+      throw new AppException(
+        ErrorCode.CONTRIBUTION_AMOUNT_INVALID,
+        `Target exceeds the maximum of ${maxTarget} minor units`,
+        400,
+        { maxTargetMinor: maxTarget },
       );
     }
 
@@ -591,7 +715,24 @@ export class SettlementService {
       contributorId: others[i],
       amountMinor,
     }));
-    return this.raise(gg, SettlementDirection.TOP_UP, allocations, input.note ?? null);
+    const { rows } = await this.raise(
+      gg,
+      SettlementDirection.TOP_UP,
+      allocations,
+      input.note ?? null,
+    );
+    const recipient = gg.recipientId.toString();
+    this.emitter.emit(SETTLEMENT_TOP_UP_REQUESTED, {
+      groupGiftId: gg._id.toString(),
+      hostId,
+      title: gg.title,
+      additionalAmountMinor: input.additionalAmountMinor,
+      targetAmountMinor: gg.targetAmountMinor,
+      memberIds: others.filter((id) => id !== recipient),
+      currency: gg.currency,
+      note: input.note ?? null,
+    } satisfies SettlementTopUpRequestedEvent);
+    return rows;
   }
 
   /**
@@ -607,7 +748,7 @@ export class SettlementService {
     upiId: string,
     saveToProfile: boolean,
   ): Promise<SettlementDocument> {
-    const settlement = await this.loadSettlement(settlementId);
+    const { settlement, gg } = await this.loadSettlement(settlementId);
     const receiverId = SettlementService.receiverOf(settlement);
 
     if (receiverId !== userId) {
@@ -618,8 +759,16 @@ export class SettlementService {
       );
     }
 
+    const changed = settlement.upiId !== upiId;
     settlement.upiId = upiId;
     await settlement.save();
+    // The payer now knows where to send it. Not again for the same ID.
+    if (changed) {
+      this.emitter.emit(SETTLEMENT_UPI_SHARED, {
+        ...SettlementService.rowEvent(settlement, gg),
+        upiId,
+      } satisfies SettlementUpiSharedEvent);
+    }
 
     if (saveToProfile) {
       // Upsert, not update: a profile row is created during onboarding, and a
@@ -639,7 +788,7 @@ export class SettlementService {
 
   /** The payer's claim that money went out. Does not close the row. */
   async markSent(settlementId: string, userId: string): Promise<SettlementDocument> {
-    const settlement = await this.loadSettlement(settlementId);
+    const { settlement, gg } = await this.loadSettlement(settlementId);
 
     if (SettlementService.payerOf(settlement) !== userId) {
       throw new AppException(ErrorCode.FORBIDDEN, 'Only the payer can mark this sent', 403);
@@ -661,9 +810,15 @@ export class SettlementService {
       );
     }
 
+    const sentAt = new Date();
     settlement.status = SettlementStatus.SENT;
-    settlement.sentAt = new Date();
+    settlement.sentAt = sentAt;
     await settlement.save();
+    // The receiver is asked to confirm it landed.
+    this.emitter.emit(SETTLEMENT_SENT, {
+      ...SettlementService.rowEvent(settlement, gg),
+      sentAt,
+    } satisfies SettlementSentEvent);
     return settlement;
   }
 
@@ -675,7 +830,7 @@ export class SettlementService {
    * blocked because the payer never pressed a button.
    */
   async confirmReceived(settlementId: string, userId: string): Promise<SettlementDocument> {
-    const settlement = await this.loadSettlement(settlementId);
+    const { settlement, gg } = await this.loadSettlement(settlementId);
 
     if (SettlementService.receiverOf(settlement) !== userId) {
       throw new AppException(ErrorCode.FORBIDDEN, 'Only the receiver can confirm this', 403);
@@ -689,9 +844,15 @@ export class SettlementService {
       );
     }
 
+    const confirmedAt = new Date();
     settlement.status = SettlementStatus.CONFIRMED;
-    settlement.confirmedAt = new Date();
+    settlement.confirmedAt = confirmedAt;
     await settlement.save();
+    // The payer is told it is done.
+    this.emitter.emit(SETTLEMENT_CONFIRMED, {
+      ...SettlementService.rowEvent(settlement, gg),
+      confirmedAt,
+    } satisfies SettlementConfirmedEvent);
 
     // A confirmed top-up is money the host now holds, so it becomes collected
     // — which is what moves the balance back to zero.
@@ -764,12 +925,37 @@ export class SettlementService {
       : settlement.hostId.toString();
   }
 
+  /**
+   * What every settlement notification says about the row it concerns. The
+   * payer and the receiver are worked out here once, as everything else is.
+   */
+  private static rowEvent(
+    settlement: SettlementDocument,
+    gg: GroupGiftDocument,
+  ): SettlementRowEvent {
+    return {
+      settlementId: settlement._id.toString(),
+      groupGiftId: gg._id.toString(),
+      title: gg.title,
+      direction: settlement.direction,
+      payerId: SettlementService.payerOf(settlement),
+      receiverId: SettlementService.receiverOf(settlement),
+      amountMinor: settlement.amountMinor,
+      currency: settlement.currency,
+    };
+  }
+
+  /**
+   * [rows] is every settlement asked for, existing ones included; [fresh] is
+   * only those this call created, each of which tells its payer. A row that
+   * was already open was told about when it was raised.
+   */
   private async raise(
     gg: GroupGiftDocument,
     direction: SettlementDirection,
     allocations: { contributorId: string; amountMinor: number }[],
     note: string | null,
-  ): Promise<SettlementDocument[]> {
+  ): Promise<{ rows: SettlementDocument[]; fresh: SettlementDocument[] }> {
     const positive = allocations.filter((a) => a.amountMinor > 0);
 
     // Pre-fill from the saved profile UPI so a contributor who has one is
@@ -781,27 +967,28 @@ export class SettlementService {
     const savedUpi = new Map(profiles.map((p) => [p.userId.toString(), p.upiId]));
 
     const created: SettlementDocument[] = [];
+    const fresh: SettlementDocument[] = [];
     for (const allocation of positive) {
       // The partial unique index refuses a second open settlement for the same
       // person and direction; treat that as "already raised" rather than an
       // error, so a double-tap on Send Request is harmless.
       try {
-        created.push(
-          await this.settlements.create({
-            groupGiftId: gg._id,
-            contributorId: new Types.ObjectId(allocation.contributorId),
-            hostId: gg.initiatorId,
-            direction,
-            amountMinor: allocation.amountMinor,
-            currency: gg.currency,
-            status: SettlementStatus.PENDING,
-            upiId:
-              direction === SettlementDirection.RETURN
-                ? (savedUpi.get(allocation.contributorId) ?? null)
-                : null,
-            note,
-          }),
-        );
+        const row = await this.settlements.create({
+          groupGiftId: gg._id,
+          contributorId: new Types.ObjectId(allocation.contributorId),
+          hostId: gg.initiatorId,
+          direction,
+          amountMinor: allocation.amountMinor,
+          currency: gg.currency,
+          status: SettlementStatus.PENDING,
+          upiId:
+            direction === SettlementDirection.RETURN
+              ? (savedUpi.get(allocation.contributorId) ?? null)
+              : null,
+          note,
+        });
+        created.push(row);
+        fresh.push(row);
       } catch (err) {
         const existing = await this.settlements
           .findOne({
@@ -815,7 +1002,14 @@ export class SettlementService {
         created.push(existing);
       }
     }
-    return created;
+    // Whoever pays is told what they owe, and to whom.
+    for (const row of fresh) {
+      this.emitter.emit(SETTLEMENT_RAISED, {
+        ...SettlementService.rowEvent(row, gg),
+        note,
+      } satisfies SettlementRaisedEvent);
+    }
+    return { rows: created, fresh };
   }
 
   /**
@@ -897,21 +1091,33 @@ export class SettlementService {
       .exec();
 
     // Full again once the last share lands, so the group stops asking for
-    // money it no longer needs.
-    const gg = await this.groupGifts.findById(input.groupGiftId).exec();
-    if (
-      gg &&
-      gg.status === GroupGiftStatus.OPEN &&
-      gg.collectedAmountMinor >= gg.targetAmountMinor
-    ) {
-      gg.status = GroupGiftStatus.FUNDED;
-      gg.history.push({
-        status: GroupGiftStatus.FUNDED,
-        at: new Date(),
-        by: 'system:funded',
-        note: 'topped up',
-      });
-      await gg.save();
+    // money it no longer needs. One atomic write that only matches a gift
+    // still collecting and now at its goal, so two shares landing together
+    // fund it once — and it is announced like any other funding, counted.
+    const funded = await this.groupGifts
+      .findOneAndUpdate(
+        {
+          _id: input.groupGiftId,
+          status: { $in: DECIDABLE_GROUP_GIFT_STATUSES },
+          targetAmountMinor: { $gt: 0 },
+          $expr: { $gte: ['$collectedAmountMinor', '$targetAmountMinor'] },
+        },
+        withFunded({}, { at: new Date(), by: 'system:funded', note: 'topped up' }),
+        { new: true },
+      )
+      .exec();
+    if (funded) {
+      this.emitter.emit(GROUP_GIFT_FUNDED, {
+        groupGiftId: funded._id.toString(),
+        itemId: funded.itemId.toString(),
+        wishlistId: funded.wishlistId.toString(),
+        initiatorId: funded.initiatorId.toString(),
+        targetAmountMinor: funded.targetAmountMinor,
+        collectedAmountMinor: funded.collectedAmountMinor,
+        currency: funded.currency,
+        contributorCount: funded.contributorCount,
+        fundedCount: funded.fundedCount ?? 1,
+      } satisfies GroupGiftFundedEvent);
     }
   }
 
@@ -949,7 +1155,9 @@ export class SettlementService {
    * about changes any more. Cancelling already counted every payment as
    * refunded.
    */
-  private async loadSettlement(settlementId: string): Promise<SettlementDocument> {
+  private async loadSettlement(
+    settlementId: string,
+  ): Promise<{ settlement: SettlementDocument; gg: GroupGiftDocument }> {
     if (!Types.ObjectId.isValid(settlementId)) {
       throw new AppException(ErrorCode.NOT_FOUND, 'Settlement not found', 404);
     }
@@ -957,8 +1165,9 @@ export class SettlementService {
     if (!settlement) {
       throw new AppException(ErrorCode.NOT_FOUND, 'Settlement not found', 404);
     }
-    SettlementService.assertActive(await this.load(settlement.groupGiftId.toString()));
-    return settlement;
+    const gg = await this.load(settlement.groupGiftId.toString());
+    SettlementService.assertActive(gg);
+    return { settlement, gg };
   }
 
   private static assertActive(gg: GroupGiftDocument): void {

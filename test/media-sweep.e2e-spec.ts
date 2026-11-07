@@ -49,12 +49,15 @@ describe('Media sweep (e2e)', () => {
   };
 
   /** Presigns, PUTs real bytes, and confirms — a real READY profile photo. */
-  const uploadReady = async (token: string): Promise<UploadTicket> => {
+  const uploadReady = async (
+    token: string,
+    purpose: MediaPurpose = MediaPurpose.PROFILE_PHOTO,
+  ): Promise<UploadTicket> => {
     const ticket = (
       await request(app.getHttpServer())
         .post(`${V1}/media/upload-url`)
         .set(auth(token))
-        .send({ purpose: MediaPurpose.PROFILE_PHOTO, contentType: 'image/png' })
+        .send({ purpose, contentType: 'image/png' })
         .expect(201)
     ).body as Envelope<UploadTicket>;
 
@@ -82,7 +85,11 @@ describe('Media sweep (e2e)', () => {
       .expect(200);
   };
 
-  const backdate = async (mediaId: string, field: 'createdAt' | 'updatedAt', hoursAgo: number): Promise<void> => {
+  const backdate = async (
+    mediaId: string,
+    field: 'createdAt' | 'updatedAt',
+    hoursAgo: number,
+  ): Promise<void> => {
     await mediaModel
       .updateOne(
         { _id: mediaId },
@@ -201,5 +208,102 @@ describe('Media sweep (e2e)', () => {
     expect(result).toEqual({ orphanedSwept: 0, pendingSwept: 0 });
     expect(await mediaModel.findById(photo.mediaId).exec()).not.toBeNull();
     expect(await storageExists(photo.storageKey)).toBe(true);
+  });
+
+  const statusOf = async (mediaId: string): Promise<MediaStatus | undefined> =>
+    (await mediaModel.findById(mediaId).lean().exec())?.status;
+
+  describe('what is deleted or replaced is handed to the sweep', () => {
+    const newWishlist = async (token: string): Promise<string> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .post(`${V1}/wishlists`)
+            .set(auth(token))
+            .send({ title: 'Birthday' })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+
+    const newItem = async (
+      token: string,
+      wishlistId: string,
+      mediaIds: string[],
+    ): Promise<string> =>
+      (
+        (
+          await request(app.getHttpServer())
+            .post(`${V1}/wishlists/${wishlistId}/items`)
+            .set(auth(token))
+            .send({ title: 'Frame', mediaIds })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data.id;
+
+    const setPhotos = async (
+      token: string,
+      wishlistId: string,
+      itemId: string,
+      mediaIds: string[],
+    ): Promise<void> => {
+      await request(app.getHttpServer())
+        .patch(`${V1}/wishlists/${wishlistId}/items/${itemId}`)
+        .set(auth(token))
+        .send({ mediaIds })
+        .expect(200);
+    };
+
+    it('deleting an event hands over its cover', async () => {
+      const { token } = await newUser();
+      const cover = await uploadReady(token, MediaPurpose.EVENT_COVER);
+      const event = (
+        (
+          await request(app.getHttpServer())
+            .post(`${V1}/events`)
+            .set(auth(token))
+            .send({
+              title: 'Party',
+              type: 'birthday',
+              startsAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+              timezone: 'Asia/Kolkata',
+              coverMediaId: cover.mediaId,
+            })
+            .expect(201)
+        ).body as Envelope<{ id: string }>
+      ).data;
+
+      await request(app.getHttpServer())
+        .post(`${V1}/events/bulk-delete`)
+        .set(auth(token))
+        .send({ ids: [event.id] })
+        .expect(200);
+
+      expect(await statusOf(cover.mediaId)).toBe(MediaStatus.ORPHANED);
+    });
+
+    it('a photo taken off an item is handed over; the new one is not', async () => {
+      const { token } = await newUser();
+      const before = await uploadReady(token, MediaPurpose.WISHLIST_ITEM);
+      const after = await uploadReady(token, MediaPurpose.WISHLIST_ITEM);
+      const list = await newWishlist(token);
+      const item = await newItem(token, list, [before.mediaId]);
+
+      await setPhotos(token, list, item, [after.mediaId]);
+
+      expect(await statusOf(before.mediaId)).toBe(MediaStatus.ORPHANED);
+      expect(await statusOf(after.mediaId)).toBe(MediaStatus.READY);
+    });
+
+    it('a photo another item still shows is kept', async () => {
+      const { token } = await newUser();
+      const shared = await uploadReady(token, MediaPurpose.WISHLIST_ITEM);
+      const list = await newWishlist(token);
+      const first = await newItem(token, list, [shared.mediaId]);
+      await newItem(token, list, [shared.mediaId]);
+
+      await setPhotos(token, list, first, []);
+
+      expect(await statusOf(shared.mediaId)).toBe(MediaStatus.READY);
+    });
   });
 });

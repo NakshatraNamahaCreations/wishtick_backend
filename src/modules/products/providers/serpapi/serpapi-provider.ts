@@ -439,7 +439,17 @@ export class SerpApiProductProvider implements IProductProvider {
     }));
   }
 
+  /**
+   * Google's page for a product, the link of last resort when no seller is.
+   *
+   * An `offer-…` id (a SearchApi row Google never grouped into a catalogue
+   * product, see OFFER_ID_PREFIX) has no /shopping/product page; the offer's
+   * own shopping view, keyed by the same docid, is where it lives.
+   */
   private static googleProductUrl(productId: string): string {
-    return `https://www.google.com/shopping/product/${productId}`;
+    const offer = /^offer-(\d+)$/.exec(productId);
+    return offer
+      ? `https://www.google.com/search?ibp=oshop&udm=28&prds=headlineOfferDocid:${offer[1]}`
+      : `https://www.google.com/shopping/product/${productId}`;
   }
 }

@@ -172,7 +172,9 @@ export class NotificationService {
    */
   private static routingData(data: DispatchJobData): Record<string, string> {
     const out: Record<string, string> = {};
-    for (const key of ['chatId', 'senderId', 'direct', 'chatType', 'chatRefId']) {
+    // `inviteId`: a group-gift invitation is opened by its own id, which the
+    // refId carries only after the gift's — see the invite handler.
+    for (const key of ['chatId', 'senderId', 'direct', 'chatType', 'chatRefId', 'inviteId']) {
       const value = data.payload[key];
       // Scalars only: an object here would reach the app as "[object Object]".
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {

@@ -46,6 +46,34 @@ export enum SystemMessageType {
   GOAL_REACHED = 'goal_reached',
   GIFT_PURCHASED = 'gift_purchased',
   GIFT_FULFILLED = 'gift_fulfilled',
+  // The rest of the collection's life. Payload keys per kind are listed in
+  // the group-gifting contract; the chat system listener is what writes them.
+  /** `{userId, byUserId}` — accepted an invitation, or paid in on one. */
+  MEMBER_ADDED = 'member_added',
+  /** `{userId}` — said they were not interested after all. */
+  MEMBER_LEFT = 'member_left',
+  /** `{amountMinor, userId|null}` — null for an anonymous payment. */
+  PAYMENT_SENT = 'payment_sent',
+  /** `{userId|null, claimedMinor, receivedMinor, state}` — the host's answer. */
+  PAYMENT_REVIEWED = 'payment_reviewed',
+  /** `{label, amountMinor, targetAmountMinor}` */
+  CHARGE_ADDED = 'charge_added',
+  /** `{itemTitle, fromMinor, toMinor, targetAmountMinor}` */
+  PRICE_UPDATED = 'price_updated',
+  /** `{hostId, amountMinor}` — the host paid what was left. */
+  SETTLED = 'settled',
+  /** `{deadline}` */
+  DEADLINE_EXTENDED = 'deadline_extended',
+  /** `{shortMinor}` — the deadline passed short of the goal. */
+  COLLECTION_CLOSED = 'collection_closed',
+  /** `{reason}` */
+  CANCELLED = 'cancelled',
+  /** `{amountMinor, count}` — returns raised for the group. */
+  REFUND_RAISED = 'refund_raised',
+  /** `{amountMinor}` — the host asked for more. */
+  TOP_UP_REQUESTED = 'top_up_requested',
+  /** `{by}` — the recipient's thank-you. */
+  THANK_YOU = 'thank_you',
 }
 
 /**
@@ -93,11 +121,16 @@ export interface ChatBroadcast {
   hideFromUserIds?: string[];
 }
 
-/** Force-disconnect signal: a user lost access to a wishlist and must leave its chat. */
+/**
+ * Force-disconnect signal: a user lost access to a wishlist, or left a group
+ * gift, and must leave its chat.
+ */
 export const CHAT_FORCE_LEAVE = 'chat.force_leave';
 
 export interface ChatForceLeave {
   chatType: ChatType;
   refId: string;
   userId: string;
+  /** The chat itself — what the gateway's room is named by. */
+  chatId: string;
 }

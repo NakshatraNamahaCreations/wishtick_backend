@@ -162,6 +162,11 @@ export interface AppConfig {
     /** What one person's memories may hold in total — see MEMORY_PURPOSES. */
     memoryQuotaBytes: number;
     localDir: string;
+    /**
+     * A Bunny account API key, used only to clear the CDN's cached copy of a
+     * deleted file. Empty leaves the cache to run out on its own.
+     */
+    cdnPurgeApiKey: string;
     s3: {
       bucket: string;
       region: string;
@@ -230,8 +235,17 @@ export interface AppConfig {
   };
   products: {
     provider: 'fixture' | 'serpapi';
-    /** SerpApi private key. Empty unless `provider` is `serpapi`. */
+    /**
+     * Which vendor answers the Google Shopping and Amazon reads when
+     * `provider` is `serpapi`: SerpApi itself, or SearchApi.io in its place.
+     * Products are stored under `serpapi` either way — Google's product ids
+     * are the same whichever vendor fetched them.
+     */
+    searchVendor: 'serpapi' | 'searchapi';
+    /** SerpApi private key. Needed when `searchVendor` is `serpapi`. */
     serpApiKey: string;
+    /** SearchApi.io key. Needed when `searchVendor` is `searchapi`. */
+    searchApiKey: string;
     /** SerpApi locale — `gl`, `hl`, `google_domain`. Defaults target India. */
     serpApiCountry: string;
     serpApiLanguage: string;
@@ -439,6 +453,7 @@ export const configuration = (): AppConfig => {
       maxBytes: toInt(process.env.MEDIA_MAX_BYTES, 10 * 1024 * 1024),
       memoryQuotaBytes: toInt(process.env.MEMORY_STORAGE_QUOTA_BYTES, 500 * 1024 * 1024),
       localDir: process.env.LOCAL_STORAGE_DIR ?? './uploads',
+      cdnPurgeApiKey: process.env.BUNNY_API_KEY ?? '',
       s3: {
         bucket: process.env.S3_BUCKET ?? '',
         region: process.env.S3_REGION ?? '',
@@ -484,7 +499,9 @@ export const configuration = (): AppConfig => {
     },
     products: {
       provider: (process.env.PRODUCT_PROVIDER ?? 'fixture') as 'fixture' | 'serpapi',
+      searchVendor: (process.env.PRODUCT_SEARCH_VENDOR ?? 'serpapi') as 'serpapi' | 'searchapi',
       serpApiKey: process.env.SERPAPI_KEY ?? '',
+      searchApiKey: process.env.SEARCHAPI_KEY ?? '',
       serpApiCountry: process.env.SERPAPI_COUNTRY ?? 'in',
       serpApiLanguage: process.env.SERPAPI_LANGUAGE ?? 'en',
       serpApiDomain: process.env.SERPAPI_GOOGLE_DOMAIN ?? 'google.co.in',

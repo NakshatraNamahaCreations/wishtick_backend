@@ -15,6 +15,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { IsTimezone } from 'src/common/validators/is-timezone.validator';
+import { IsUpiId } from 'src/common/validators/is-upi-id.validator';
 import { AVATAR_KEY_PATTERN, Gender } from '../schemas/user-profile.schema';
 
 export class UpdatePreferencesDto {
@@ -217,6 +218,19 @@ export class UpdateProfileDto {
     typeof value === 'string' ? value.trim().toLowerCase() : value,
   )
   email?: string;
+
+  /**
+   * Where a group gift this person hosts collects its money. Offered as the
+   * default when they start one; a group copies it, so changing it here never
+   * redirects a collection already under way. Null clears it.
+   */
+  @ApiPropertyOptional({ example: 'rohanr1@okaxis', nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  @IsUpiId()
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
+  upiId?: string | null;
 
   @ApiPropertyOptional({ type: UpdateContactDto })
   @IsOptional()

@@ -570,6 +570,12 @@ export class MediaService {
     return media;
   }
 
+  /** Where a media record is shown from, or null for one that is gone or unconfirmed. */
+  async urlOf(mediaId: Types.ObjectId): Promise<string | null> {
+    const media = await this.model.findById(mediaId).select('url').lean().exec();
+    return media?.url || null;
+  }
+
   /** Marks media orphaned so the sweeper can reclaim the object. */
   async markOrphaned(mediaId: Types.ObjectId): Promise<void> {
     await this.model.updateOne({ _id: mediaId }, { $set: { status: MediaStatus.ORPHANED } }).exec();

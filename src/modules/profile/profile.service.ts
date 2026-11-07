@@ -38,6 +38,11 @@ export interface MeView {
     bio: string | null;
     dateOfBirth: string | null;
     timezone: string;
+    /**
+     * Where they get paid: prefilled as the host's UPI ID when they start a
+     * group gift, and on a refund owed to them. Null until they save one.
+     */
+    upiId: string | null;
     contact: { city: string | null; country: string | null; deliveryAddress: string | null };
     preferences: {
       interests: string[];
@@ -132,6 +137,7 @@ export class ProfileService {
         // UTC timestamp invites clients to shift it across a day boundary.
         dateOfBirth: profile.dateOfBirth ? ProfileService.toDateOnly(profile.dateOfBirth) : null,
         timezone: profile.timezone,
+        upiId: profile.upiId ?? null,
         contact: {
           city: profile.contact?.city ?? null,
           country: profile.contact?.country ?? null,
@@ -168,6 +174,8 @@ export class ProfileService {
     if (dto.displayName !== undefined) profile.displayName = dto.displayName;
     if (dto.bio !== undefined) profile.bio = dto.bio;
     if (dto.timezone !== undefined) profile.timezone = dto.timezone;
+    // Null, or an empty string, clears it.
+    if (dto.upiId !== undefined) profile.upiId = dto.upiId || null;
 
     if (dto.dateOfBirth !== undefined) {
       profile.dateOfBirth = dto.dateOfBirth

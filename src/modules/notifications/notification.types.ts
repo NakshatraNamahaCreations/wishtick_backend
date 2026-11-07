@@ -62,6 +62,37 @@ export enum NotificationType {
   GROUP_GIFT_PRICE_UPDATED = 'group_gift_price_updated',
   GROUP_GIFT_PURCHASED = 'group_gift_purchased',
   GROUP_GIFT_FULFILLED = 'group_gift_fulfilled',
+  // The collection's deadline, and what the host does about it.
+  /** The deadline passed short of the goal: the host decides, the members hear. */
+  GROUP_GIFT_CLOSED = 'group_gift_closed',
+  /** A closed collection the host has left undecided, on day 3 and day 6. */
+  GROUP_GIFT_CLOSE_REMINDER = 'group_gift_close_reminder',
+  /** Three days and one day before the deadline, to whoever has not paid. */
+  GROUP_GIFT_DEADLINE_REMINDER = 'group_gift_deadline_reminder',
+  GROUP_GIFT_DEADLINE_EXTENDED = 'group_gift_deadline_extended',
+  /** The host's UPI ID changed; whoever has a pledge to send needs the new one. */
+  GROUP_GIFT_UPI_CHANGED = 'group_gift_upi_changed',
+  // Money that was promised and has not moved.
+  /** A day after a pledge nobody marked as sent. */
+  GROUP_GIFT_UNSENT_PLEDGE = 'group_gift_unsent_pledge',
+  /** Two days after funding, to a host who has not said they bought it. */
+  GROUP_GIFT_BUY_REMINDER = 'group_gift_buy_reminder',
+  /** The host asked everyone who has not paid to chip in. */
+  GROUP_GIFT_NUDGE = 'group_gift_nudge',
+  /** A contributor took back a pledge they had said was sent. */
+  GROUP_GIFT_WITHDRAWN = 'group_gift_withdrawn',
+  // After delivery.
+  /** The recipient's thank-you, to the people who chipped in. */
+  GROUP_GIFT_THANK_YOU = 'group_gift_thank_you',
+  /** A day after delivery, to a recipient who has not written one. */
+  GROUP_GIFT_THANK_YOU_PROMPT = 'group_gift_thank_you_prompt',
+  /** To the recipient alone: it came from the group. */
+  GROUP_GIFT_DELIVERED_RECIPIENT = 'group_gift_delivered_recipient',
+  // Settling up between the host and a contributor.
+  SETTLEMENT_RAISED = 'settlement_raised',
+  SETTLEMENT_UPI_SHARED = 'settlement_upi_shared',
+  SETTLEMENT_SENT = 'settlement_sent',
+  SETTLEMENT_CONFIRMED = 'settlement_confirmed',
   EVENT_REMINDER = 'event_reminder',
   CELEBRATION_REMINDER = 'celebration_reminder',
   EVENT_INVITE = 'event_invite',
@@ -267,6 +298,105 @@ export const NOTIFICATION_SPECS: Record<NotificationType, NotificationSpec> = {
     priority: NotificationPriority.NORMAL,
     category: NotificationCategory.GROUP_GIFTS,
     template: 'group-gift-fulfilled',
+  },
+  // Everything below is somebody waiting on somebody, or money that has not
+  // moved — in the app and on the phone, never in tomorrow's digest. No email:
+  // a group gift is coordinated between WishMates, who are reached in the app.
+  [NotificationType.GROUP_GIFT_CLOSED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-closed',
+  },
+  [NotificationType.GROUP_GIFT_CLOSE_REMINDER]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-close-reminder',
+  },
+  [NotificationType.GROUP_GIFT_DEADLINE_REMINDER]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-deadline-reminder',
+  },
+  [NotificationType.GROUP_GIFT_DEADLINE_EXTENDED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-deadline-extended',
+  },
+  [NotificationType.GROUP_GIFT_UPI_CHANGED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-upi-changed',
+  },
+  [NotificationType.GROUP_GIFT_UNSENT_PLEDGE]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-unsent-pledge',
+  },
+  [NotificationType.GROUP_GIFT_BUY_REMINDER]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-buy-reminder',
+  },
+  [NotificationType.GROUP_GIFT_NUDGE]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-nudge',
+  },
+  [NotificationType.GROUP_GIFT_WITHDRAWN]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-withdrawn',
+  },
+  [NotificationType.GROUP_GIFT_THANK_YOU]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-thank-you',
+  },
+  [NotificationType.GROUP_GIFT_THANK_YOU_PROMPT]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-thank-you-prompt',
+  },
+  [NotificationType.GROUP_GIFT_DELIVERED_RECIPIENT]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'group-gift-delivered-recipient',
+  },
+  [NotificationType.SETTLEMENT_RAISED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'settlement-raised',
+  },
+  [NotificationType.SETTLEMENT_UPI_SHARED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'settlement-upi-shared',
+  },
+  [NotificationType.SETTLEMENT_SENT]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'settlement-sent',
+  },
+  [NotificationType.SETTLEMENT_CONFIRMED]: {
+    channels: [NotificationChannel.IN_APP, NotificationChannel.PUSH],
+    priority: NotificationPriority.NORMAL,
+    category: NotificationCategory.GROUP_GIFTS,
+    template: 'settlement-confirmed',
   },
   [NotificationType.CHAT_MESSAGE]: {
     // Push, because the entire problem is that they are not looking at the

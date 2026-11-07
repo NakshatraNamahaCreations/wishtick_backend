@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { deleteStoredUrl } from 'src/infra/storage/storage-url';
 import { STORAGE, type IStorageProvider } from 'src/infra/storage/storage.port';
 import { Connection, Model, Types, type mongo } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
@@ -380,6 +381,8 @@ export interface TermInput {
  */
 @Injectable()
 export class AdminCatalogService {
+  private readonly logger = new Logger(AdminCatalogService.name);
+
   constructor(
     @InjectConnection() private readonly conn: Connection,
     @InjectModel(TaxonomyTerm.name) private readonly terms: Model<TaxonomyDocument>,
@@ -730,6 +733,8 @@ export class AdminCatalogService {
     term.markModified('meta');
     await term.save();
     await this.taxonomy.bustCache();
+    // The picture it replaces is shown nowhere now.
+    await this.releasePicture(before);
     await this.record(
       actor,
       'catalog.set_picture',
@@ -741,6 +746,17 @@ export class AdminCatalogService {
       ip,
     );
     return this.termRow(kind, term.toObject(), (await this.usage(kind)).get(term.key) ?? 0);
+  }
+
+  /**
+   * Deletes an option's old picture from storage and the CDN, once no option
+   * shows it. Only our own uploads: a picture that came with the
+   * seed data, or lives anywhere else, is never ours to delete.
+   */
+  private async releasePicture(url: string | null): Promise<void> {
+    if (!url) return;
+    if (await this.terms.exists({ 'meta.imageUrl': url })) return;
+    await deleteStoredUrl(this.storage, url, this.logger);
   }
 
   /** Takes an option's picture away; the app falls back to its own artwork or initial. */
@@ -759,6 +775,7 @@ export class AdminCatalogService {
       term.markModified('meta');
       await term.save();
       await this.taxonomy.bustCache();
+      await this.releasePicture(before);
       await this.record(
         actor,
         'catalog.remove_picture',

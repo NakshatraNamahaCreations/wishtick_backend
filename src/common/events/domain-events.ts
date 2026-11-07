@@ -148,6 +148,8 @@ export interface GroupGiftPriceUpdatedEvent {
   groupGiftId: string;
   hostId: string;
   title: string;
+  /** The item whose price moved — the chat's "price updated" note names it. */
+  itemId: string;
   itemTitle: string;
   fromMinor: number;
   toMinor: number;
@@ -174,6 +176,8 @@ export interface GroupGiftSettledEvent {
   title: string;
   /** What the host put in to finish it. */
   amountMinor: number;
+  /** The goal it was settled against — the chat's dedupe key carries it. */
+  targetAmountMinor: number;
   currency: string;
   memberIds: string[];
 }
@@ -189,6 +193,13 @@ export interface GroupGiftFundedEvent {
   collectedAmountMinor: number;
   currency: string;
   contributorCount: number;
+  /**
+   * Which funding this is. A gift can be funded, fall short again (a
+   * confirmed payment corrected down, a charge added) and be funded a second
+   * time, and the notification and the chat's note key on this so the second
+   * time is news and not a repeat of the first.
+   */
+  fundedCount: number;
 }
 
 /**
@@ -227,6 +238,10 @@ export interface GroupGiftPaymentClaimedEvent {
   title: string;
   amountMinor: number;
   currency: string;
+  /** The chat's note names nobody for an anonymous payment; the host is still told who. */
+  anonymous: boolean;
+  /** When they said they sent it. */
+  sentAt: Date;
 }
 
 /** The host said what arrived from a member's payment. The member is told. */
@@ -243,6 +258,10 @@ export interface GroupGiftPaymentReviewedEvent {
   currency: string;
   /** ISO time of this review — each review is its own notification. */
   reviewedAt: string;
+  /** Redacted from the chat's note when true. */
+  anonymous: boolean;
+  /** What the host's answer amounts to: all of it, some of it, or none. */
+  state: 'received' | 'partial' | 'not_received';
 }
 
 /** A member says they did pay, against what the host recorded. */
@@ -297,6 +316,12 @@ export const GROUP_GIFT_INVITED = 'group_gift.invited';
 /** A WishMate was asked to chip in. */
 export interface GroupGiftInvitedEvent {
   groupGiftId: string;
+  /**
+   * The invitation row — what the notification opens, and part of its dedupe
+   * key: a declined invitation is reset in place when the same person is
+   * asked again, so keyed on the pair alone the second ask would be dropped.
+   */
+  inviteId: string;
   invitedUserId: string;
   invitedById: string;
   /**
@@ -320,12 +345,305 @@ export interface GroupGiftPurchasedEvent {
   initiatorId: string;
 }
 
-/** A group gift was delivered. Terminal success. */
+/**
+ * A group gift was delivered. Terminal success — and the end of the surprise:
+ * the recipient is told it came from the group, unless the gift was for a
+ * named person off Wishtick (nobody to tell) or the host is the recipient.
+ */
 export const GROUP_GIFT_FULFILLED = 'group_gift.fulfilled';
 
 export interface GroupGiftFulfilledEvent {
   groupGiftId: string;
   itemId: string;
+  recipientId: string;
+  hostId: string;
+  /** The person it was for when they are not on Wishtick; null otherwise. */
+  forName: string | null;
+}
+
+// ── The collection's life, beyond money arriving ────────────────────────────
+
+/** Somebody accepted their invitation, or paid in on one, and is in the group. */
+export const GROUP_GIFT_MEMBER_ADDED = 'group_gift.member_added';
+
+export interface GroupGiftMemberAddedEvent {
+  groupGiftId: string;
+  userId: string;
+  /** Who asked them in — the host, or the member who invited them. */
+  byUserId: string;
+}
+
+/** A member said they are not interested after all, and is out of the group. */
+export const GROUP_GIFT_MEMBER_LEFT = 'group_gift.member_left';
+
+export interface GroupGiftMemberLeftEvent {
+  groupGiftId: string;
+  userId: string;
+  leftAt: Date;
+}
+
+/**
+ * Somebody said what they will put in. Nothing has moved yet: "I've sent it"
+ * is a separate step ([GROUP_GIFT_PAYMENT_CLAIMED]), and a pledge left unsent
+ * for a day is chased — the jobs registrar schedules that from this.
+ */
+export const GROUP_GIFT_PLEDGED = 'group_gift.pledged';
+
+export interface GroupGiftPledgedEvent {
+  groupGiftId: string;
+  contributionId: string;
+  contributorId: string;
+}
+
+/**
+ * A contributor took back a pledge they had already marked as sent. The host
+ * is told, because they may be looking for money that is no longer coming.
+ * A pledge withdrawn before it was sent is nobody's business but theirs.
+ */
+export const GROUP_GIFT_CONTRIBUTION_WITHDRAWN = 'group_gift.contribution_withdrawn';
+
+export interface GroupGiftContributionWithdrawnEvent {
+  groupGiftId: string;
+  contributionId: string;
+  contributorId: string;
+  hostId: string;
+  title: string;
+  amountMinor: number;
+  currency: string;
+  paymentRef: string | null;
+}
+
+/**
+ * The host changed the gift's details. What was changed decides who hears:
+ * a new deadline reaches everybody; a new UPI ID reaches whoever has pledged
+ * and not yet sent, since the one they were given is wrong now.
+ */
+export const GROUP_GIFT_UPDATED = 'group_gift.updated';
+
+export interface GroupGiftUpdatedEvent {
+  groupGiftId: string;
+  hostId: string;
+  title: string;
+  /** Field names that changed, e.g. `['deadline', 'hostUpiId']`. */
+  changed: string[];
+  /** The new deadline, when it changed. */
+  deadline?: Date | null;
+  /** The new UPI ID, when it changed. */
+  hostUpiId?: string | null;
+  /** Everybody in the group but the host and the recipient. */
+  memberIds: string[];
+  /** Members with a pledge not yet sent, who need the new UPI ID. */
+  upiChangedUserIds: string[];
+  currency: string;
+  /** The new deadline took a closed collection back to open. */
+  reopened: boolean;
+  updatedAt: Date;
+}
+
+/**
+ * The deadline passed short of the goal. The collection is closed: the host
+ * settles the shortfall, extends the deadline or cancels, and is told so;
+ * the members hear that nothing more is being taken.
+ */
+export const GROUP_GIFT_CLOSED = 'group_gift.closed';
+
+export interface GroupGiftClosedEvent {
+  groupGiftId: string;
+  hostId: string;
+  title: string;
+  /** Everybody in the group but the host and the recipient. */
+  memberIds: string[];
+  /** How far short of the goal it closed. */
+  shortMinor: number;
+  deadline: Date | null;
+  currency: string;
+  closedAt: Date;
+}
+
+/**
+ * A closed collection the host has not decided about, [day] days on. Sent on
+ * day 3 and day 6; on day 7 it is cancelled for them.
+ */
+export const GROUP_GIFT_CLOSE_REMINDER_DUE = 'group_gift.close_reminder_due';
+
+export interface GroupGiftCloseReminderDueEvent {
+  groupGiftId: string;
+  hostId: string;
+  title: string;
+  day: number;
+  shortMinor: number;
+  currency: string;
+}
+
+/**
+ * The deadline is [day] days away and this person has not paid. To each
+ * member without a confirmed or sent contribution, and to the host as a
+ * summary of how many have not.
+ */
+export const GROUP_GIFT_DEADLINE_REMINDER_DUE = 'group_gift.deadline_reminder_due';
+
+export interface GroupGiftDeadlineReminderDueEvent {
+  groupGiftId: string;
+  userId: string;
+  /** Days left: 3 or 1. */
+  day: number;
+  /** What this member still owes on an equal split; null on a custom one. */
+  owesMinor: number | null;
+  title: string;
+  deadline: Date;
+  currency: string;
+  /** The host's summary rather than a member's reminder. */
+  isHost: boolean;
+  /** For the host: how many members still have to pay. */
+  stillToPay?: number;
+}
+
+/** A pledge made a day ago that its contributor never marked as sent. */
+export const GROUP_GIFT_UNSENT_PLEDGE_DUE = 'group_gift.unsent_pledge_due';
+
+export interface GroupGiftUnsentPledgeDueEvent {
+  groupGiftId: string;
+  contributionId: string;
+  contributorId: string;
+  hostId: string;
+  title: string;
+  amountMinor: number;
+  currency: string;
+  /** Where to send it — carried so the reminder can say it. */
+  hostUpiId: string | null;
+}
+
+/** Funded two days ago, and the host has not said they bought it yet. */
+export const GROUP_GIFT_BUY_REMINDER_DUE = 'group_gift.buy_reminder_due';
+
+export interface GroupGiftBuyReminderDueEvent {
+  groupGiftId: string;
+  hostId: string;
+  title: string;
+  collectedAmountMinor: number;
+  currency: string;
+  /** Which funding this reminder is for — see [GroupGiftFundedEvent.fundedCount]. */
+  fundedCount: number;
+}
+
+/**
+ * The host asked everyone who has not paid to chip in. Once a day at most;
+ * [members] are only the people who still owe or have not sent.
+ */
+export const GROUP_GIFT_NUDGED = 'group_gift.nudged';
+
+export interface GroupGiftNudgedEvent {
+  groupGiftId: string;
+  hostId: string;
+  title: string;
+  currency: string;
+  deadline: Date | null;
+  nudgedAt: Date;
+  members: { userId: string; owesMinor: number | null }[];
+}
+
+/** The recipient wrote a thank-you to the people who chipped in. */
+export const GROUP_GIFT_THANK_YOU_SET = 'group_gift.thank_you_set';
+
+export interface GroupGiftThankYouSetEvent {
+  groupGiftId: string;
+  recipientId: string;
+  title: string;
+  note: string;
+  thankYouAt: Date;
+  /** Everybody who paid in, the host included; never the recipient. */
+  contributorIds: string[];
+}
+
+/** Delivered a day ago, and the recipient has not written a thank-you. */
+export const GROUP_GIFT_THANK_YOU_PROMPT_DUE = 'group_gift.thank_you_prompt_due';
+
+export interface GroupGiftThankYouPromptDueEvent {
+  groupGiftId: string;
+  recipientId: string;
+  title: string;
+}
+
+// ── Settling up ─────────────────────────────────────────────────────────────
+
+/** What every settlement event says about the row it concerns. */
+export interface SettlementRowEvent {
+  settlementId: string;
+  groupGiftId: string;
+  title: string;
+  /** `return` (host → contributor) or `top_up` (contributor → host). */
+  direction: string;
+  payerId: string;
+  receiverId: string;
+  amountMinor: number;
+  currency: string;
+}
+
+/**
+ * A balance was raised between two people: the host owes a contributor a
+ * return, or a contributor owes the host a top-up. The payer is told.
+ */
+export const SETTLEMENT_RAISED = 'settlement.raised';
+
+export interface SettlementRaisedEvent extends SettlementRowEvent {
+  note: string | null;
+}
+
+/**
+ * The host raised returns for the whole group at once — one chat note for the
+ * lot, rather than one per person.
+ */
+export const SETTLEMENT_RETURN_RAISED = 'settlement.return_raised';
+
+export interface SettlementReturnRaisedEvent {
+  groupGiftId: string;
+  hostId: string;
+  title: string;
+  /** Everything being given back, added up. */
+  totalMinor: number;
+  /** How many people are getting something back. */
+  count: number;
+  currency: string;
+  raisedAt: Date;
+}
+
+/** The receiver gave the payer a UPI ID to send it to. */
+export const SETTLEMENT_UPI_SHARED = 'settlement.upi_shared';
+
+export interface SettlementUpiSharedEvent extends SettlementRowEvent {
+  upiId: string;
+}
+
+/** The payer says they sent it. The receiver is asked to confirm. */
+export const SETTLEMENT_SENT = 'settlement.sent';
+
+export interface SettlementSentEvent extends SettlementRowEvent {
+  sentAt: Date;
+}
+
+/** The receiver says it landed. The payer is told, and the row is closed. */
+export const SETTLEMENT_CONFIRMED = 'settlement.confirmed';
+
+export interface SettlementConfirmedEvent extends SettlementRowEvent {
+  confirmedAt: Date;
+}
+
+/**
+ * The host asked the group for more: the goal went up, and every member is
+ * told what the new figure is and why.
+ */
+export const SETTLEMENT_TOP_UP_REQUESTED = 'settlement.top_up_requested';
+
+export interface SettlementTopUpRequestedEvent {
+  groupGiftId: string;
+  hostId: string;
+  title: string;
+  additionalAmountMinor: number;
+  targetAmountMinor: number;
+  /** Everybody in the group but the host and the recipient. */
+  memberIds: string[];
+  currency: string;
+  note: string | null;
 }
 
 /**

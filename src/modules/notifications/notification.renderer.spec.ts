@@ -17,12 +17,25 @@ describe('NotificationRenderer', () => {
     wishlistTitle: 'Birthday list',
     contributorName: 'Priya',
     joinerName: 'Rohan',
+    hostName: 'Rohan',
+    recipientName: 'Siya',
+    otherName: 'Priya',
     amountMinor: 50_000,
     collectedAmountMinor: 150_000,
     targetAmountMinor: 200_000,
+    shortMinor: 50_000,
+    owesMinor: 25_000,
     snapshotAmountMinor: 249_900,
     currentAmountMinor: 199_900,
     currency: 'INR',
+    day: 3,
+    stillToPay: 2,
+    deadlineText: '24 Oct',
+    hostUpiId: 'rohan@upi',
+    upiId: 'priya@upi',
+    note: 'For the speaker',
+    paymentRef: '123456789012',
+    direction: 'top_up',
     eventTitle: "Aarav's Birthday",
     whenText: 'in 2 days',
     subject: 'Thank you!',
@@ -95,6 +108,109 @@ describe('NotificationRenderer', () => {
       expect(changed({ toMinor: null, outOfStock: true }).subject).toBe(
         'Smart Speaker is out of stock',
       );
+    });
+  });
+
+  /**
+   * The deadline passed short of the goal, and what follows from it. The
+   * same type reads differently to the host, who has a decision to make, and
+   * to a member, who has not.
+   */
+  describe('a closed collection', () => {
+    const closed = (over: Record<string, unknown>) =>
+      renderer.content(NotificationType.GROUP_GIFT_CLOSED, {
+        title: 'Speaker for Siya',
+        hostName: 'Rohan',
+        shortMinor: 50_000,
+        currency: 'INR',
+        url: 'https://app.wishtick.test/x',
+        ...over,
+      });
+
+    it('asks the host to decide, and says what happens if they do not', () => {
+      const c = closed({ isHost: true });
+      expect(c.subject).toBe('Speaker for Siya: the deadline has passed');
+      expect(c.text).toContain('closed INR 500.00 short of its goal');
+      expect(c.text).toContain('Settle up, extend the deadline or cancel it');
+      expect(c.text).toContain("it's cancelled in a week");
+      expect(c.text).toContain('Decide what to do: https://app.wishtick.test/x');
+    });
+
+    it('tells a member the host decides what next', () => {
+      const c = closed({ isHost: false });
+      expect(c.subject).toBe('Speaker for Siya has closed');
+      expect(c.text).toContain('Rohan will settle up, extend the deadline or cancel it.');
+      expect(c.text).not.toContain('short');
+    });
+
+    const remind = (over: Record<string, unknown>) =>
+      renderer.content(NotificationType.GROUP_GIFT_DEADLINE_REMINDER, {
+        title: 'Speaker for Siya',
+        deadlineText: '24 Oct',
+        currency: 'INR',
+        url: 'https://app.wishtick.test/x',
+        ...over,
+      });
+
+    it('counts the days down for a member who owes', () => {
+      expect(remind({ day: 3, owesMinor: 25_000 }).title).toBe(
+        '3 days left to chip in for Speaker for Siya',
+      );
+      const last = remind({ day: 1, owesMinor: 25_000 });
+      expect(last.title).toBe('Last day to chip in for Speaker for Siya');
+      expect(last.text).toContain('Your INR 250.00 share for Speaker for Siya is due by 24 Oct.');
+    });
+
+    it('names no share on a custom split', () => {
+      expect(remind({ day: 3, owesMinor: null }).text).toContain(
+        'Speaker for Siya closes on 24 Oct. Chip in before then.',
+      );
+    });
+
+    it('gives the host a head count instead', () => {
+      const c = remind({ day: 1, isHost: true, stillToPay: 1 });
+      expect(c.title).toBe('1 person still to pay');
+      expect(c.text).toContain('Speaker for Siya closes tomorrow, and 1 person');
+      expect(remind({ day: 3, isHost: true, stillToPay: 4 }).title).toBe('4 people still to pay');
+    });
+
+    it('says which way a settlement runs', () => {
+      const raised = (direction: string) =>
+        renderer.content(NotificationType.SETTLEMENT_RAISED, {
+          title: 'Speaker for Siya',
+          otherName: 'Priya',
+          amountMinor: 20_000,
+          currency: 'INR',
+          direction,
+          url: 'https://app.wishtick.test/x',
+        });
+      expect(raised('return').title).toBe('Return INR 200.00 to Priya');
+      expect(raised('top_up').title).toBe('INR 200.00 more for Speaker for Siya');
+      expect(raised('top_up').text).toContain('Priya asked you for INR 200.00 more');
+    });
+
+    it('offers a link on every one of the new types', () => {
+      const types = [
+        NotificationType.GROUP_GIFT_CLOSED,
+        NotificationType.GROUP_GIFT_CLOSE_REMINDER,
+        NotificationType.GROUP_GIFT_DEADLINE_REMINDER,
+        NotificationType.GROUP_GIFT_DEADLINE_EXTENDED,
+        NotificationType.GROUP_GIFT_UPI_CHANGED,
+        NotificationType.GROUP_GIFT_UNSENT_PLEDGE,
+        NotificationType.GROUP_GIFT_BUY_REMINDER,
+        NotificationType.GROUP_GIFT_NUDGE,
+        NotificationType.GROUP_GIFT_WITHDRAWN,
+        NotificationType.GROUP_GIFT_THANK_YOU,
+        NotificationType.GROUP_GIFT_THANK_YOU_PROMPT,
+        NotificationType.GROUP_GIFT_DELIVERED_RECIPIENT,
+        NotificationType.SETTLEMENT_RAISED,
+        NotificationType.SETTLEMENT_UPI_SHARED,
+        NotificationType.SETTLEMENT_SENT,
+        NotificationType.SETTLEMENT_CONFIRMED,
+      ];
+      for (const type of types) {
+        expect(renderer.content(type, payload).sms).toContain('— https://app.wishtick.test/x');
+      }
     });
   });
 

@@ -313,6 +313,45 @@ export class GroupGift {
   @Prop({ type: String, enum: Object.values(GroupGiftStatus), default: GroupGiftStatus.OPEN })
   status!: GroupGiftStatus;
 
+  /**
+   * When the deadline sweep moved it to `closed`. Null until then, and reset
+   * when the host extends the deadline and it reopens. The week the host
+   * has to decide is counted from here.
+   */
+  @Prop({ type: Date, default: null })
+  closedAt!: Date | null;
+
+  /** When it last reached its target. Null until it does. */
+  @Prop({ type: Date, default: null })
+  fundedAt!: Date | null;
+
+  /**
+   * How many times it has reached its target.
+   *
+   * A gift funds more than once when a confirmed payment turns out short, or
+   * a charge lifts the target, and it is funded again later. Everything that
+   * fires on funding — the goal-reached notification, the chat card, the
+   * reminder to buy — keys off this so each funding counts once and a second
+   * one is not swallowed as a repeat of the first.
+   */
+  @Prop({ type: Number, default: 0 })
+  fundedCount!: number;
+
+  /** When the host last chased the group. Null if never. Holds the once-a-day rule. */
+  @Prop({ type: Date, default: null })
+  lastNudgeAt!: Date | null;
+
+  /**
+   * Which "decide what to do" reminders (days after closing: 3, 6) the host
+   * has had, so a sweep that runs every quarter-hour sends each one once.
+   */
+  @Prop({ type: [Number], default: [] })
+  closeRemindersSent!: number[];
+
+  /** Which "deadline is near" reminders (days before: 3, 1) have gone out. */
+  @Prop({ type: [Number], default: [] })
+  deadlineRemindersSent!: number[];
+
   @Prop({ type: String, enum: Object.values(OverfundPolicy), default: OverfundPolicy.CAP })
   overfundPolicy!: OverfundPolicy;
 
@@ -369,8 +408,12 @@ GroupGiftSchema.index({ itemId: 1 });
 GroupGiftSchema.index({ eventId: 1, status: 1 }, { sparse: true });
 GroupGiftSchema.index({ initiatorId: 1, createdAt: -1 });
 GroupGiftSchema.index({ recipientId: 1, createdAt: -1 });
-// Deadline sweeps (a later sprint) and status filters.
+// Deadline sweeps and status filters.
 GroupGiftSchema.index({ status: 1, deadline: 1 });
+// The sweep's second pass: closed gifts due a reminder, or due to be cancelled.
+GroupGiftSchema.index({ status: 1, closedAt: 1 });
+// "Is anything on this list still collecting?" — the archive guard.
+GroupGiftSchema.index({ wishlistId: 1, status: 1 });
 
 /** Which contribution statuses count toward the collected total — the reconciler's filter. */
 export const COUNTED_CONTRIBUTION_STATUSES = [ContributionStatus.CONFIRMED];

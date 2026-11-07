@@ -5,6 +5,7 @@ import { ProfileModule } from 'src/modules/profile/profile.module';
 import { TaxonomyModule } from 'src/modules/taxonomy/taxonomy.module';
 import { UsersModule } from 'src/modules/users/users.module';
 import { EventParticipationModule } from 'src/modules/events/event-participation.module';
+import { GroupGiftPresenceModule } from 'src/modules/group-gifts/group-gift-presence.module';
 import { WishmatesModule } from 'src/modules/wishmates/wishmates.module';
 import { AccessPolicyService } from './access/access-policy.service';
 import { ReservationWindowService } from './reservation-window.service';
@@ -40,6 +41,10 @@ import { WishlistsService } from './wishlists.service';
     // than the whole EventsModule, so wishlists and events do not import each
     // other — see EventParticipationModule.
     EventParticipationModule,
+    // Supplies GROUP_GIFT_PRESENCE for the archive guard. The same shape as
+    // above: one boolean off the GroupGift model, not the whole GroupGiftModule
+    // (which imports this one) — see GroupGiftPresenceModule.
+    GroupGiftPresenceModule,
     // One question only: is the person a list is *for* a WishMate of its
     // owner? WishmatesModule reaches events through the participation port and
     // never wishlists, so this stays one-way.

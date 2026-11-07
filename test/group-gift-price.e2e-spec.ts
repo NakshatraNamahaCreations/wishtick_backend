@@ -49,6 +49,8 @@ interface GroupGiftView {
   status: string;
   targetAmountMinor: number;
   collectedAmountMinor: number;
+  /** Which funding it is on — a second funding is news again. */
+  fundedCount: number;
   items: { itemId: string; amountMinor: number | null }[];
   charges: { label: string; amountMinor: number; reason: string | null }[];
   priceAlerts?: PriceAlert[];
@@ -120,7 +122,12 @@ describe('Group gift price tracking (e2e)', () => {
         .post(`${V1}/items/${item.data.id}/group-gift`)
         .set(auth(host.token))
         .set({ 'Idempotency-Key': randomUUID() })
-        .send({ title: 'Speaker for Siya', contributionMode: 'custom', ...body })
+        .send({
+          title: 'Speaker for Siya',
+          contributionMode: 'custom',
+          hostUpiId: 'host@okaxis',
+          ...body,
+        })
         .expect(201)
     ).body as Envelope<GroupGiftView>;
     return { owner, host, itemId: item.data.id, ggId: gg.data.id };
@@ -302,6 +309,8 @@ describe('Group gift price tracking (e2e)', () => {
 
     expect(after.data.targetAmountMinor).toBe(2_999_00);
     expect(after.data.status).toBe('funded');
+    // Funded once, by the member's payment — a cheaper price is not a second time.
+    expect(after.data.fundedCount).toBe(1);
     // Raised at once, owed by the host — not left to a button they may skip.
     expect(await settlementsOf(host, ggId)).toEqual([
       expect.objectContaining({
@@ -327,6 +336,7 @@ describe('Group gift price tracking (e2e)', () => {
 
     expect(back.data.targetAmountMinor).toBe(SPEAKER_PRICE);
     expect(back.data.status).toBe('funded');
+    expect(back.data.fundedCount).toBe(1);
     expect(back.data.charges).toEqual([]);
     // Called off, not deleted: the ledger shows it was raised and why it went.
     const rows = await settlementsOf(host, ggId);
@@ -366,7 +376,7 @@ describe('Group gift price tracking (e2e)', () => {
     // Two of them: the host's half (₹1,749.50) is on record from the start;
     // the member pays the other half.
     const member = await memberPays(ggId, host, 1_749_50);
-    expect((await view(host, ggId)).status).toBe('funded');
+    expect(await view(host, ggId)).toMatchObject({ status: 'funded', fundedCount: 1 });
 
     await shopPrice(2_999_00);
     await apply(host, ggId, itemId).expect(200);

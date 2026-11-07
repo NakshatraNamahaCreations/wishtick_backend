@@ -441,7 +441,7 @@ export class EventsService {
         _id: { $in: valid.map((id) => new Types.ObjectId(id)) },
         hostId: new Types.ObjectId(userId),
       })
-      .select('_id hostId status title startsAt timezone')
+      .select('_id hostId status title startsAt timezone coverMediaId inviteMediaId')
       .exec();
     if (owned.length === 0) return { deleted: 0 };
 
@@ -483,6 +483,18 @@ export class EventsService {
       .exec();
     await this.invites.deleteMany({ eventId: { $in: eventIds } }).exec();
     await this.model.deleteMany({ _id: { $in: eventIds } }).exec();
+
+    // Their cover and invitation photos or videos: nothing shows them now, so
+    // the nightly media sweep takes them out of storage. Unless another of the
+    // host's events was given the same upload — that one still shows it.
+    const media = owned.flatMap((e) => [e.coverMediaId, e.inviteMediaId]);
+    for (const mediaId of media) {
+      if (!mediaId) continue;
+      const stillShown = await this.model.exists({
+        $or: [{ coverMediaId: mediaId }, { inviteMediaId: mediaId }],
+      });
+      if (!stillShown) await this.media.markOrphaned(mediaId).catch(() => undefined);
+    }
 
     for (const notice of notices) {
       this.emitter.emit(EVENT_DELETED, notice);

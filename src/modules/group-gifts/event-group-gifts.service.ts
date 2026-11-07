@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { GroupGiftStatus } from './group-gift.types';
+import { GroupGiftStatus, GroupGiftVisibility } from './group-gift.types';
 import { GroupGift, type GroupGiftDocument } from './schemas/group-gift.schema';
 
 /** One group gift as an invitation lists it. */
@@ -36,7 +36,9 @@ export class EventGroupGiftsService {
     const gifts = await this.model
       .find({
         eventId,
-        status: { $in: [GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED] },
+        status: { $in: [GroupGiftStatus.OPEN, GroupGiftStatus.FUNDED, GroupGiftStatus.CLOSED] },
+        // The invite page is public: a surprise listed on it is a surprise no more.
+        visibility: GroupGiftVisibility.VISIBLE,
       })
       .select('_id title')
       .sort({ createdAt: 1 })

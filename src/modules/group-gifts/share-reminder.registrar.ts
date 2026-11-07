@@ -11,7 +11,9 @@ export const SHARE_REMINDER_JOB = 'group-gift-share-reminders';
 const SCHEDULE_ID = 'group-gift-share-reminders-daily';
 
 /**
- * Reminds everybody who still owes on an evenly split group gift, once a day.
+ * Reminds everybody who still owes on an evenly split group gift, once a day
+ * — and, whatever the split, everybody who has not paid when the deadline is
+ * three days off and one day off.
  *
  * Mid-morning in India, where the app's people are: early enough to pay the
  * same day, late enough not to be the first thing on a phone. One daily run
@@ -32,7 +34,10 @@ export class ShareReminderRegistrar implements OnModuleInit {
     this.registry.register(SHARE_REMINDER_JOB, async () => {
       const sent = await this.shares.remindOwing();
       const hosts = await this.shares.remindHosts();
-      this.logger.log(`Group gift reminders: ${sent} shares, ${hosts} hosts to confirm`);
+      const deadlines = await this.shares.remindDeadlines();
+      this.logger.log(
+        `Group gift reminders: ${sent} shares, ${hosts} hosts to confirm, ${deadlines} deadlines near`,
+      );
     });
 
     await this.scheduler.add(

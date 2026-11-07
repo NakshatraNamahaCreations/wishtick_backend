@@ -66,5 +66,22 @@ export interface IStorageProvider {
   /** Publicly readable URL, or a signed one for private buckets. */
   getPublicUrl(storageKey: string): string;
 
+  /**
+   * The key behind one of our own public URLs — the inverse of
+   * [getPublicUrl] — or null for any URL that is not ours (a shop's product
+   * photo, artwork bundled with the app).
+   *
+   * Admin uploads (banners, blog pictures, option pictures) are stored as a
+   * URL only, with no media record, so this is how they are found again to
+   * be deleted.
+   */
+  keyFromPublicUrl(url: string): string | null;
+
+  /**
+   * Removes the object, and — where there is a CDN in front of storage —
+   * clears the CDN's cached copy too, so a deleted file stops being served at
+   * once rather than whenever the cache happens to expire. A missing object is
+   * not an error.
+   */
   delete(storageKey: string): Promise<void>;
 }

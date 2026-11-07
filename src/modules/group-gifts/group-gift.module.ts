@@ -17,6 +17,8 @@ import { WishlistsModule } from 'src/modules/wishlists/wishlists.module';
 import { WishmatesModule } from 'src/modules/wishmates/wishmates.module';
 import { GroupGiftCardRenderer } from './group-gift-card.renderer';
 import { DeliveryDateRegistrar } from './delivery-date.registrar';
+import { GroupGiftDeadlineRegistrar } from './group-gift-deadline.registrar';
+import { GroupGiftJobsRegistrar } from './group-gift-jobs.registrar';
 import { GroupGiftShareService } from './group-gift-share.service';
 import { GroupGiftPriceWatchService } from './group-gift-price-watch.service';
 import { ShareReminderRegistrar } from './share-reminder.registrar';
@@ -84,6 +86,8 @@ import { SettlementService } from './settlement.service';
     GroupGiftReconcileService,
     GroupGiftReconcileRegistrar,
     DeliveryDateRegistrar,
+    GroupGiftDeadlineRegistrar,
+    GroupGiftJobsRegistrar,
     SettlementService,
     GroupGiftShareService,
     ShareReminderRegistrar,

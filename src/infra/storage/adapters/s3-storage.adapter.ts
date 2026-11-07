@@ -10,6 +10,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { AppConfig } from 'src/config/configuration';
 import type { IStorageProvider, PresignedUpload, StoredObjectInfo } from '../storage.port';
+import { keyAfterBase } from '../storage-url';
 
 @Injectable()
 export class S3StorageAdapter implements IStorageProvider {
@@ -144,15 +145,58 @@ export class S3StorageAdapter implements IStorageProvider {
   }
 
   getPublicUrl(storageKey: string): string {
-    if (this.publicBaseUrl) {
-      return `${this.publicBaseUrl.replace(/\/$/, '')}/${storageKey}`;
-    }
-    const s3 = this.config.get('storage.s3', { infer: true });
-    return `https://${this.bucket}.s3.${s3.region}.amazonaws.com/${storageKey}`;
+    return `${this.publicBase}/${storageKey}`;
   }
 
+  keyFromPublicUrl(url: string): string | null {
+    return keyAfterBase(url, this.publicBase);
+  }
+
+  /**
+   * Deletes the object, then clears the CDN's copy of it.
+   *
+   * The pull zone in front of the bucket caches what it serves — and
+   * [putObject] marks server-written files as cacheable for a year — so
+   * without the purge a deleted picture would go on loading from the CDN
+   * long after it left storage.
+   */
   async delete(storageKey: string): Promise<void> {
     await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: storageKey }));
+    await this.purgeCdn(storageKey);
+  }
+
+  /** Where public reads come from: the CDN when there is one, else the bucket. */
+  private get publicBase(): string {
+    if (this.publicBaseUrl) return this.publicBaseUrl.replace(/\/$/, '');
+    const s3 = this.config.get('storage.s3', { infer: true });
+    return `https://${this.bucket}.s3.${s3.region}.amazonaws.com`;
+  }
+
+  /**
+   * Asks Bunny to drop its cached copy of [storageKey].
+   *
+   * Only with a CDN base URL and a Bunny account API key — without the key
+   * there is nothing to ask with, and the cache simply runs out on its own.
+   * Never throws: the object is already gone from storage, which is the part
+   * that matters, and a purge that failed is logged for someone to retry.
+   */
+  private async purgeCdn(storageKey: string): Promise<void> {
+    const apiKey = this.config.get('storage.cdnPurgeApiKey', { infer: true });
+    if (!apiKey || !this.publicBaseUrl) return;
+    const url = this.getPublicUrl(storageKey);
+    try {
+      const response = await fetch(
+        `https://api.bunny.net/purge?url=${encodeURIComponent(url)}&async=true`,
+        { method: 'POST', headers: { AccessKey: apiKey } },
+      );
+      if (!response.ok) {
+        this.logger.warn(`CDN purge of ${url} answered ${response.status}`);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `CDN purge of ${url} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   private isNotFound(err: unknown): boolean {

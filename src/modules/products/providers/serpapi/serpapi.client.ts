@@ -1,22 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AppConfig } from 'src/config/configuration';
+import { SearchApiClient } from '../searchapi/searchapi.client';
 import type {
   SerpAmazonProductResponse,
   SerpImmersiveProductResponse,
   SerpShoppingResponse,
 } from './serpapi.types';
+import { SerpApiHttpError } from '../upstream-http-error';
 
-/** An upstream HTTP failure, carrying the status ProviderGuard retries on. */
-export class SerpApiHttpError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'SerpApiHttpError';
-  }
-}
+export { SerpApiHttpError };
 
 /**
  * The raw HTTP surface of SerpApi. Two engines, nothing else.
@@ -28,10 +21,23 @@ export class SerpApiHttpError extends Error {
  */
 @Injectable()
 export class SerpApiClient {
-  constructor(private readonly config: ConfigService<AppConfig, true>) {}
+  constructor(
+    private readonly config: ConfigService<AppConfig, true>,
+    private readonly searchApi: SearchApiClient,
+  ) {}
 
   private get cfg() {
     return this.config.get('products', { infer: true });
+  }
+
+  /**
+   * PRODUCT_SEARCH_VENDOR=searchapi: the same reads from SearchApi.io, already
+   * translated into these shapes. Decided per call, so every caller of this
+   * client — search, details, the Amazon lookup, link matching — moves to the
+   * other vendor together and nothing else has to know.
+   */
+  private get viaSearchApi(): boolean {
+    return this.cfg.searchVendor === 'searchapi';
   }
 
   /**
@@ -46,6 +52,7 @@ export class SerpApiClient {
     minPriceMinor?: number;
     maxPriceMinor?: number;
   }): Promise<SerpShoppingResponse> {
+    if (this.viaSearchApi) return this.searchApi.shopping(params);
     const query: Record<string, string> = {
       engine: 'google_shopping',
       q: params.q,
@@ -74,6 +81,10 @@ export class SerpApiClient {
    * therefore cannot be monetized — which is why the token is persisted.
    */
   async immersiveProduct(pageToken: string): Promise<SerpImmersiveProductResponse> {
+    // A token from one vendor means nothing to the other: products saved
+    // while on SerpApi carry SerpApi tokens, and SearchApi refuses those (and
+    // the reverse) — those products re-price only once searched again.
+    if (this.viaSearchApi) return this.searchApi.immersiveProduct(pageToken);
     return this.get<SerpImmersiveProductResponse>({
       engine: 'google_immersive_product',
       page_token: pageToken,
@@ -89,6 +100,7 @@ export class SerpApiClient {
    * own requests for its pages with a 5xx. See `amazon-link.ts`.
    */
   async amazonProduct(asin: string, domain: string): Promise<SerpAmazonProductResponse> {
+    if (this.viaSearchApi) return this.searchApi.amazonProduct(asin, domain);
     return this.get<SerpAmazonProductResponse>({
       engine: 'amazon_product',
       asin,
@@ -96,9 +108,9 @@ export class SerpApiClient {
     });
   }
 
-  /** Whether there is a key to call SerpApi with at all. */
+  /** Whether there is a key for the selected vendor at all. */
   get configured(): boolean {
-    return this.cfg.serpApiKey !== '';
+    return this.viaSearchApi ? this.searchApi.configured : this.cfg.serpApiKey !== '';
   }
 
   private async get<T>(params: Record<string, string>): Promise<T> {

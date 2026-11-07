@@ -29,12 +29,14 @@ import {
   CreateGroupGiftDto,
   DisputePaymentDto,
   GroupGiftActionDto,
+  MarkSentDto,
   PaymentRefDto,
   ReviewPaymentDto,
   ListMyGroupGiftsQueryDto,
   ShareGroupGiftDto,
   ThankYouDto,
   InviteToGroupGiftDto,
+  UpdateGroupGiftDto,
 } from './dto/group-gift.dto';
 import { ImportProductDto } from 'src/modules/products/dto/product.dto';
 import {
@@ -43,15 +45,13 @@ import {
   type GroupGiftInviteView,
 } from './group-gift-invites.service';
 import { GroupGiftService } from './group-gift.service';
+import { GROUP_GIFT_THROTTLE } from './group-gift.throttle';
 import type {
   GiftContributorsView,
   GroupGiftShareView,
   GroupGiftView,
   ItemGroupGiftView,
 } from './group-gift.views';
-
-/** Money-adjacent, and creating claims an item; a tight per-IP bucket blunts scripting. */
-const GROUP_GIFT_THROTTLE = { default: { limit: 30, ttl: 60_000 } };
 
 /** Home shows one card; a small default keeps the assembled views cheap. */
 const DEFAULT_MINE_LIMIT = 10;
@@ -151,10 +151,17 @@ export class GroupGiftController {
   @Delete('group-gifts/:id/contributions/:contributionId')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Withdraw your contribution',
-    description: 'Only while the gift is still open. Refunds it and updates the total.',
+    summary: 'Withdraw your pledge',
+    description:
+      'A pledge only — once the host has answered a payment it comes back through Settle up. ' +
+      'While the gift is open, or closed by its deadline. If you had marked it as sent, the ' +
+      'host is told.',
   })
   @ApiResponseDoc({ status: 403, description: 'NOT_THE_CONTRIBUTOR' })
+  @ApiResponseDoc({
+    status: 409,
+    description: 'CONTRIBUTION_NOT_WITHDRAWABLE / GROUP_GIFT_NOT_OPEN',
+  })
   removeContribution(
     @CurrentUser('id') userId: string,
     @Param('id') id: string,
@@ -163,14 +170,64 @@ export class GroupGiftController {
     return this.groupGifts.removeContribution(id, contributionId, userId);
   }
 
+  @Post('group-gifts/:id/contributions/:contributionId/sent')
+  @HttpCode(HttpStatus.OK)
+  @Throttle(GROUP_GIFT_THROTTLE)
+  @ApiOperation({
+    summary: "I've sent it: say your pledge is on its way to the host",
+    description:
+      'Pledges only. Optionally with the 12-digit UPI transaction ID. The host is asked ' +
+      'whether it arrived only from here on. Saying it again changes nothing.',
+  })
+  @ApiResponseDoc({ status: 400, description: 'PAYMENT_REF_INVALID' })
+  @ApiResponseDoc({ status: 403, description: 'NOT_THE_CONTRIBUTOR' })
+  @ApiResponseDoc({
+    status: 409,
+    description: 'PAYMENT_REF_DUPLICATE / CONFLICT (already answered)',
+  })
+  markSent(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Param('contributionId') contributionId: string,
+    @Body() dto: MarkSentDto,
+  ): Promise<GroupGiftView> {
+    return this.groupGifts.markSent(id, contributionId, userId, dto);
+  }
+
+  @Post('group-gifts/:id/nudge')
+  @HttpCode(HttpStatus.OK)
+  @Throttle(GROUP_GIFT_THROTTLE)
+  @ApiOperation({
+    summary: 'Remind everyone who has not paid (host only)',
+    description:
+      'Tells every member with nothing confirmed and nothing sent — on an even split, only ' +
+      'those who still owe. Once a day. Answers with how many were told and when it may be ' +
+      'done again; refetch the gift for the rest.',
+  })
+  @ApiResponseDoc({ status: 403, description: 'NOT_THE_INITIATOR' })
+  @ApiResponseDoc({ status: 409, description: 'GROUP_GIFT_NOT_OPEN' })
+  @ApiResponseDoc({
+    status: 429,
+    description: 'GROUP_GIFT_NUDGE_COOLDOWN — `details.nextAllowedAt`',
+  })
+  nudge(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+  ): Promise<{ nudged: number; nextAllowedAt: Date }> {
+    return this.groupGifts.nudge(id, userId);
+  }
+
   @Post('group-gifts/:id/contributions/:contributionId/review')
   @HttpCode(HttpStatus.OK)
+  @Throttle(GROUP_GIFT_THROTTLE)
   @ApiOperation({
     summary: 'Say what arrived from a payment (host only)',
     description:
       'Members pay the host outside Wishtick, so a payment counts only once the host says ' +
-      'what came: all of it, a different amount, or 0. Can be changed until the gift is bought.',
+      'what came: all of it, less, or 0 — never more than was claimed. Can be changed until ' +
+      'the gift is bought.',
   })
+  @ApiResponseDoc({ status: 400, description: 'RECEIVED_EXCEEDS_CLAIM' })
   @ApiResponseDoc({ status: 403, description: 'NOT_THE_INITIATOR' })
   @ApiResponseDoc({ status: 409, description: 'GROUP_GIFT_NOT_OPEN — already bought' })
   reviewContribution(
@@ -197,6 +254,7 @@ export class GroupGiftController {
 
   @Post('group-gifts/:id/contributions/:contributionId/dispute')
   @HttpCode(HttpStatus.OK)
+  @Throttle(GROUP_GIFT_THROTTLE)
   @ApiOperation({
     summary: 'Tell the host you did pay',
     description: 'For a payment the host recorded as short or not received. The host is told.',
@@ -213,6 +271,7 @@ export class GroupGiftController {
 
   @Post('group-gifts/:id/settle')
   @HttpCode(HttpStatus.OK)
+  @Throttle(GROUP_GIFT_THROTTLE)
   @ApiOperation({
     summary: 'Settle up: the host pays what is left (host only)',
     description:
@@ -285,6 +344,7 @@ export class GroupGiftController {
 
   @Post('group-gifts/:id/cancel')
   @HttpCode(HttpStatus.OK)
+  @Throttle(GROUP_GIFT_THROTTLE)
   @ApiOperation({
     summary: 'Cancel a group gift (initiator only)',
     description: 'Frees the item and records refunds for any contributions.',
@@ -320,6 +380,27 @@ export class GroupGiftController {
   @ApiOperation({ summary: 'Group gift progress, participants, and timeline' })
   get(@CurrentUser('id') userId: string, @Param('id') id: string): Promise<GroupGiftView> {
     return this.groupGifts.get(id, userId);
+  }
+
+  @Patch('group-gifts/:id')
+  @Throttle(GROUP_GIFT_THROTTLE)
+  @ApiOperation({
+    summary: 'Edit the details (host only)',
+    description:
+      'Title, note, UPI ID and deadline at any time before the gift is bought; the goal and ' +
+      'how it is split only until somebody has paid. A deadline in the future reopens a ' +
+      'collection the deadline closed. Everybody is told about a new deadline; whoever has ' +
+      'pledged and not yet sent is told about a new UPI ID.',
+  })
+  @ApiResponseDoc({ status: 403, description: 'NOT_THE_INITIATOR' })
+  @ApiResponseDoc({ status: 409, description: 'GROUP_GIFT_NOT_OPEN / GROUP_GIFT_BILL_LOCKED' })
+  @ApiResponseDoc({ status: 400, description: 'GROUP_GIFT_DEADLINE_INVALID' })
+  update(
+    @CurrentUser('id') userId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateGroupGiftDto,
+  ): Promise<GroupGiftView> {
+    return this.groupGifts.update(id, userId, dto);
   }
 
   // ── Charges and extra gifts (Sprint 6b) ──────────────────────────────────
@@ -444,6 +525,7 @@ export class GroupGiftController {
 
   @Post('group-gifts/:id/invites')
   @HttpCode(HttpStatus.OK)
+  @Throttle(GROUP_GIFT_THROTTLE)
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Ask WishMates to chip in',

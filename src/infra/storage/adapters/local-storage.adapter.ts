@@ -7,6 +7,7 @@ import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
 import type { AppConfig } from 'src/config/configuration';
 import type { IStorageProvider, PresignedUpload, StoredObjectInfo } from '../storage.port';
+import { keyAfterBase } from '../storage-url';
 
 interface SidecarMeta {
   contentType: string;
@@ -91,6 +92,10 @@ export class LocalStorageAdapter implements IStorageProvider {
     const appUrl = this.config.get('app.appUrl', { infer: true }).replace(/\/$/, '');
     const apiPrefix = this.config.get('app.apiPrefix', { infer: true });
     return `${appUrl}/${apiPrefix}/v1/media/local/${storageKey}`;
+  }
+
+  keyFromPublicUrl(url: string): string | null {
+    return keyAfterBase(url, this.getPublicUrl(''));
   }
 
   async delete(storageKey: string): Promise<void> {

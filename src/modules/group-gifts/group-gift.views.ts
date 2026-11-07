@@ -40,6 +40,11 @@ export interface PaymentClaimView {
   paymentRef: string | null;
   message: string | null;
   createdAt: Date;
+  /**
+   * When the contributor said they sent it ("I've sent it"). Null for a
+   * pledge not sent yet — the host has nothing to look for until it is.
+   */
+  sentAt: Date | null;
   reviewedAt: Date | null;
   disputedAt: Date | null;
 }
@@ -136,6 +141,21 @@ export interface GroupGiftView {
   contributorCount: number;
   participantCount: number;
   deadline: Date | null;
+  /**
+   * When the deadline closed the collection; null while open, and again
+   * once the host extends the deadline and it reopens.
+   */
+  closedAt: Date | null;
+  /** How many times it has reached its goal — see the schema. */
+  fundedCount: number;
+  /** When the host last reminded everybody to chip in. Null if never. */
+  lastNudgeAt: Date | null;
+  /**
+   * The viewer's invitation still waiting for their answer, when they have
+   * one: the app opens that, with Accept and Decline, rather than a group
+   * they are not in yet. Null for everybody else.
+   */
+  myInviteId: string | null;
   overfundPolicy: string;
   visibility: string;
   message: string | null;
@@ -197,8 +217,19 @@ export interface GroupGiftView {
   split?: EqualSplitView | null;
 }
 
-/** The redacted public share view — no owner PII, no wishlist internals. */
+/**
+ * The redacted public share view — no owner PII, no wishlist internals.
+ *
+ * Signed out, it is the progress alone: [participants] and
+ * [recentContributions] are empty and [signInToSee] is true, so the page
+ * offers a sign-in rather than a list of who put in what.
+ */
 export interface PublicGroupGiftView {
+  title: string;
+  /** The primary gift's first picture, for the card. */
+  imageUrl: string | null;
+  /** The names and the timeline are held back until the viewer signs in. */
+  signInToSee: boolean;
   status: string;
   targetAmountMinor: number;
   collectedAmountMinor: number;
@@ -435,6 +466,10 @@ export function toGroupGiftView(input: {
     contributorCount: gift.contributorCount,
     participantCount: gift.participantIds.length,
     deadline: gift.deadline,
+    closedAt: gift.closedAt ?? null,
+    fundedCount: gift.fundedCount ?? 0,
+    lastNudgeAt: gift.lastNudgeAt ?? null,
+    myInviteId: null,
     overfundPolicy: gift.overfundPolicy,
     visibility: gift.visibility,
     message: gift.message,
@@ -479,9 +514,15 @@ export function toPublicGroupGiftView(input: {
   gift: GroupGiftDocument;
   names: Map<string, string>;
   recentContributions: ContributionDocument[];
+  primaryItem: WishlistItemDocument | null;
+  /** Whether the viewer is signed in; nobody is named to anybody who is not. */
+  signedIn: boolean;
 }): PublicGroupGiftView {
-  const { gift, names, recentContributions } = input;
+  const { gift, names, recentContributions, primaryItem, signedIn } = input;
   return {
+    title: gift.title,
+    imageUrl: primaryItem?.imageUrls?.[0] ?? null,
+    signInToSee: !signedIn,
     status: gift.status,
     targetAmountMinor: gift.targetAmountMinor,
     collectedAmountMinor: gift.collectedAmountMinor,
@@ -491,7 +532,9 @@ export function toPublicGroupGiftView(input: {
     deadline: gift.deadline,
     message: gift.message,
     ogImageUrl: gift.ogImageUrl,
-    participants: toParticipants(gift, names),
-    recentContributions: recentContributions.map((c) => toContributionView(c, names)),
+    participants: signedIn ? toParticipants(gift, names) : [],
+    recentContributions: signedIn
+      ? recentContributions.map((c) => toContributionView(c, names))
+      : [],
   };
 }

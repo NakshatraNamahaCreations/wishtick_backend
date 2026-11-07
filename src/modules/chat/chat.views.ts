@@ -87,6 +87,15 @@ export interface ChatView {
    * a direct chat, which is named by its [counterpart].
    */
   title: string | null;
+  /**
+   * The caller can read this chat but not write in it: a group gift that
+   * has ended, or one they are not a member of (the recipient reading after
+   * the surprise, say). The composer is drawn disabled with [readOnlyReason]
+   * as its hint, rather than letting a post go out and come back refused.
+   */
+  readOnly: boolean;
+  /** Why, in the user's words; null when they can post. */
+  readOnlyReason: string | null;
 }
 
 /**
@@ -153,8 +162,10 @@ export function toChatView(
     counterpart?: PublicIdentity | null;
     lastMessage?: MessagePreviewView | null;
     title?: string | null;
+    readOnlyReason?: string | null;
   } = {},
 ): ChatView {
+  const readOnlyReason = extras.readOnlyReason ?? null;
   return {
     id: chat._id.toString(),
     type: chat.type,
@@ -166,5 +177,7 @@ export function toChatView(
     counterpart: extras.counterpart ?? null,
     lastMessage: extras.lastMessage ?? null,
     title: extras.title ?? null,
+    readOnly: readOnlyReason !== null,
+    readOnlyReason,
   };
 }

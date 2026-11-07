@@ -4,7 +4,13 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { AppException } from 'src/common/errors/app.exception';
 import { ErrorCode } from 'src/common/errors/error-codes';
-import { GROUP_GIFT_INVITED, type GroupGiftInvitedEvent } from 'src/common/events/domain-events';
+import {
+  GROUP_GIFT_INVITED,
+  GROUP_GIFT_MEMBER_LEFT,
+  type GroupGiftInvitedEvent,
+  type GroupGiftMemberLeftEvent,
+} from 'src/common/events/domain-events';
+import { ChatService } from 'src/modules/chat/chat.service';
 import { ParticipantsService } from 'src/modules/wishlists/participants.service';
 import { ParticipantRole } from 'src/modules/wishlists/wishlist.types';
 import { UsersService } from 'src/modules/users/users.service';
@@ -17,7 +23,11 @@ import { WishmateRelationship } from 'src/modules/wishmates/wishmates.views';
 import type { EqualSplitView } from './group-gift.views';
 import { GroupGiftShareService } from './group-gift-share.service';
 import { GroupGiftService } from './group-gift.service';
-import { CLOSED_GROUP_GIFT_STATUSES, ContributionStatus } from './group-gift.types';
+import {
+  CLOSED_GROUP_GIFT_STATUSES,
+  ContributionStatus,
+  GroupGiftStatus,
+} from './group-gift.types';
 import {
   GroupGiftInvite,
   GroupGiftInviteStatus,
@@ -69,6 +79,8 @@ export interface GroupGiftInviteDetailView extends GroupGiftInviteView {
   contributors: InviteContributorView[];
   /** When the money has to be in by, for the "2 days left" line. */
   deadline: Date | null;
+  /** The host's note to the group — why this, why now. */
+  message: string | null;
   /**
    * Everything the invitee needs to actually pay, without first being let into
    * the group: the chips the contribute sheet offers, and who the money goes
@@ -129,19 +141,24 @@ export class GroupGiftInvitesService {
     private readonly participants: ParticipantsService,
     private readonly emitter: EventEmitter2,
     private readonly shares: GroupGiftShareService,
+    // Somebody who leaves is taken out of the group's chat as well.
+    private readonly chat: ChatService,
   ) {}
 
   /**
-   * Invites WishMates to a group the caller is already in.
+   * Asks WishMates to chip in on a group the caller is already in.
    *
-   * Members may invite, not just the initiator: a group gift is a group, and
-   * making the one person who started it the only route in is how a collection
-   * stalls when they go quiet.
+   * An ask, not a place: the invitation waits for an answer, and until they
+   * say yes the invitee is in nobody's split, on nobody's participant list
+   * and in no chat. Members may ask, not just the initiator: a group gift is
+   * a group, and making the one person who started it the only route in is
+   * how a collection stalls when they go quiet.
    *
-   * Ids that cannot be invited are skipped rather than failing the batch —
-   * somebody already asked, already a member, or no longer a WishMate. A picker
+   * Ids that cannot be asked are skipped rather than failing the batch —
+   * somebody already asked or already in, or no longer a WishMate. A picker
    * of several people that refuses wholesale over one stale row is worse than
-   * one that invites who it can and says how many.
+   * one that asks who it can and says how many. Somebody who said no, or
+   * left, can be asked again: their row is reset in place.
    */
   async invite(
     groupGiftId: string,
@@ -150,10 +167,11 @@ export class GroupGiftInvitesService {
   ): Promise<{ invited: number; skipped: number }> {
     const gift = await this.loadOpenOrFail(groupGiftId);
     this.assertMember(gift, userId);
+    GroupGiftInvitesService.assertCollecting(gift);
 
     let invited = 0;
     let skipped = 0;
-    const added: string[] = [];
+    const asked: { userId: string; inviteId: string }[] = [];
 
     for (const raw of userIds) {
       if (!Types.ObjectId.isValid(raw) || raw === userId) {
@@ -179,45 +197,65 @@ export class GroupGiftInvitesService {
         continue;
       }
 
-      try {
-        // In by default: an invitation is a place in the group, not a
-        // question. The one thing left to the invitee is to say they are
-        // not interested — see [leave] — which takes them out again.
-        await this.model.create({
-          groupGiftId: gift._id,
-          invitedUserId: new Types.ObjectId(raw),
-          invitedById: new Types.ObjectId(userId),
-          status: GroupGiftInviteStatus.ACCEPTED,
-          respondedAt: new Date(),
-        });
-      } catch {
-        // The unique index caught a duplicate — someone already asked them.
+      const existing = await this.model
+        .findOne({ groupGiftId: gift._id, invitedUserId: new Types.ObjectId(raw) })
+        .exec();
+      let inviteId: string;
+      if (existing && existing.status !== GroupGiftInviteStatus.DECLINED) {
+        // Already asked, or already in.
         skipped++;
         continue;
+      } else if (existing) {
+        // Said no before, or left: asked again, in the same row — the unique
+        // index allows one per person, and a second ask is still one ask.
+        await this.model
+          .updateOne(
+            { _id: existing._id },
+            {
+              $set: {
+                status: GroupGiftInviteStatus.PENDING,
+                respondedAt: null,
+                invitedById: new Types.ObjectId(userId),
+              },
+            },
+          )
+          .exec();
+        inviteId = existing._id.toString();
+      } else {
+        try {
+          const row = await this.model.create({
+            groupGiftId: gift._id,
+            invitedUserId: new Types.ObjectId(raw),
+            invitedById: new Types.ObjectId(userId),
+            status: GroupGiftInviteStatus.PENDING,
+            respondedAt: null,
+          });
+          inviteId = row._id.toString();
+        } catch {
+          // The unique index caught a race — someone asked them a moment ago.
+          skipped++;
+          continue;
+        }
       }
-      // What accepting used to grant: enough of the list to see the gift.
-      await this.participants.addForInvite(gift.wishlistId.toString(), raw, ParticipantRole.VIEWER);
-      await this.giftModel
-        .updateOne({ _id: gift._id }, { $addToSet: { participantIds: new Types.ObjectId(raw) } })
-        .exec();
-      added.push(raw);
+      asked.push({ userId: raw, inviteId });
       invited++;
     }
 
     this.logger.log(`Group gift ${groupGiftId}: ${invited} invited, ${skipped} skipped`);
     if (invited === 0) return { invited, skipped };
 
-    // Everybody added is somebody to share an equal split with: the host's
-    // share comes down, and each newcomer's share is what they are told.
+    // Nobody new to share with yet — an ask is not a yes — but the split is
+    // put right in passing, as it is after every change to the group.
     await this.shares.sync(groupGiftId);
-    const fresh = await this.giftModel.findById(gift._id).exec();
-    const split = fresh ? await this.shares.splitOf(fresh) : null;
-    for (const raw of added) {
+    const fresh = (await this.giftModel.findById(gift._id).exec()) ?? gift;
+    for (const { userId: raw, inviteId } of asked) {
       this.emitter.emit(GROUP_GIFT_INVITED, {
         groupGiftId,
+        inviteId,
         invitedUserId: raw,
         invitedById: userId,
-        shareMinor: split?.others.find((m) => m.userId === raw)?.shareMinor ?? null,
+        // What they would owe if they said yes, so the ask can say so.
+        shareMinor: await this.shares.shareIfJoined(fresh, raw),
       } satisfies GroupGiftInvitedEvent);
     }
     return { invited, skipped };
@@ -225,8 +263,9 @@ export class GroupGiftInvitesService {
 
   /**
    * Everyone [invite] would skip without asking WishMate status: the host,
-   * the recipient, the members, and anybody with an invitation row — which
-   * includes those who left, since the unique index will not ask them twice.
+   * the recipient, the members, and anybody asked who has not said no.
+   * Somebody who declined, or left, is not among them — they can be asked
+   * again, and the picker should offer them.
    *
    * For the picker, so it greys these out rather than offering a tap that
    * the server then quietly counts as skipped.
@@ -235,7 +274,10 @@ export class GroupGiftInvitesService {
     const gift = await this.loadOpenOrFail(groupGiftId);
     this.assertMember(gift, userId);
     const invited = await this.model
-      .find({ groupGiftId: gift._id })
+      .find({
+        groupGiftId: gift._id,
+        status: { $in: [GroupGiftInviteStatus.PENDING, GroupGiftInviteStatus.ACCEPTED] },
+      })
       .distinct('invitedUserId')
       .exec();
     const ids = new Set<string>([
@@ -248,13 +290,14 @@ export class GroupGiftInvitesService {
   }
 
   /**
-   * "Not interested": out of a group gift the caller was added to.
+   * "Not interested": out of a group gift the caller joined or was asked to.
    *
    * Only before they have paid anything — money in is a commitment the rest
    * of the group is counting on, and the way out of that is withdrawing it,
    * which has its own rules. Never the host: it is theirs to cancel, not
-   * leave. The invitation, if there was one, is marked declined so it is not
-   * offered again, and an equal split is shared again without them.
+   * leave. Never the recipient, who was never in it. The invitation, if
+   * there was one, is marked declined — they can be asked again — the chat
+   * lets them go, and an equal split is shared again without them.
    */
   async leave(groupGiftId: string, userId: string): Promise<{ left: true }> {
     const gift = await this.loadOpenOrFail(groupGiftId);
@@ -264,6 +307,11 @@ export class GroupGiftInvitesService {
         'The host cannot leave their own group gift — cancel it instead',
         403,
       );
+    }
+    // The gift is for them; they were never in the group that is paying for
+    // it, and must not learn of it here.
+    if (gift.recipientId.toString() === userId) {
+      throw new AppException(ErrorCode.GROUP_GIFT_NOT_FOUND, 'Group gift not found', 404);
     }
     // Only somebody in it can leave it. 404 rather than 403, as everywhere a
     // stranger asks about a group gift: they need not learn it exists.
@@ -305,7 +353,14 @@ export class GroupGiftInvitesService {
     // The list access came with the invitation; saying no takes it back, so
     // "not interested" never leaves them holding somebody's private list.
     await this.participants.removeForInvite(gift.wishlistId.toString(), userId);
+    // And out of the group's chat: no more messages from a group they left.
+    if (gift.chatId) await this.chat.removeParticipant(gift.chatId, userId);
     await this.shares.sync(groupGiftId);
+    this.emitter.emit(GROUP_GIFT_MEMBER_LEFT, {
+      groupGiftId,
+      userId,
+      leftAt: new Date(),
+    } satisfies GroupGiftMemberLeftEvent);
     return { left: true };
   }
 
@@ -377,6 +432,7 @@ export class GroupGiftInvitesService {
           : Math.min(100, Math.round((gift.collectedAmountMinor / gift.targetAmountMinor) * 100)),
       contributorCount: gift.contributorCount,
       deadline: gift.deadline,
+      message: gift.message ?? null,
       suggestedAmountsMinor: gift.suggestedAmountsMinor ?? [],
       contributableMinor: await this.shares.contributableMinor(gift),
       hostName: names.get(gift.initiatorId.toString()) ?? 'A friend',
@@ -430,11 +486,14 @@ export class GroupGiftInvitesService {
       invite.status = GroupGiftInviteStatus.DECLINED;
       invite.respondedAt = new Date();
       await invite.save();
-      // One fewer to share with.
+      // Never counted, so nothing to share again — but kept in step anyway.
       await this.shares.sync(invite.groupGiftId);
       return toView(invite, gift, names);
     }
 
+    // Asked before the list access is granted: a yes to a collection that
+    // has closed must not leave them holding the owner's list for nothing.
+    GroupGiftInvitesService.assertCollecting(gift);
     await this.participants.addForInvite(
       gift.wishlistId.toString(),
       userId,
@@ -446,6 +505,29 @@ export class GroupGiftInvitesService {
     invite.respondedAt = new Date();
     await invite.save();
     return toView(invite, gift, names);
+  }
+
+  /**
+   * Still taking people: open, and before its deadline. A closed collection
+   * — by the sweep, or by a deadline the sweep has not reached yet — has
+   * nothing to ask anybody into, and nothing to say yes to.
+   */
+  private static assertCollecting(gift: GroupGiftDocument): void {
+    if (gift.status !== GroupGiftStatus.OPEN) {
+      throw new AppException(
+        ErrorCode.GROUP_GIFT_NOT_OPEN,
+        gift.status === GroupGiftStatus.CLOSED
+          ? 'The collection has closed'
+          : 'This group gift is no longer collecting',
+        409,
+        { status: gift.status },
+      );
+    }
+    if (gift.deadline && gift.deadline.getTime() <= Date.now()) {
+      throw new AppException(ErrorCode.GROUP_GIFT_NOT_OPEN, 'The collection has closed', 409, {
+        status: gift.status,
+      });
+    }
   }
 
   private async loadOpenOrFail(groupGiftId: string): Promise<GroupGiftDocument> {
